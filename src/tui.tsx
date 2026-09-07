@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, memo } from "react";
 import { render, Box, Text, useInput, useApp, useStdout } from "ink";
 import { runAgent } from "./agent.ts";
 import { DEFAULT_MODEL } from "./llm.ts";
@@ -19,7 +19,7 @@ function Spinner() {
   return <Text color={theme.accent}>{frames[frame]}</Text>;
 }
 
-function ToolPanel({ msg, onToggle }: { msg: Extract<Msg, { role: "tool" }>; onToggle: () => void }) {
+const ToolPanel = memo(function ToolPanel({ msg, onToggle }: { msg: Extract<Msg, { role: "tool" }>; onToggle: () => void }) {
   const bytes = Buffer.byteLength(msg.result || "", "utf-8");
   const lines = (msg.result || "").split("\n").length;
   return (
@@ -62,7 +62,7 @@ function ToolPanel({ msg, onToggle }: { msg: Extract<Msg, { role: "tool" }>; onT
       )}
     </Box>
   );
-}
+});
 
 function App() {
   const { exit } = useApp();
@@ -77,6 +77,20 @@ function App() {
   const [streamingText, setStreamingText] = useState("");
   const [streamingReasoning, setStreamingReasoning] = useState("");
   const [status, setStatus] = useState("");
+  const textBufRef = useRef("");
+  const reasoningBufRef = useRef("");
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushStreaming = () => {
+    setStreamingText(textBufRef.current);
+    setStreamingReasoning(reasoningBufRef.current.slice(-500));
+  };
+  const scheduleFlush = () => {
+    if (flushTimerRef.current) return;
+    flushTimerRef.current = setTimeout(() => {
+      flushStreaming();
+      flushTimerRef.current = null;
+    }, 40);
+  };
 
   const addMsg = (m: Msg) => setMessages((prev) => [...prev, m]);
 
@@ -125,6 +139,8 @@ function App() {
     setHIdx(-1);
     addMsg({ id: Math.random().toString(36).slice(2), role: "user", content: prompt });
     setIsStreaming(true);
+    textBufRef.current = "";
+    reasoningBufRef.current = "";
     setStreamingText("");
     setStreamingReasoning("");
     setStatus("thinking…");
@@ -135,19 +151,35 @@ function App() {
       for await (const ev of runAgent(prompt, { model })) {
         if (ev.type === "text") {
           buffer += ev.delta;
-          setStreamingText(buffer);
-          setStatus("");
+          textBufRef.current = buffer;
+          reasoningBufRef.current = reasoningBuf;
+          scheduleFlush();
+          if (status) setStatus("");
         } else if (ev.type === "reasoning") {
           reasoningBuf += ev.delta;
-          setStreamingReasoning(reasoningBuf.slice(-500)); // keep last 500 for display
+          reasoningBufRef.current = reasoningBuf;
+          textBufRef.current = buffer;
+          scheduleFlush();
         } else if (ev.type === "text_done") {
           buffer = ev.text;
-          setStreamingText(buffer);
+          textBufRef.current = buffer;
+          // immediate flush for text_done
+          if (flushTimerRef.current) {
+            clearTimeout(flushTimerRef.current);
+            flushTimerRef.current = null;
+          }
+          flushStreaming();
         } else if (ev.type === "tool_start") {
           // flush any pending text as assistant msg before tool
+          if (flushTimerRef.current) {
+            clearTimeout(flushTimerRef.current);
+            flushTimerRef.current = null;
+            flushStreaming();
+          }
           if (buffer) {
             addMsg({ id: Math.random().toString(36).slice(2), role: "assistant", content: buffer });
             buffer = "";
+            textBufRef.current = "";
             setStreamingText("");
           }
           // add placeholder tool msg (streaming)
@@ -163,20 +195,37 @@ function App() {
           });
           setStatus("");
         } else if (ev.type === "done") {
+          if (flushTimerRef.current) {
+            clearTimeout(flushTimerRef.current);
+            flushTimerRef.current = null;
+          }
+          flushStreaming();
           if (buffer || ev.text) {
             const final = ev.text || buffer;
             if (final) addMsg({ id: Math.random().toString(36).slice(2), role: "assistant", content: final });
           }
           buffer = "";
+          textBufRef.current = "";
+          reasoningBufRef.current = "";
           setStreamingText("");
           setStreamingReasoning("");
           setStatus("");
         }
       }
     } catch (e: any) {
+      if (flushTimerRef.current) {
+        clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = null;
+      }
       addMsg({ id: Math.random().toString(36).slice(2), role: "assistant", content: `Error: ${e?.message ?? String(e)}` });
     } finally {
+      if (flushTimerRef.current) {
+        clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = null;
+      }
       setIsStreaming(false);
+      textBufRef.current = "";
+      reasoningBufRef.current = "";
       setStreamingText("");
       setStreamingReasoning("");
       setStatus("");

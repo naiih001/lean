@@ -16,6 +16,13 @@ ${catalog}
 When a task matches a skill, call read_skill. You may call multiple read_skill in one step if needed.`;
 }
 
+const MAX_TOOL_OUTPUT_FOR_LLM = 2000;
+
+function truncateForLLM(s: string, limit = MAX_TOOL_OUTPUT_FOR_LLM): string {
+  if (s.length <= limit) return s;
+  return s.slice(0, limit) + `\n… [truncated ${s.length - limit} chars for LLM, full shown in TUI]`;
+}
+
 export type AgentEvent =
   | { type: "text"; delta: string }
   | { type: "reasoning"; delta: string }
@@ -131,7 +138,7 @@ export async function* runAgent(
       messages.push({
         role: "tool",
         tool_call_id: id,
-        content: result,
+        content: truncateForLLM(result),
       } as any);
     }
 
