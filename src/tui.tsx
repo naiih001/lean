@@ -27,40 +27,37 @@ function ToolPanel({ msg, onToggle }: { msg: Extract<Msg, { role: "tool" }>; onT
   const bytes = Buffer.byteLength(msg.result || "", "utf-8");
   const lines = (msg.result || "").split("\n").length;
   return (
-    <Box flexDirection="column" marginY={1} borderStyle="round" borderColor={YELLOW}>
+    <Box flexDirection="column" marginY={1} backgroundColor="gray">
       <Box>
-        <Text color={YELLOW} bold>
-          ┌─ {msg.name}
+        <Text color="black" backgroundColor="yellow" bold>
+          {msg.name}
         </Text>
-        <Text dimColor> #{msg.id.slice(0, 6)}</Text>
-        <Text dimColor> {msg.collapsed ? "▶" : "▼"} </Text>
-        <Text dimColor>(press c to {msg.collapsed ? "expand" : "collapse"})</Text>
+        <Text color="black" backgroundColor="gray" dimColor>
+          #{msg.id.slice(0, 6)} {msg.collapsed ? "▶" : "▼"} {bytes}B {lines}L
+        </Text>
       </Box>
       {!msg.collapsed && (
         <>
           <Box>
-            <Text color={YELLOW}>│ </Text>
-            <Text dimColor>{JSON.stringify(msg.args, null, 2)}</Text>
-          </Box>
-          <Box>
-            <Text color={YELLOW}>├─ result </Text>
-            <Text dimColor>({bytes}B, {lines} lines)</Text>
+            <Text backgroundColor="gray" color="white" dimColor>
+              {JSON.stringify(msg.args, null, 2)}
+            </Text>
           </Box>
           <Box flexDirection="column">
             {msg.result.split("\n").slice(0, 200).map((line, i) => (
               <Box key={i}>
-                <Text color={YELLOW}>│ </Text>
-                <Text>{line}</Text>
+                <Text backgroundColor="gray" color="white">
+                  {line}
+                </Text>
               </Box>
             ))}
-            {lines > 200 && <Text dimColor>… {lines - 200} more lines (full in tool result)</Text>}
+            {lines > 200 && <Text dimColor>… {lines - 200} more lines</Text>}
           </Box>
         </>
       )}
       {msg.collapsed && (
         <Box>
-          <Text color={YELLOW}>│ </Text>
-          <Text dimColor>
+          <Text backgroundColor="gray" color="white" dimColor>
             {JSON.stringify(msg.args).slice(0, 80)}
             {JSON.stringify(msg.args).length > 80 ? "…" : ""} → {msg.result.slice(0, 60).replace(/\n/g, " ")}
             {msg.result.length > 60 ? "…" : ""}
@@ -331,14 +328,14 @@ function App() {
           if (m.role === "user") {
             return (
               <Box key={m.id} marginY={1}>
-                <Text>{m.content}</Text>
+                <Text color="cyan">{m.content}</Text>
               </Box>
             );
           }
           if (m.role === "assistant") {
             return (
               <Box key={m.id} flexDirection="column" marginY={1}>
-                <Text>{m.content}</Text>
+                <Text color="white">{m.content}</Text>
               </Box>
             );
           }
@@ -358,7 +355,7 @@ function App() {
             )}
             {streamingText ? (
               <Box flexDirection="column">
-                <Text>{streamingText}</Text>
+                <Text color="white">{streamingText}</Text>
               </Box>
             ) : (
               <Box>
