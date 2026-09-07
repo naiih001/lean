@@ -27,7 +27,7 @@ function ToolPanel({ msg, onToggle }: { msg: Extract<Msg, { role: "tool" }>; onT
   const bytes = Buffer.byteLength(msg.result || "", "utf-8");
   const lines = (msg.result || "").split("\n").length;
   return (
-    <Box flexDirection="column" marginY={1} borderStyle="round" borderColor={YELLOW} paddingX={1}>
+    <Box flexDirection="column" marginY={1} borderStyle="round" borderColor={YELLOW}>
       <Box>
         <Text color={YELLOW} bold>
           ┌─ {msg.name}
@@ -318,7 +318,7 @@ function App() {
   };
 
   return (
-    <Box flexDirection="column" padding={1}>
+    <Box flexDirection="column">
       <Box marginBottom={1}>
         <Text color={CYAN} bold>
           lean
@@ -370,7 +370,7 @@ function App() {
         )}
       </Box>
 
-      <Box borderStyle="round" borderColor={isStreaming ? DIM : CYAN} paddingX={1} paddingY={0} flexDirection="column">
+      <Box borderStyle="round" borderColor={isStreaming ? DIM : CYAN} flexDirection="column">
         {renderInput()}
         <Box>
           <Text dimColor>Enter submit • Ctrl+Enter newline • ↑/↓ history • /help • c collapse tools • Ctrl+C quit</Text>
