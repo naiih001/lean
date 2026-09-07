@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, memo } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback, memo } from "react";
 import { render, Box, Text, useInput, useApp, useStdout } from "ink";
 import { runAgent } from "./agent.ts";
 import { DEFAULT_MODEL } from "./llm.ts";
@@ -20,9 +20,11 @@ function Spinner() {
   return <Text color={theme.accent}>{frames[frame]}</Text>;
 }
 
-const ToolPanel = memo(function ToolPanel({ msg, onToggle }: { msg: Extract<Msg, { role: "tool" }>; onToggle: () => void }) {
-  const bytes = Buffer.byteLength(msg.result || "", "utf-8");
-  const lines = (msg.result || "").split("\n").length;
+const ToolPanel = memo(function ToolPanel({ msg, onToggle }: { msg: Extract<Msg, { role: "tool" }>; onToggle: (id: string) => void }) {
+  const lines = useMemo(() => (msg.result || "").split("\n"), [msg.result]);
+  const bytes = useMemo(() => Buffer.byteLength(msg.result || "", "utf-8"), [msg.result]);
+  const argsJson = useMemo(() => JSON.stringify(msg.args, null, 2), [msg.args]);
+  const argsJsonFlat = useMemo(() => JSON.stringify(msg.args), [msg.args]);
   return (
     <Box flexDirection="column" marginY={1} backgroundColor={theme.toolBg}>
       <Box>
@@ -30,35 +32,67 @@ const ToolPanel = memo(function ToolPanel({ msg, onToggle }: { msg: Extract<Msg,
           {msg.name}
         </Text>
         <Text color={theme.toolText} backgroundColor={theme.toolBg} dimColor>
-          #{msg.id.slice(0, 6)} {msg.collapsed ? "▶" : "▼"} {bytes}B {lines}L
+          #{msg.id.slice(0, 6)} {msg.collapsed ? "▶" : "▼"} {bytes}B {lines.length}L
         </Text>
       </Box>
       {!msg.collapsed && (
         <>
           <Box>
             <Text backgroundColor={theme.toolBg} color={theme.toolText} dimColor>
-              {JSON.stringify(msg.args, null, 2)}
+              {argsJson}
             </Text>
           </Box>
           <Box flexDirection="column">
-            {msg.result.split("\n").slice(0, 200).map((line, i) => (
+            {lines.slice(0, 200).map((line, i) => (
               <Box key={i}>
                 <Text backgroundColor={theme.toolBg} color={theme.toolText}>
                   {line}
                 </Text>
               </Box>
             ))}
-            {lines > 200 && <Text color={theme.dim}>… {lines - 200} more lines</Text>}
+            {lines.length > 200 && <Text color={theme.dim}>… {lines.length - 200} more lines</Text>}
           </Box>
         </>
       )}
       {msg.collapsed && (
         <Box>
           <Text backgroundColor={theme.toolBg} color={theme.toolText} dimColor>
-            {JSON.stringify(msg.args).slice(0, 80)}
-            {JSON.stringify(msg.args).length > 80 ? "…" : ""} → {msg.result.slice(0, 60).replace(/\n/g, " ")}
+            {argsJsonFlat.slice(0, 80)}
+            {argsJsonFlat.length > 80 ? "…" : ""} → {msg.result.slice(0, 60).replace(/\n/g, " ")}
             {msg.result.length > 60 ? "…" : ""}
           </Text>
+        </Box>
+      )}
+    </Box>
+  );
+});
+
+const StreamingTail = memo(function StreamingTail({
+  streamingText,
+  streamingReasoning,
+  status,
+}: {
+  streamingText: string;
+  streamingReasoning: string;
+  status: string;
+}) {
+  return (
+    <Box flexDirection="column" marginY={1}>
+      {streamingReasoning && (
+        <Box>
+          <Text color={theme.thinking} italic>
+            {streamingReasoning.slice(-200)}
+          </Text>
+        </Box>
+      )}
+      {streamingText ? (
+        <Box flexDirection="column">
+          <Text color={theme.assistantText}>{streamingText}</Text>
+        </Box>
+      ) : (
+        <Box>
+          <Spinner />
+          <Text color={theme.dim}> {status || "thinking…"}</Text>
         </Box>
       )}
     </Box>
@@ -78,6 +112,7 @@ function App() {
   const [streamingText, setStreamingText] = useState("");
   const [streamingReasoning, setStreamingReasoning] = useState("");
   const [status, setStatus] = useState("");
+  const [scrollOffset, setScrollOffset] = useState(0); // 0 = auto-follow bottom, positive = lines scrolled up
   const textBufRef = useRef("");
   const reasoningBufRef = useRef("");
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -261,11 +296,30 @@ function App() {
       }
     }
 
+    // scroll controls
+    if (key.pageUp) {
+      setScrollOffset((prev) => prev + 10);
+      return;
+    }
+    if (key.pageDown) {
+      setScrollOffset((prev) => Math.max(0, prev - 10));
+      return;
+    }
+    if (key.home) {
+      setScrollOffset(messages.length * 2); // approximate max scroll
+      return;
+    }
+    if (key.end) {
+      setScrollOffset(0); // auto-follow bottom
+      return;
+    }
+
     if (key.return && !key.ctrl) {
       // Enter submits
       const toSubmit = input;
       setInput("");
       setCursor(0);
+      setScrollOffset(0); // snap to bottom on submit
       handleSubmit(toSubmit);
       return;
     }
@@ -325,6 +379,10 @@ function App() {
     }
   });
 
+  const handleToggle = useCallback((id: string) => {
+    setMessages((prev) => prev.map((x) => (x.id === id ? { ...x, collapsed: !x.collapsed } : x)));
+  }, []);
+
   const renderInput = () => {
     const before = input.slice(0, cursor);
     const at = input.slice(cursor, cursor + 1) || " ";
@@ -372,17 +430,98 @@ function App() {
     );
   };
 
+  // Compute viewport height for scroll windowing
+  const termRows = stdout.rows || 24;
+  // Reserve: 2 header lines + 3 input box lines + 1 margin = 6 lines for chrome
+  const contentRows = Math.max(5, termRows - 6);
+
+  // Calculate approximate lines per message for scroll positioning
+  const messageLines = useMemo(() => {
+    return messages.map((m) => {
+      if (m.role === "user" || m.role === "assistant") {
+        const text = m.content || "";
+        return Math.max(1, text.split("\n").length) + 2; // +2 for marginY=1 (2 blank lines)
+      }
+      if (m.role === "thinking") {
+        const text = m.content || "";
+        return Math.max(1, text.split("\n").length) + 2;
+      }
+      if (m.role === "tool") {
+        if (m.collapsed) return 3; // title + summary + margin
+        const resultLines = (m.result || "").split("\n").length;
+        const argsLines = JSON.stringify(m.args, null, 2).split("\n").length;
+        return 3 + argsLines + Math.min(200, resultLines) + 2; // header + args + result + margin
+      }
+      return 1;
+    });
+  }, [messages]);
+
+  const totalLines = useMemo(() => messageLines.reduce((a, b) => a + b, 0), [messageLines]);
+
+  // Streaming tail is ~1-3 lines
+  const streamingLines = streamingText || streamingReasoning ? 2 : 0;
+  const maxScroll = Math.max(0, totalLines + streamingLines - contentRows);
+
+  // Clamp scrollOffset
+  const clampedScroll = Math.min(scrollOffset, maxScroll);
+
+  // If not scrolled up (auto-follow), render from end
+  // Otherwise, calculate which messages to show
+  const visibleMessages = useMemo(() => {
+    if (clampedScroll === 0) {
+      // Auto-follow: show as many messages as fit, streaming at bottom
+      // Walk backwards and collect messages until we fill the viewport
+      let linesNeeded = contentRows - streamingLines;
+      const result: { msg: Msg; visible: boolean }[] = [];
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const ml = messageLines[i]!;
+        if (linesNeeded <= 0) break;
+        result.unshift({ msg: messages[i]!, visible: true });
+        linesNeeded -= ml;
+      }
+      return result;
+    }
+    // Scrolled up: skip lines from the bottom, then show viewport
+    let skipLines = clampedScroll;
+    let startIdx = messages.length;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const ml = messageLines[i]!;
+      if (skipLines <= 0) {
+        startIdx = i;
+        break;
+      }
+      skipLines -= ml;
+      if (skipLines <= 0) {
+        startIdx = i;
+        break;
+      }
+    }
+    // Now collect messages from startIdx to fill contentRows
+    let linesNeeded = contentRows;
+    const result: { msg: Msg; visible: boolean }[] = [];
+    for (let i = startIdx; i < messages.length && linesNeeded > 0; i++) {
+      result.push({ msg: messages[i]!, visible: true });
+      linesNeeded -= messageLines[i]!;
+    }
+    return result;
+  }, [messages, messageLines, clampedScroll, contentRows, streamingLines]);
+
+
+
   return (
     <Box flexDirection="column">
       <Box marginBottom={1}>
         <Text color={theme.accent} bold>
           lean
         </Text>
-        <Text color={theme.dim}> — light coding assistant • {model} • max 20 steps • {"~/.agents/skills"}</Text>
+        <Text color={theme.dim}> — light coding assistant • {model} • max 100 steps • {"~/.agents/skills"}</Text>
+        {clampedScroll > 0 && (
+          <Text color={theme.accent}> [SCROLLED ↑{clampedScroll}lines]</Text>
+        )}
       </Box>
 
       <Box flexDirection="column" flexGrow={1}>
-        {messages.map((m) => {
+        {visibleMessages.map(({ msg: m }) => {
           if (m.role === "user") {
             return (
               <Box key={m.id} marginY={1}>
@@ -407,37 +546,19 @@ function App() {
             );
           }
           if (m.role === "tool") {
-            return <ToolPanel key={m.id} msg={m} onToggle={() => setMessages((prev) => prev.map((x) => (x.id === m.id ? { ...x, collapsed: !x.collapsed } : x)))} />;
+            return <ToolPanel key={m.id} msg={m} onToggle={handleToggle} />;
           }
           return null;
         })}
-        {isStreaming && (
-          <Box flexDirection="column" marginY={1}>
-            {streamingReasoning && (
-              <Box>
-                <Text color={theme.thinking} italic>
-                  {streamingReasoning.slice(-200)}
-                </Text>
-              </Box>
-            )}
-            {streamingText ? (
-              <Box flexDirection="column">
-                <Text color={theme.assistantText}>{streamingText}</Text>
-              </Box>
-            ) : (
-              <Box>
-                <Spinner />
-                <Text color={theme.dim}> {status || "thinking…"}</Text>
-              </Box>
-            )}
-          </Box>
+        {isStreaming && scrollOffset === 0 && (
+          <StreamingTail streamingText={streamingText} streamingReasoning={streamingReasoning} status={status} />
         )}
       </Box>
 
       <Box borderStyle="round" borderColor={isStreaming ? theme.dim : theme.accent} flexDirection="column">
         {renderInput()}
         <Box>
-          <Text color={theme.dim}>Enter submit • Ctrl+Enter newline • ↑/↓ history • /help • c collapse tools • Ctrl+C quit</Text>
+          <Text color={theme.dim}>Enter submit • Ctrl+Enter newline • ↑/↓ history • PgUp/PgDn scroll • /help • c collapse • Ctrl+C quit</Text>
         </Box>
       </Box>
     </Box>

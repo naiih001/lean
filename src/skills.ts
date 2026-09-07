@@ -9,6 +9,12 @@ export type Skill = {
   content: string;
 };
 
+// ── P1 skills cache ─────────────────────────────────────────────────────────
+let _cached: Skill[] | null = null;
+let _cachedAt = 0;
+const CACHE_TTL_MS = 60_000;
+// ─────────────────────────────────────────────────────────────────────────────
+
 function parseFrontmatter(raw: string): { name?: string; description?: string; body: string } {
   if (!raw.startsWith("---")) return { body: raw };
   const end = raw.indexOf("\n---", 3);
@@ -59,6 +65,9 @@ async function scanDir(base: string): Promise<Skill[]> {
 }
 
 export async function discoverSkills(): Promise<Skill[]> {
+  // Return cached result if still fresh
+  if (_cached && Date.now() - _cachedAt < CACHE_TTL_MS) return _cached;
+
   const home = homedir();
   const bases = [
     join(process.cwd(), "skills"),
@@ -70,18 +79,19 @@ export async function discoverSkills(): Promise<Skill[]> {
   for (const base of bases) {
     const found = await scanDir(base);
     for (const s of found) {
-      // later bases win? general should win over local? actually local should win for override
-      // We scan in order local -> general, so general overwrites local — reverse to make local win
-      // Instead, let local win: only set if not exists, or overwrite if from local?
-      // Simple: first wins, but we want project local to override general
-      // So check: if not exists, set; if exists and base is project local, overwrite
+      // local project dirs win over general ~/.agents/skills
       const isLocal = base.startsWith(process.cwd());
       if (!all.has(s.name) || isLocal) {
         all.set(s.name, s);
       }
     }
   }
-  return [...all.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const result = [...all.values()].sort((a, b) => a.name.localeCompare(b.name));
+
+  // Store in cache
+  _cached = result;
+  _cachedAt = Date.now();
+  return result;
 }
 
 export async function loadSkill(name: string): Promise<string> {
