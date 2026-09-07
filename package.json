@@ -1,0 +1,22 @@
+{
+  "name": "lean",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "run": "bun ./src/",
+    "start": "bun src/index.ts",
+    "lean": "bun src/index.ts",
+    "check": "bun --check src/*.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "openai": "^7.10.0"
+  }
+}
