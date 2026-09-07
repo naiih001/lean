@@ -112,6 +112,13 @@ export async function webSearch(query: string): Promise<SearchResult[]> {
     }));
 }
 
+// --- skills ---
+
+export async function readSkill(name: string): Promise<string> {
+  const { loadSkill } = await import("./skills.ts");
+  return await loadSkill(name);
+}
+
 // --- dispatcher ---
 
 export async function executeTool(name: string, args: any): Promise<string> {
@@ -126,6 +133,8 @@ export async function executeTool(name: string, args: any): Promise<string> {
       return await runBash(args.command);
     case "web_search":
       return JSON.stringify(await webSearch(args.query), null, 2);
+    case "read_skill":
+      return await readSkill(args.name);
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
