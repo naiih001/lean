@@ -9,21 +9,20 @@ const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
 const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
+const BOLD = "\x1b[1m";
+const MAGENTA = "\x1b[35m";
 
 function banner() {
   console.log(`${CYAN}lean${RESET} ${DIM}— light coding assistant  •  ${DEFAULT_MODEL}  •  max 20 steps  •  unrestricted${RESET}`);
   console.log(`${DIM}Type your task. /exit to quit.  e.g. "fix the bug in src/tools.ts"${RESET}\n`);
 }
 
-function formatArgs(args: any): string {
-  const s = JSON.stringify(args);
-  if (s.length > 120) return s.slice(0, 117) + "...";
-  return s;
-}
-
-function truncateResult(s: string, limit = 3000): string {
-  if (s.length <= limit) return s;
-  return s.slice(0, limit) + `\n… [truncated ${s.length - limit} chars]`;
+function formatArgsPretty(args: any): string {
+  try {
+    return JSON.stringify(args, null, 2);
+  } catch {
+    return String(args);
+  }
 }
 
 async function handlePrompt(prompt: string, model?: string) {
@@ -45,13 +44,22 @@ async function handlePrompt(prompt: string, model?: string) {
         process.stdout.write("\n");
         inText = false;
       }
-      console.log(`${YELLOW}⎿ ${ev.name}${RESET} ${DIM}${formatArgs(ev.args)}${RESET}`);
+      const pretty = formatArgsPretty(ev.args);
+      const lines = pretty.split("\n");
+      console.log(`${YELLOW}${BOLD}┌─ ${ev.name}${RESET} ${DIM}#${ev.id.slice(0, 8)}${RESET}`);
+      for (const l of lines) {
+        console.log(`${YELLOW}│${RESET} ${DIM}${l}${RESET}`);
+      }
     } else if (ev.type === "tool_result") {
-      const preview = truncateResult(ev.result);
-      // indent result
-      const lines = preview.split("\n").slice(0, 20); // cap lines for TUI
-      const extra = preview.split("\n").length > 20 ? `\n  ${DIM}… ${preview.split("\n").length - 20} more lines${RESET}` : "";
-      console.log(`${DIM}  →${RESET} ${lines.join(`\n  `)}${extra}`);
+      const result = ev.result || "(empty)";
+      const bytes = Buffer.byteLength(result, "utf-8");
+      const lineCount = result.split("\n").length;
+      console.log(`${YELLOW}├─ result${RESET} ${DIM}(${bytes}B, ${lineCount} lines)${RESET}`);
+      // verbatim, no truncation — full stdout/stderr
+      for (const line of result.split("\n")) {
+        console.log(`${YELLOW}│${RESET} ${line}`);
+      }
+      console.log(`${YELLOW}└─${RESET}`);
     } else if (ev.type === "done") {
       if (inText) process.stdout.write("\n");
       console.log(`${GREEN}\nDone.${RESET}\n`);
