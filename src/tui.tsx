@@ -6,7 +6,8 @@ import { theme, ashen } from "./theme.ts";
 
 type Msg =
   | { id: string; role: "user"; content: string }
-  | { id: string; role: "assistant"; content: string; thinking?: string }
+  | { id: string; role: "assistant"; content: string }
+  | { id: string; role: "thinking"; content: string }
   | { id: string; role: "tool"; name: string; args: any; result: string; collapsed: boolean };
 
 function Spinner() {
@@ -170,11 +171,18 @@ function App() {
           }
           flushStreaming();
         } else if (ev.type === "tool_start") {
-          // flush any pending text as assistant msg before tool
+          // flush any pending streams
           if (flushTimerRef.current) {
             clearTimeout(flushTimerRef.current);
             flushTimerRef.current = null;
             flushStreaming();
+          }
+          // persist thinking between tool calls
+          if (reasoningBuf) {
+            addMsg({ id: Math.random().toString(36).slice(2), role: "thinking", content: reasoningBuf });
+            reasoningBuf = "";
+            reasoningBufRef.current = "";
+            setStreamingReasoning("");
           }
           if (buffer) {
             addMsg({ id: Math.random().toString(36).slice(2), role: "assistant", content: buffer });
@@ -182,7 +190,6 @@ function App() {
             textBufRef.current = "";
             setStreamingText("");
           }
-          // add placeholder tool msg (streaming)
           setStatus(`running ${ev.name}…`);
         } else if (ev.type === "tool_result") {
           addMsg({
@@ -200,6 +207,12 @@ function App() {
             flushTimerRef.current = null;
           }
           flushStreaming();
+          // persist any remaining thinking before final answer
+          if (reasoningBuf) {
+            addMsg({ id: Math.random().toString(36).slice(2), role: "thinking", content: reasoningBuf });
+            reasoningBuf = "";
+            reasoningBufRef.current = "";
+          }
           if (buffer || ev.text) {
             const final = ev.text || buffer;
             if (final) addMsg({ id: Math.random().toString(36).slice(2), role: "assistant", content: final });
@@ -381,6 +394,15 @@ function App() {
             return (
               <Box key={m.id} flexDirection="column" marginY={1}>
                 <Text color={theme.assistantText}>{m.content}</Text>
+              </Box>
+            );
+          }
+          if (m.role === "thinking") {
+            return (
+              <Box key={m.id} marginY={1}>
+                <Text color={theme.thinking} italic>
+                  {m.content}
+                </Text>
               </Box>
             );
           }
