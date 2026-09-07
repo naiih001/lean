@@ -10,13 +10,16 @@
     "check": "bun --check src/*.ts"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/react": "^19.2.18"
   },
   "peerDependencies": {
     "typescript": "^5"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
-    "openai": "^7.10.0"
+    "ink": "^7.1.1",
+    "openai": "^7.10.0",
+    "react": "^19.2.8"
   }
 }

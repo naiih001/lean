@@ -2,6 +2,11 @@ import * as readline from "node:readline";
 import { runAgent } from "./agent.ts";
 import { DEFAULT_MODEL } from "./llm.ts";
 
+const args = process.argv.slice(2);
+const promptFromArgs = args.filter((a) => !a.startsWith("--") && !a.startsWith("/")).join(" ").trim();
+const modelFlag = args.find((a) => a.startsWith("--model="))?.split("=")[1];
+const useSimple = args.includes("--simple") || args.includes("--readline");
+
 // Simple readline TUI — lean, pi-like but minimal
 
 const CYAN = "\x1b[36m";
@@ -115,18 +120,35 @@ async function interactive(model?: string) {
   }
 }
 
-// CLI: bun src/index.ts "your prompt"  or  bun src/index.ts  (interactive)
-const args = process.argv.slice(2);
-const promptFromArgs = args.filter((a) => !a.startsWith("--") && !a.startsWith("/")).join(" ").trim();
-const modelFlag = args.find((a) => a.startsWith("--model="))?.split("=")[1];
-
+// CLI mode
 if (promptFromArgs) {
-  // one-shot (still stateless, then exit)
+  // one-shot (still stateless, then exit) — uses boxed readline-style output
   await handlePrompt(promptFromArgs, modelFlag).catch((e) => {
     console.error(e);
     process.exit(1);
   });
   process.exit(0);
 } else {
-  await interactive(modelFlag);
+  // interactive: prefer pi-like Ink TUI if TTY and not --simple, fallback to readline
+  const isTTY = process.stdin.isTTY && process.stdout.isTTY;
+  if (!useSimple && isTTY) {
+    try {
+      const { default: App } = await import("./tui.tsx");
+      const { render } = await import("ink");
+      const React = await import("react");
+      render(React.createElement(App));
+    } catch (e: any) {
+      const msg = e?.message || String(e);
+      if (msg.includes("Raw mode") || msg.includes("isRawModeSupported")) {
+        console.log(`${DIM}Ink TUI needs a TTY (raw mode). Falling back to readline. Use --simple to force readline.${RESET}\n`);
+        await interactive(modelFlag);
+      } else {
+        console.error(`Failed to launch Ink TUI: ${msg}`);
+        console.log(`${DIM}Falling back to readline...${RESET}\n`);
+        await interactive(modelFlag);
+      }
+    }
+  } else {
+    await interactive(modelFlag);
+  }
 }
