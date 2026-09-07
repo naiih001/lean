@@ -360,7 +360,7 @@ function App() {
   };
 
   return (
-    <Box flexDirection="column" backgroundColor={theme.pageBg}>
+    <Box flexDirection="column">
       <Box marginBottom={1}>
         <Text color={theme.accent} bold>
           lean
@@ -372,14 +372,14 @@ function App() {
         {messages.map((m) => {
           if (m.role === "user") {
             return (
-              <Box key={m.id} marginY={1} backgroundColor={theme.userBg}>
+              <Box key={m.id} marginY={1}>
                 <Text color={theme.userText}>{m.content}</Text>
               </Box>
             );
           }
           if (m.role === "assistant") {
             return (
-              <Box key={m.id} flexDirection="column" marginY={1} backgroundColor={theme.assistantBg}>
+              <Box key={m.id} flexDirection="column" marginY={1}>
                 <Text color={theme.assistantText}>{m.content}</Text>
               </Box>
             );
@@ -399,7 +399,7 @@ function App() {
               </Box>
             )}
             {streamingText ? (
-              <Box flexDirection="column" backgroundColor={theme.assistantBg}>
+              <Box flexDirection="column">
                 <Text color={theme.assistantText}>{streamingText}</Text>
               </Box>
             ) : (
