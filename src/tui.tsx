@@ -331,9 +331,6 @@ function App() {
           if (m.role === "user") {
             return (
               <Box key={m.id} marginY={1}>
-                <Text color={CYAN} bold>
-                  you:{" "}
-                </Text>
                 <Text>{m.content}</Text>
               </Box>
             );
@@ -341,9 +338,6 @@ function App() {
           if (m.role === "assistant") {
             return (
               <Box key={m.id} flexDirection="column" marginY={1}>
-                <Text color={GREEN} bold>
-                  lean:
-                </Text>
                 <Text>{m.content}</Text>
               </Box>
             );
@@ -364,9 +358,6 @@ function App() {
             )}
             {streamingText ? (
               <Box flexDirection="column">
-                <Text color={GREEN} bold>
-                  lean:
-                </Text>
                 <Text>{streamingText}</Text>
               </Box>
             ) : (
