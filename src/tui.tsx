@@ -2,16 +2,12 @@ import React, { useState, useEffect } from "react";
 import { render, Box, Text, useInput, useApp, useStdout } from "ink";
 import { runAgent } from "./agent.ts";
 import { DEFAULT_MODEL } from "./llm.ts";
+import { theme, ashen } from "./theme.ts";
 
 type Msg =
   | { id: string; role: "user"; content: string }
   | { id: string; role: "assistant"; content: string; thinking?: string }
   | { id: string; role: "tool"; name: string; args: any; result: string; collapsed: boolean };
-
-const CYAN = "#00ffff";
-const DIM = "gray";
-const YELLOW = "yellow";
-const GREEN = "green";
 
 function Spinner() {
   const [frame, setFrame] = useState(0);
@@ -20,44 +16,44 @@ function Spinner() {
     const id = setInterval(() => setFrame((f) => (f + 1) % frames.length), 80);
     return () => clearInterval(id);
   }, []);
-  return <Text color={YELLOW}>{frames[frame]}</Text>;
+  return <Text color={theme.accent}>{frames[frame]}</Text>;
 }
 
 function ToolPanel({ msg, onToggle }: { msg: Extract<Msg, { role: "tool" }>; onToggle: () => void }) {
   const bytes = Buffer.byteLength(msg.result || "", "utf-8");
   const lines = (msg.result || "").split("\n").length;
   return (
-    <Box flexDirection="column" marginY={1} backgroundColor="gray">
+    <Box flexDirection="column" marginY={1} backgroundColor={theme.toolBg}>
       <Box>
-        <Text color="black" backgroundColor="yellow" bold>
+        <Text color={theme.toolTitleText} backgroundColor={theme.toolTitleBg} bold>
           {msg.name}
         </Text>
-        <Text color="black" backgroundColor="gray" dimColor>
+        <Text color={theme.toolText} backgroundColor={theme.toolBg} dimColor>
           #{msg.id.slice(0, 6)} {msg.collapsed ? "▶" : "▼"} {bytes}B {lines}L
         </Text>
       </Box>
       {!msg.collapsed && (
         <>
           <Box>
-            <Text backgroundColor="gray" color="white" dimColor>
+            <Text backgroundColor={theme.toolBg} color={theme.toolText} dimColor>
               {JSON.stringify(msg.args, null, 2)}
             </Text>
           </Box>
           <Box flexDirection="column">
             {msg.result.split("\n").slice(0, 200).map((line, i) => (
               <Box key={i}>
-                <Text backgroundColor="gray" color="white">
+                <Text backgroundColor={theme.toolBg} color={theme.toolText}>
                   {line}
                 </Text>
               </Box>
             ))}
-            {lines > 200 && <Text dimColor>… {lines - 200} more lines</Text>}
+            {lines > 200 && <Text color={theme.dim}>… {lines - 200} more lines</Text>}
           </Box>
         </>
       )}
       {msg.collapsed && (
         <Box>
-          <Text backgroundColor="gray" color="white" dimColor>
+          <Text backgroundColor={theme.toolBg} color={theme.toolText} dimColor>
             {JSON.stringify(msg.args).slice(0, 80)}
             {JSON.stringify(msg.args).length > 80 ? "…" : ""} → {msg.result.slice(0, 60).replace(/\n/g, " ")}
             {msg.result.length > 60 ? "…" : ""}
@@ -315,27 +311,27 @@ function App() {
   };
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" backgroundColor={theme.pageBg}>
       <Box marginBottom={1}>
-        <Text color={CYAN} bold>
+        <Text color={theme.accent} bold>
           lean
         </Text>
-        <Text dimColor> — light coding assistant • {model} • max 20 steps • {"~/.agents/skills"}</Text>
+        <Text color={theme.dim}> — light coding assistant • {model} • max 20 steps • {"~/.agents/skills"}</Text>
       </Box>
 
       <Box flexDirection="column" flexGrow={1}>
         {messages.map((m) => {
           if (m.role === "user") {
             return (
-              <Box key={m.id} marginY={1}>
-                <Text color="cyan">{m.content}</Text>
+              <Box key={m.id} marginY={1} backgroundColor={theme.userBg}>
+                <Text color={theme.userText}>{m.content}</Text>
               </Box>
             );
           }
           if (m.role === "assistant") {
             return (
-              <Box key={m.id} flexDirection="column" marginY={1}>
-                <Text color="white">{m.content}</Text>
+              <Box key={m.id} flexDirection="column" marginY={1} backgroundColor={theme.assistantBg}>
+                <Text color={theme.assistantText}>{m.content}</Text>
               </Box>
             );
           }
@@ -348,29 +344,29 @@ function App() {
           <Box flexDirection="column" marginY={1}>
             {streamingReasoning && (
               <Box>
-                <Text dimColor italic>
+                <Text color={theme.thinking} italic>
                   {streamingReasoning.slice(-200)}
                 </Text>
               </Box>
             )}
             {streamingText ? (
-              <Box flexDirection="column">
-                <Text color="white">{streamingText}</Text>
+              <Box flexDirection="column" backgroundColor={theme.assistantBg}>
+                <Text color={theme.assistantText}>{streamingText}</Text>
               </Box>
             ) : (
               <Box>
                 <Spinner />
-                <Text dimColor> {status || "thinking…"}</Text>
+                <Text color={theme.dim}> {status || "thinking…"}</Text>
               </Box>
             )}
           </Box>
         )}
       </Box>
 
-      <Box borderStyle="round" borderColor={isStreaming ? DIM : CYAN} flexDirection="column">
+      <Box borderStyle="round" borderColor={isStreaming ? theme.dim : theme.accent} flexDirection="column">
         {renderInput()}
         <Box>
-          <Text dimColor>Enter submit • Ctrl+Enter newline • ↑/↓ history • /help • c collapse tools • Ctrl+C quit</Text>
+          <Text color={theme.dim}>Enter submit • Ctrl+Enter newline • ↑/↓ history • /help • c collapse tools • Ctrl+C quit</Text>
         </Box>
       </Box>
     </Box>
