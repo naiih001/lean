@@ -96,8 +96,10 @@ export async function loadSkill(name: string): Promise<string> {
 
 export async function getSkillCatalog(): Promise<string> {
   const skills = await discoverSkills();
-  if (skills.length === 0) return "No skills installed. Use `npx skills add <skill>` to install to ~/.agents/skills.";
-  return skills
+  // Filter pi-internal meta-skills that should not auto-trigger for every prompt
+  const filtered = skills.filter((s) => s.name !== "using-superpowers");
+  if (filtered.length === 0) return "No skills installed. Use `npx skills add <skill>` to install to ~/.agents/skills.";
+  return filtered
     .map((s) => `- ${s.name}: ${s.description} (path: ${s.path})`)
     .join("\n");
 }
