@@ -1,9 +1,20 @@
 import { client, TOOLS, DEFAULT_MODEL } from "./llm.ts";
 import { executeTool } from "./tools.ts";
+import { getSkillCatalog } from "./skills.ts";
 import type OpenAI from "openai";
 
 export const SYSTEM_PROMPT =
   "You are a lean coding assistant. Use tools to accomplish the task. Be concise. Fully autonomous until task done. Prefer read_file before edit_file. Use bash for inspection. Be helpful and precise.";
+
+export async function buildSystemPrompt(): Promise<string> {
+  const catalog = await getSkillCatalog();
+  return `${SYSTEM_PROMPT}
+
+Available skills (pi-style .md from ~/.agents/skills + project ./skills). Load one or multiple with read_skill when relevant — read_skill returns full SKILL.md instructions to follow:
+${catalog}
+
+When a task matches a skill, call read_skill. You may call multiple read_skill in one step if needed.`;
+}
 
 export type AgentEvent =
   | { type: "text"; delta: string }
@@ -21,8 +32,9 @@ export async function* runAgent(
   const model = opts?.model || DEFAULT_MODEL;
   const maxSteps = opts?.maxSteps ?? 20;
 
+  const systemPrompt = await buildSystemPrompt();
   let messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-    { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: systemPrompt },
     { role: "user", content: userPrompt },
   ];
 

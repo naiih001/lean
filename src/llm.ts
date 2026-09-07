@@ -86,4 +86,19 @@ export const TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "read_skill",
+      description: "Load a skill's SKILL.md by name. Use when task matches a skill's description. You may load multiple skills. Returns full skill instructions to follow.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Skill name, e.g. frontend-design, teach, plan" },
+        },
+        required: ["name"],
+        additionalProperties: false,
+      },
+    },
+  },
 ];
