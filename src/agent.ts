@@ -37,7 +37,7 @@ export async function* runAgent(
   opts?: { model?: string; maxSteps?: number }
 ): AsyncGenerator<AgentEvent, string, unknown> {
   const model = opts?.model || DEFAULT_MODEL;
-  const maxSteps = opts?.maxSteps ?? 20;
+  const maxSteps = opts?.maxSteps ?? 100;
 
   const systemPrompt = await buildSystemPrompt();
   let messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
@@ -116,8 +116,13 @@ export async function* runAgent(
     };
     messages.push(assistantMsg);
 
-    // Execute each tool
-    for (const c of calls) {
+    // P0: Parallel tool execution — yield all tool_starts first, then await all, then yield results in order.
+    // Fall back to sequential if any tool is in SEQUENTIAL_TOOLS (reserved for future use).
+    const SEQUENTIAL_TOOLS: string[] = []; // e.g. ['write_file'] if needed
+    const isSequential = calls.some((c) => SEQUENTIAL_TOOLS.includes(c.name));
+
+    // Prepare all calls with parsed args + ids
+    const prepared = calls.map((c) => {
       let args: any = {};
       try {
         args = c.args ? JSON.parse(c.args) : {};
@@ -125,21 +130,52 @@ export async function* runAgent(
         args = {};
       }
       const id = c.id || `call_${Math.random().toString(36).slice(2, 8)}`;
-      yield { type: "tool_start", name: c.name, args, id };
+      return { ...c, args, id };
+    });
 
-      let result: string;
-      try {
-        result = await executeTool(c.name, args);
-      } catch (e: any) {
-        result = `Error: ${e?.message ?? String(e)}`;
+    if (isSequential) {
+      // Sequential path — preserve original behavior
+      for (const c of prepared) {
+        yield { type: "tool_start", name: c.name, args: c.args, id: c.id };
+        let result: string;
+        try {
+          result = await executeTool(c.name, c.args);
+        } catch (e: any) {
+          result = `Error: ${e?.message ?? String(e)}`;
+        }
+        yield { type: "tool_result", name: c.name, result, id: c.id };
+        messages.push({
+          role: "tool",
+          tool_call_id: c.id,
+          content: truncateForLLM(result),
+        } as any);
+      }
+    } else {
+      // Parallel path — yield all starts, await all, yield all results in order
+      for (const c of prepared) {
+        yield { type: "tool_start", name: c.name, args: c.args, id: c.id };
       }
 
-      yield { type: "tool_result", name: c.name, result, id };
-      messages.push({
-        role: "tool",
-        tool_call_id: id,
-        content: truncateForLLM(result),
-      } as any);
+      const results = await Promise.all(
+        prepared.map(async (c) => {
+          try {
+            return await executeTool(c.name, c.args);
+          } catch (e: any) {
+            return `Error: ${e?.message ?? String(e)}`;
+          }
+        })
+      );
+
+      for (let i = 0; i < prepared.length; i++) {
+        const c = prepared[i];
+        const result = results[i];
+        yield { type: "tool_result", name: c.name, result, id: c.id };
+        messages.push({
+          role: "tool",
+          tool_call_id: c.id,
+          content: truncateForLLM(result),
+        } as any);
+      }
     }
 
     // If we had content + tools, keep content as potential finalText but continue loop

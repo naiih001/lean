@@ -6,6 +6,70 @@ export type SearchResult = {
   snippet: string;
 };
 
+// --- output truncation ---
+// P0: Pre-truncate large tool outputs to prevent TUI/LLM bloat.
+// Dual limit: 2000 lines OR 50KB, whichever hits first. Never splits lines.
+const TRUNCATE_MAX_LINES = 2000;
+const TRUNCATE_MAX_BYTES = 50 * 1024; // 50KB
+
+export function truncateOutput(content: string, strategy: 'head' | 'tail'): string {
+  // Check byte limit first
+  const byteLen = new TextEncoder().encode(content).byteLength;
+  const lines = content.split('\n');
+
+  let truncatedLines = lines;
+  let hitByteLimit = false;
+  let hitLineLimit = false;
+
+  // Apply line limit
+  if (lines.length > TRUNCATE_MAX_LINES) {
+    hitLineLimit = true;
+    if (strategy === 'head') {
+      truncatedLines = lines.slice(0, TRUNCATE_MAX_LINES);
+    } else {
+      truncatedLines = lines.slice(lines.length - TRUNCATE_MAX_LINES);
+    }
+  }
+
+  // Apply byte limit — walk lines to find the cutoff
+  if (new TextEncoder().encode(truncatedLines.join('\n')).byteLength > TRUNCATE_MAX_BYTES) {
+    hitByteLimit = true;
+    const limit = TRUNCATE_MAX_BYTES;
+    let acc = 0;
+    if (strategy === 'head') {
+      const kept: string[] = [];
+      for (const line of truncatedLines) {
+        const lineBytes = new TextEncoder().encode(line).byteLength + 1; // +1 for newline
+        if (acc + lineBytes > limit) break;
+        kept.push(line);
+        acc += lineBytes;
+      }
+      truncatedLines = kept;
+    } else {
+      // tail: iterate from end
+      const kept: string[] = [];
+      for (let i = truncatedLines.length - 1; i >= 0; i--) {
+        const lineBytes = new TextEncoder().encode(truncatedLines[i]).byteLength + 1;
+        if (acc + lineBytes > limit) break;
+        kept.unshift(truncatedLines[i]);
+        acc += lineBytes;
+      }
+      truncatedLines = kept;
+    }
+  }
+
+  if (truncatedLines.length === lines.length) return content; // nothing truncated
+
+  const result = truncatedLines.join('\n');
+  const origLines = lines.length;
+  const origBytes = byteLen;
+  const keptLines = truncatedLines.length;
+  const keptBytes = new TextEncoder().encode(result).byteLength;
+  const note = `\n… [truncated: kept ${keptLines}/${origLines} lines, ${keptBytes}/${origBytes} bytes]`;
+  // TODO: TUI should display this truncated output + size note to user
+  return result + note;
+}
+
 // --- file tools ---
 
 export async function readFile(path: string): Promise<string> {
@@ -13,7 +77,8 @@ export async function readFile(path: string): Promise<string> {
   if (!(await file.exists())) {
     throw new Error(`File not found: ${path}`);
   }
-  return await file.text();
+  const raw = await file.text();
+  return truncateOutput(raw, 'head');
 }
 
 export async function writeFile(path: string, content: string): Promise<string> {
@@ -27,7 +92,11 @@ export async function writeFile(path: string, content: string): Promise<string> 
 }
 
 export async function editFile(path: string, oldText: string, newText: string): Promise<string> {
-  const content = await readFile(path);
+  const file = Bun.file(path);
+  if (!(await file.exists())) {
+    throw new Error(`File not found: ${path}`);
+  }
+  const content = await file.text();
   const occurrences = content.split(oldText).length - 1;
   if (occurrences === 0) {
     throw new Error(`edit_file: oldText not found in ${path}`);
@@ -57,7 +126,8 @@ export async function runBash(command: string): Promise<string> {
   }
   if (!out) out = `(no output, exit ${exitCode})`;
   else out += `\n[exit ${exitCode}]`;
-  return out;
+  // Keep exit code line visible by truncating from top (tail strategy preserves errors at bottom)
+  return truncateOutput(out, 'tail');
 }
 
 // --- web search ---
