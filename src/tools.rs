@@ -1,3 +1,4 @@
+use base64::Engine;
 use std::path::Path;
 
 const MAX_LINES: usize = 2000;
@@ -88,10 +89,73 @@ pub async fn read_file(path: &str) -> Result<String, String> {
     if !p.exists() {
         return Err(format!("File not found: {}", path));
     }
+    if is_image_file(path) {
+        return read_image(path).await;
+    }
     let raw = tokio::fs::read_to_string(p)
         .await
         .map_err(|e| format!("read error: {}", e))?;
     Ok(truncate_output(&raw, TruncateStrategy::Head))
+}
+
+/// Return the MIME type for a file extension, if it's a known image format.
+fn image_mime_type(ext: &str) -> Option<&'static str> {
+    match ext.to_lowercase().as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "bmp" => Some("image/bmp"),
+        "svg" => Some("image/svg+xml"),
+        "ico" => Some("image/x-icon"),
+        _ => None,
+    }
+}
+
+/// Check if a file path looks like an image.
+fn is_image_file(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .and_then(image_mime_type)
+        .is_some()
+}
+
+/// Read an image file and return its base64-encoded content.
+/// The returned string contains the special marker `<<IMAGE:mime:base64>>`
+/// which agent.rs uses to construct a multimodal content message.
+async fn read_image(path: &str) -> Result<String, String> {
+    let p = Path::new(path);
+    if !p.exists() {
+        return Err(format!("File not found: {}", path));
+    }
+    let ext = p.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let mime = image_mime_type(&ext).unwrap_or("image/png");
+    let bytes = tokio::fs::read(p)
+        .await
+        .map_err(|e| format!("read error: {}", e))?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!(
+        "Read image: {} ({}. {})\n<<IMAGE:{}:{}>>",
+        path,
+        mime,
+        human_size(bytes.len()),
+        mime,
+        encoded
+    ))
+}
+
+fn human_size(bytes: usize) -> String {
+    if bytes >= 1_048_576 {
+        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{} B", bytes)
+    }
 }
 
 pub async fn write_file(path: &str, content: &str) -> Result<String, String> {

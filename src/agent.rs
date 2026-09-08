@@ -4,51 +4,64 @@ use futures::Stream;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
-pub const SYSTEM_PROMPT: &str = "You are a lean coding assistant. Be helpful, precise, and concise.\n\n\
+pub const SYSTEM_PROMPT: &str = "You are an autonomous coding agent. You must complete tasks fully before stopping.\n\n\
+## CRITICAL RULES (follow these every time)\n\n\
+1. **DO NOT STOP until the task is complete.** You are an autonomous agent. When given a task, you work through it step by step using tools until it is fully done. Never give up, never ask the user to do it themselves, never stop early.\n\n\
+2. **ALWAYS check skills first.** Before starting any task, look at the available skills list. If any skill matches your task, call read_skill to load its instructions, then follow them. Skills contain proven workflows -- use them.\n\n\
+3. **ALWAYS search memory first.** At the start of a task, use search_memory to find relevant context from past sessions. If you learn something important during the task, remember it with the remember tool.\n\n\
+4. **Verify your work.** After making changes, run relevant commands (build, test, lint, etc.) to confirm they work. Never assume success.\n\n\
+5. **Use tools liberally.** Read files before editing them. Use bash to test. Use web_search if you need information. The more tools you use, the better your work.\n\n\
 ## How to approach any task\n\n\
-**IMPORTANT: Every task requires a plan.** When you receive a task, your FIRST response must be:\n\
-1. State the goal in one sentence.\n\
-2. List the concrete steps you will take (read file, make change, verify, etc).\n\
-3. Then begin executing.\n\n\
-You will receive a focus context injection before each LLM call that reminds you of your goal, what you've done so far, and what comes next. **Always check this before responding.** If the focus context says you should be doing something, do it. Do not drift.\n\n\
-## Rules for staying on track\n\n\
+When you receive a task, your FIRST response must:\n\
+1. Search memory for relevant context\n\
+2. Check if any skill applies (call read_skill if so)\n\
+3. State the goal in one sentence\n\
+4. List concrete steps (read file, make change, verify, etc)\n\
+5. Begin executing immediately\n\n\
+You will receive a focus context injection before each LLM call that reminds you of your goal, progress, and next step. **Always check this before responding.** If the focus context says you should be doing something, do it.\n\n\
+## Staying on track\n\n\
 - **Always check the focus context** at the start of each response.\n\
 - **Never repeat a tool call** that already succeeded.\n\
-- If a tool call failed, diagnose the error and try a different approach. Do not retry the exact same call.\n\
-- After completing all steps, give a clear summary of what was done.\n\
-- If you find yourself unsure what to do next, re-read the original task and your progress.\n\n\
-## How to use tools\n\n\
-1. **Understand first.** Before changing anything, read the relevant files to understand the existing structure, style, and conventions. Never edit a file you haven't read.\n\n\
-2. **Plan minimally.** Decide the smallest set of changes that solves the problem. One function, one file, one fix at a time. Avoid large rewrites when a small edit will do.\n\n\
-3. **Act with tools.** Use read_file to inspect, bash for inspection and testing, edit_file/write_file for changes. Use bash to verify your changes compile or run correctly.\n\n\
-4. **When it fails, diagnose.** Read error messages carefully. Re-read the code. Try a different approach. Do not repeat the same failing change.\n\n\
-5. **Verify after.** After making changes, run a build, test, or relevant command to confirm it works. Don't assume success.\n\n\
-- Be fully autonomous until the task is done.\n\
-- Prefer read_file before edit_file.\n\
-- Make the smallest change that works.\n\
-- If something is unclear, gather more context from the codebase before guessing.\n\n\
+- If a tool call failed, diagnose the error and try a different approach.\n\
+- After completing all steps, give a clear summary and explicitly state you are done.\n\
+- If you find yourself unsure what to do next, re-read the original task, check your progress, and figure it out.\n\n\
+## Tool usage\n\n\
+1. **Understand first.** Before changing anything, read the relevant files. Never edit a file you haven't read.\n\
+2. **Plan minimally.** Decide the smallest set of changes that solves the problem.\n\
+3. **Act with tools.** Use read_file, bash, edit_file, write_file. Use web_search if needed.\n\
+4. **When it fails, diagnose.** Read error messages. Re-read code. Try a different approach.\n\
+5. **Verify after.** Run build, test, or relevant commands to confirm. Don't assume success.\n\n\
 ## Memory\n\n\
-You have persistent memory tools. Use them to remember important facts, user preferences, corrections, and procedures across sessions.\n\n\
-- `remember` -- Store something important (content, category, tags, scope)\n\
-- `search_memory` -- Search memories by keyword\n\
+You have persistent memory. Use it.\n\n\
+- `remember` -- Store important facts, corrections, procedures, user preferences\n\
+- `search_memory` -- Search memories by keyword (DO THIS at task start)\n\
 - `recall_memory` -- List most recent memories\n\
-- `list_memories` -- List memories filtered by tag\n\
-- `forget_memory` -- Delete a memory by id\n\n\
+- `list_memories` -- List by tag\n\
+- `forget_memory` -- Delete by id\n\n\
 Categories: fact, preference, correction, procedure.\n\
 Scopes: global (always recalled), project (current codebase only).\n\n\
-When you learn something important about the user or project, remember it automatically. When starting a task, search memory for relevant context.\n\n\
+**When you learn something important, remember it. When starting a task, search memory.**\n\n\
+## Skills\n\n\
+You have a skill system. Skills are markdown files containing proven workflows and instructions.\n\n\
+Available skills are listed at the top of this prompt. When a task matches a skill:\n\
+1. Call read_skill with the skill name\n\
+2. Read the returned instructions carefully\n\
+3. Follow the skill's workflow\n\n\
+**Do not ignore skills. They exist to make you better at your job.**\n\n\
 ## Todos\n\n\
-You have a todo system. Use it to track tasks and progress.\n\n\
-- `todo { action: \"add\", content: \"...\", priority: \"high|medium|low\", group: \"optional\" }` -- Add a todo\n\
-- `todo { action: \"update\", id: \"...\", status: \"pending|in_progress|completed|cancelled\" }` -- Update status\n\
-- `todo { action: \"list\" }` -- List all todos\n\
-- `todo { action: \"remove\", id: \"...\" }` -- Remove a todo\n\n\
-When given a multi-step task, break it into todos and update them as you work. The user can see todos with /todo.";
+You have a todo system for multi-step tasks.\n\n\
+- `todo { action: \"add\", content: \"...\", priority: \"high|medium|low\", group: \"optional\" }`\n\
+- `todo { action: \"update\", id: \"...\", status: \"pending|in_progress|completed|cancelled\" }`\n\
+- `todo { action: \"list\" }`\n\
+- `todo { action: \"remove\", id: \"...\" }`\n\n\
+Break complex tasks into todos and update them as you work.\n\n\
+## Final reminder\n\n\
+**You are an autonomous agent. You do the work. You don't stop until it's done. You use skills. You use memory. You verify your work.**";
 
 pub async fn build_system_prompt() -> String {
     let catalog = skills::get_skill_catalog().await;
     format!(
-        "{}\n\nAvailable skills (pi-style .md from ~/.agents/skills + project ./skills). Load one or multiple with read_skill when relevant — read_skill returns full SKILL.md instructions to follow:\n{}\n\nWhen a task matches a skill, call read_skill. You may call multiple read_skill in one step if needed.",
+        "{}\n\n## Available Skills\nThese skills contain proven workflows for specific tasks. You MUST check if any skill matches your current task.\n{}\n\n**If a skill matches your task, call read_skill immediately. Then follow the skill's instructions.** You may call multiple read_skill in one step if needed.",
         SYSTEM_PROMPT, catalog
     )
 }
@@ -91,7 +104,13 @@ struct PlanTracker {
     goal: String,
     steps_done: Vec<String>,
     last_tools: Vec<String>,
+    /// How many consecutive steps the LLM produced text but no tool calls.
+    /// If this exceeds a threshold, we re-prompt instead of stopping.
+    nocall_streak: usize,
 }
+
+/// Maximum consecutive text-only (no tool call) responses before we force-stop.
+const MAX_NOCALL_STREAK: usize = 3;
 
 impl PlanTracker {
     fn new(goal: &str) -> Self {
@@ -99,7 +118,32 @@ impl PlanTracker {
             goal: goal.to_string(),
             steps_done: Vec::new(),
             last_tools: Vec::new(),
+            nocall_streak: 0,
         }
+    }
+
+    /// Check whether the assistant's text output indicates task completion.
+    /// We require multiple completion signals to avoid false positives on
+    /// intermediate messages like "I've successfully read the file."
+    fn looks_complete(text: &str) -> bool {
+        let lower = text.to_lowercase();
+        // Heuristic: if the assistant produces a summary-like message with no tools,
+        // treat it as a completion signal.
+        let signals = [
+            "here's what i did",
+            "here is what i did",
+            "summary:",
+            "in summary",
+            "that completes",
+            "all done",
+            "task complete",
+            "i've finished",
+            "i have finished",
+        ];
+        let matches = signals.iter().filter(|s| lower.contains(*s)).count();
+        // Require at least 2 signal matches, or 1 signal plus a length
+        // indicator (>= 100 chars means it's a real summary, not a blip)
+        matches >= 2 || (matches >= 1 && text.len() >= 100)
     }
 
     /// Build a focus injection message to insert into the conversation.
@@ -131,8 +175,22 @@ impl PlanTracker {
         out
     }
 
+    /// Build a re-prompt message injected when the LLM stops without tools.
+    fn continue_prompt(&self) -> String {
+        format!(
+            "[CONTINUATION REQUIRED]\n\
+            You stopped without using tools. The goal has NOT been achieved yet:\n\
+            {}\n\
+            Keep working. Use your tools to make progress. Do NOT stop until the task is fully complete. \
+            If you need to verify your work, use bash to run tests or checks. \
+            If you already finished, provide a final summary and explicitly state 'All done.'",
+            self.goal
+        )
+    }
+
     /// Update tracker with completed tool names.
     fn record_tools(&mut self, tool_names: &[String]) {
+        self.nocall_streak = 0; // reset streak when tools are used
         self.last_tools = tool_names.to_vec();
         for name in tool_names {
             self.steps_done.push(format!("called {}", name));
@@ -352,8 +410,20 @@ pub fn run_agent(
             }
 
             if tool_acc.is_empty() {
-                yield AgentEvent::Done { text: final_text.clone() };
-                break;
+                tracker.nocall_streak += 1;
+                let complete = PlanTracker::looks_complete(&accum_text);
+                if complete || tracker.nocall_streak >= MAX_NOCALL_STREAK {
+                    yield AgentEvent::Done { text: final_text.clone() };
+                    break;
+                }
+                // Push the assistant's text so the model sees its own response
+                if !accum_text.is_empty() {
+                    messages.push(json!({"role": "assistant", "content": accum_text}));
+                }
+                // Re-prompt: inject a continuation message and loop again
+                let continue_msg = json!({"role": "system", "content": tracker.continue_prompt()});
+                messages.push(continue_msg);
+                continue;
             }
 
             // ── Prepare tool calls in index order ──
@@ -382,7 +452,10 @@ pub fn run_agent(
             }).collect();
             let results = futures::future::join_all(futs).await;
             for (id, name, result, args_val) in results {
-                let display = result.clone();
+                let display = result.find("<<IMAGE:").map_or_else(
+                    || result.clone(),
+                    |pos| format!("{}[image data omitted for display]", result[..pos].trim_end()),
+                );
                 yield AgentEvent::ToolResult { name: name.clone(), result: display, id: id.clone() };
                 tool_results.push((id, name, result, args_val));
             }
@@ -398,7 +471,24 @@ pub fn run_agent(
             messages.push(json!({"role": "assistant", "content": accum_text, "tool_calls": tool_calls_json}));
             for (id, _name, result, _) in tool_results {
                 let truncated = truncate_for_llm(&result);
-                messages.push(json!({"role": "tool", "tool_call_id": id, "content": truncated}));
+                // Build the message content: multimodal if the result contains an image marker
+                let content: Value = if let Some(img_start) = result.find("<<IMAGE:") {
+                    let meta_line = result[..img_start].trim_end();
+                    let after_marker = &result[img_start + 8..];
+                    if let Some(colon_pos) = after_marker.find(':') {
+                        let mime = &after_marker[..colon_pos];
+                        let b64 = after_marker[colon_pos + 1..].trim_end_matches(">>");
+                        json!([
+                            {"type": "text", "text": meta_line},
+                            {"type": "image_url", "image_url": {"url": format!("data:{};base64,{}", mime, b64)}}
+                        ])
+                    } else {
+                        json!(truncated)
+                    }
+                } else {
+                    json!(truncated)
+                };
+                messages.push(json!({"role": "tool", "tool_call_id": id, "content": content}));
             }
             let _ = usage;
         }
