@@ -118,6 +118,76 @@ pub fn tool_definitions() -> Vec<Value> {
                 }
             }
         }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "remember",
+                "description": "Store a memory for future recall",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string", "description": "What to remember"},
+                        "category": {"type": "string", "description": "fact, preference, correction, or procedure"},
+                        "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags for search"},
+                        "scope": {"type": "string", "description": "global or project"}
+                    },
+                    "required": ["content"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "search_memory",
+                "description": "Search stored memories by keyword",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Keywords to search for"}
+                    },
+                    "required": ["query"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "recall_memory",
+                "description": "Recall the most recent stored memories",
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "list_memories",
+                "description": "List memories by tag",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "tag": {"type": "string", "description": "Tag to filter by"}
+                    },
+                    "required": ["tag"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "forget_memory",
+                "description": "Delete a memory by id",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string", "description": "Memory id to forget"}
+                    },
+                    "required": ["id"]
+                }
+            }
+        }),
     ]
 }
 
