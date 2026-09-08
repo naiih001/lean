@@ -752,6 +752,26 @@ async fn app_loop(
                                 role: "system".into(),
                                 content: "[interrupted]".into(),
                             });
+                            // Drain queued messages: spawn the next one
+                            if !msg_queue.is_empty() {
+                                let next = msg_queue.remove(0);
+                                messages.push(Msg {
+                                    role: "user".into(),
+                                    content: next.clone(),
+                                });
+                                agent_busy = true;
+                                step_info = "...".into();
+                                let tx_clone = tx.clone();
+                                let model_clone = model.clone();
+                                agent_handle = Some(tokio::spawn(async move {
+                                    let stream = agent::run_agent(next, model_clone, 100);
+                                    use futures::StreamExt;
+                                    let mut s = Box::pin(stream);
+                                    while let Some(ev) = s.next().await {
+                                        let _ = tx_clone.send(ev);
+                                    }
+                                }));
+                            }
                         }
                     }
                     KeyCode::Char('d') if k.modifiers.contains(KeyModifiers::CONTROL) => break,
