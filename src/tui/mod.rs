@@ -306,6 +306,49 @@ fn draw_separator(f: &mut Frame, area: Rect) {
     f.render_widget(sep, area);
 }
 
+/// Wrap lines to fit within a given width.
+fn wrap_lines(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
+    if width == 0 {
+        return lines;
+    }
+    let mut out = Vec::new();
+    for line in lines {
+        // Calculate total text width of this line
+        let total: usize = line
+            .spans
+            .iter()
+            .map(|s| s.content.chars().count())
+            .sum();
+        if total <= width {
+            out.push(line);
+            continue;
+        }
+        // Split into segments that fit
+        let mut remaining = width;
+        let mut seg_spans: Vec<Span<'static>> = Vec::new();
+        for span in &line.spans {
+            let chars: Vec<char> = span.content.chars().collect();
+            let mut pos = 0;
+            while pos < chars.len() && remaining > 0 {
+                let take = chars.len().min(pos + remaining);
+                let chunk: String = chars[pos..take].iter().collect();
+                seg_spans.push(Span::styled(chunk, span.style));
+                remaining -= take - pos;
+                pos = take;
+                if remaining == 0 {
+                    out.push(Line::from(seg_spans));
+                    seg_spans = Vec::new();
+                    remaining = width;
+                }
+            }
+        }
+        if !seg_spans.is_empty() {
+            out.push(Line::from(seg_spans));
+        }
+    }
+    out
+}
+
 fn draw_content(
     f: &mut Frame,
     area: Rect,
@@ -354,8 +397,10 @@ fn draw_content(
         ];
     }
 
-    let para = Paragraph::new(all_lines)
-        .style(Style::default().bg(THEME.page_bg))
+    // Wrap lines to fit the content area width
+    let wrapped = wrap_lines(all_lines, area.width as usize);
+
+    let para = Paragraph::new(wrapped)
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
     f.render_widget(para, area);
