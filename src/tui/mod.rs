@@ -5,7 +5,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 use std::io::Stdout;
 
@@ -264,20 +264,15 @@ fn merge_thinking(messages: &[Msg]) -> Vec<Msg> {
 
 // ── Rendering helpers ──────────────────────────────────────────
 
-fn draw_header(f: &mut Frame, area: Rect, model: &str, step_info: &str, spinner_tick: usize) {
+fn draw_header(f: &mut Frame, area: Rect, model: &str, step_info: &str) {
     let inner = area;
     let width = inner.width as usize;
 
     // Left: app name
     let left = " lean ";
-    // Right: model + step + spinner
-    let spinner = ["\u{280b}", "\u{2819}", "\u{2813}", "\u{2827}", "\u{2836}", "\u{2834}", "\u{2826}", "\u{282e}"];
-    let spinner_char = spinner[spinner_tick % spinner.len()];
+    // Right: model + step
     let right = if step_info.is_empty() {
         format!(" {} ", model)
-    } else if step_info == "..." {
-        // Waiting for agent — show spinner
-        format!(" {} {} {} ", spinner_char, model, spinner_char)
     } else {
         format!(" {} · {} ", model, step_info)
     };
@@ -380,17 +375,11 @@ fn wrap_lines(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
     out
 }
 
-/// Build the full list of lines for the content area, wrap them, and render.
-/// Returns the total number of wrapped lines (for scroll calculations).
-fn draw_content(
-    f: &mut Frame,
-    area: Rect,
-    messages: &[Msg],
-    scroll: u16,
-) -> usize {
+/// Build the full list of styled lines from messages (without wrapping).
+fn build_content_lines(messages: &[Msg]) -> Vec<Line<'static>> {
     let mut all_lines: Vec<Line<'static>> = Vec::new();
-
     let merged = merge_thinking(messages);
+
     for (i, m) in merged.iter().enumerate() {
         // Add a thin separator between tool blocks and other messages
         if i > 0
@@ -432,16 +421,9 @@ fn draw_content(
         ];
     }
 
-    // Wrap lines to fit the content area width
-    let wrapped = wrap_lines(all_lines, area.width as usize);
-    let total = wrapped.len();
-
-    let para = Paragraph::new(wrapped)
-        .scroll((scroll, 0));
-    f.render_widget(para, area);
-
-    total
+    all_lines
 }
+
 
 fn draw_input(f: &mut Frame, area: Rect, input_text: &str) {
     let width = area.width as usize;
@@ -476,10 +458,16 @@ fn draw_input(f: &mut Frame, area: Rect, input_text: &str) {
     f.render_widget(para, area);
 }
 
-fn draw_footer(f: &mut Frame, area: Rect, model: &str, msg_count: usize, cwd: &str) {
+fn draw_footer(f: &mut Frame, area: Rect, model: &str, msg_count: usize, cwd: &str, agent_busy: bool, spinner_tick: usize) {
     let width = area.width as usize;
 
-    let left = format!(" {} ", model);
+    let spinner = ["\u{280b}", "\u{2819}", "\u{2813}", "\u{2827}", "\u{2836}", "\u{2834}", "\u{2826}", "\u{282e}"];
+    let left = if agent_busy {
+        let ch = spinner[spinner_tick % spinner.len()];
+        format!(" {} {} ", ch, model)
+    } else {
+        format!(" {} ", model)
+    };
     let right = format!(" {} msgs ", msg_count);
 
     // Shorten cwd to show last 2 components
@@ -666,30 +654,28 @@ async fn app_loop(
         };
         let content_height = chunks[2].height as usize;
 
-        // First pass: render to count wrapped lines, then fix auto-scroll
-        let mut total_lines: usize = 0;
-        terminal.draw(|f| {
-            let bg_block = Block::default().style(Style::default().bg(THEME.page_bg));
-            f.render_widget(bg_block, f.area());
-            total_lines = draw_content(f, chunks[2], &messages, 0);
-        })?;
+        // Build content lines once, wrap once, use for both counting and rendering
+        let content_lines = build_content_lines(&messages);
+        let wrapped_content = wrap_lines(content_lines, chunks[2].width as usize);
+        let total_lines = wrapped_content.len();
         if auto_scroll {
             scroll = total_lines.saturating_sub(content_height) as u16;
         }
 
-        // Second pass: render with correct scroll
+        // Single render pass with correct scroll
         terminal.draw(|f| {
             let bg_block = Block::default().style(Style::default().bg(THEME.page_bg));
             f.render_widget(bg_block, f.area());
 
             // Header
-            draw_header(f, chunks[0], &model, &step_info, spinner_tick);
+            draw_header(f, chunks[0], &model, &step_info);
 
             // Separator
             draw_separator(f, chunks[1]);
 
-            // Content
-            draw_content(f, chunks[2], &messages, scroll);
+            // Content — use pre-wrapped lines
+            let para = Paragraph::new(wrapped_content.clone()).scroll((scroll, 0));
+            f.render_widget(para, chunks[2]);
 
             // Separator
             draw_separator(f, chunks[3]);
@@ -706,7 +692,7 @@ async fn app_loop(
             }
 
             // Footer
-            draw_footer(f, chunks[6], &model, messages.len(), &cwd);
+            draw_footer(f, chunks[6], &model, messages.len(), &cwd, agent_busy, spinner_tick);
         })?;
 
         // Handle keyboard and mouse events
