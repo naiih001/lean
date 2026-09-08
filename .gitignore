@@ -1,4 +1,7 @@
-# dependencies (bun install)
+# Rust
+/target
+
+# legacy JS (gitignored, remove manually: rm -rf node_modules)
 node_modules
 
 # output
