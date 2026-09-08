@@ -16,7 +16,17 @@ pub const SYSTEM_PROMPT: &str = "You are a lean coding assistant. Be helpful, pr
 - Prefer read_file before edit_file.\n\
 - Use bash for inspection, building, and testing — not just for running the user's request.\n\
 - Make the smallest change that works.\n\
-- If something is unclear, gather more context from the codebase before guessing.";
+- If something is unclear, gather more context from the codebase before guessing.\n\n\
+## Memory\n\n\
+You have persistent memory tools. Use them to remember important facts, user preferences, corrections, and procedures across sessions.\n\n\
+- `remember` -- Store something important (content, category, tags, scope)\n\
+- `search_memory` -- Search memories by keyword\n\
+- `recall_memory` -- List most recent memories\n\
+- `list_memories` -- List memories filtered by tag\n\
+- `forget_memory` -- Delete a memory by id\n\n\
+Categories: fact, preference, correction, procedure.\n\
+Scopes: global (always recalled), project (current codebase only).\n\n\
+When you learn something important about the user or project, remember it automatically. When starting a task, search memory for relevant context.";
 
 pub async fn build_system_prompt() -> String {
     let catalog = skills::get_skill_catalog().await;
@@ -32,10 +42,12 @@ fn truncate_for_llm(s: &str) -> String {
     if s.len() <= MAX_TOOL_OUTPUT_FOR_LLM {
         return s.to_string();
     }
+    let truncated: String = s.chars().take(MAX_TOOL_OUTPUT_FOR_LLM).collect();
+    let remaining = s.chars().count() - MAX_TOOL_OUTPUT_FOR_LLM;
     format!(
         "{}… [truncated {} chars for LLM, full shown in TUI]",
-        &s[..MAX_TOOL_OUTPUT_FOR_LLM],
-        s.len() - MAX_TOOL_OUTPUT_FOR_LLM
+        truncated,
+        remaining
     )
 }
 
@@ -73,6 +85,21 @@ pub fn run_agent(
 
         for step in 0..max_steps {
             yield AgentEvent::Step { n: step + 1 };
+
+            // Autorecall: search memories using recent conversation context
+            if step > 0 {
+                // Build context from last few messages
+                let context: String = messages
+                    .iter()
+                    .rev()
+                    .take(4)
+                    .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
+                    .collect::<Vec<&str>>()
+                    .join(" ");
+                if let Some(memory_note) = crate::memory::autorecall(&context) {
+                    messages.insert(1, json!({"role": "system", "content": memory_note}));
+                }
+            }
 
             // Build request
             let body = json!({

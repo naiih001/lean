@@ -1,5 +1,6 @@
 mod agent;
 mod llm;
+mod memory;
 mod skills;
 mod theme;
 mod tools;

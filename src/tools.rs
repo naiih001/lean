@@ -252,6 +252,31 @@ pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
                 Err(e) => Err(format!("{}", e)),
             }
         }
+        "remember" => {
+            let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            let category = args.get("category").and_then(|v| v.as_str()).unwrap_or("fact");
+            let tags: Vec<String> = args.get("tags")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|t| t.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            let scope = args.get("scope").and_then(|v| v.as_str()).unwrap_or("global");
+            Ok(crate::memory::api_remember(content, category, tags, scope))
+        }
+        "search_memory" => {
+            let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            Ok(crate::memory::api_search(q))
+        }
+        "recall_memory" => {
+            Ok(crate::memory::api_recall())
+        }
+        "list_memories" => {
+            let tag = args.get("tag").and_then(|v| v.as_str()).unwrap_or("");
+            Ok(crate::memory::api_list(tag))
+        }
+        "forget_memory" => {
+            let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            Ok(crate::memory::api_forget(id))
+        }
         _ => Err(format!("unknown tool: {}", name)),
     };
     match res {
