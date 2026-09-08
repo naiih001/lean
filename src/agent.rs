@@ -26,7 +26,14 @@ You have persistent memory tools. Use them to remember important facts, user pre
 - `forget_memory` -- Delete a memory by id\n\n\
 Categories: fact, preference, correction, procedure.\n\
 Scopes: global (always recalled), project (current codebase only).\n\n\
-When you learn something important about the user or project, remember it automatically. When starting a task, search memory for relevant context.";
+When you learn something important about the user or project, remember it automatically. When starting a task, search memory for relevant context.\n\n\
+## Todos\n\n\
+You have a todo system. Use it to track tasks and progress.\n\n\
+- `todo { action: \"add\", content: \"...\", priority: \"high|medium|low\", group: \"optional\" }` -- Add a todo\n\
+- `todo { action: \"update\", id: \"...\", status: \"pending|in_progress|completed|cancelled\" }` -- Update status\n\
+- `todo { action: \"list\" }` -- List all todos\n\
+- `todo { action: \"remove\", id: \"...\" }` -- Remove a todo\n\n\
+When given a multi-step task, break it into todos and update them as you work. The user can see todos with /todo.";
 
 pub async fn build_system_prompt() -> String {
     let catalog = skills::get_skill_catalog().await;

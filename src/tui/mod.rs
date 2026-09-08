@@ -605,6 +605,101 @@ fn draw_autocomplete(
     f.render_widget(para, inner);
 }
 
+fn draw_todos(f: &mut Frame, area: Rect) {
+    let todos = crate::todo::get_todos();
+
+    // Calculate popup size
+    let popup_width = (area.width as usize).min(60).max(30) as u16;
+    let max_lines = 20;
+    let line_count = if todos.is_empty() {
+        2 // just header + empty message
+    } else {
+        let mut count = 0;
+        let mut last_group = "";
+        for t in &todos {
+            if t.group != last_group {
+                count += 1; // group header
+                last_group = &t.group;
+            }
+            count += 1;
+        }
+        count
+    };
+    let popup_height = (line_count + 2).min(max_lines + 2) as u16; // +2 for borders
+
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+
+    let rect = Rect {
+        x,
+        y,
+        width: popup_width,
+        height: popup_height,
+    };
+
+    let block = Block::default()
+        .title(" Todos ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ASHEN.charcoal))
+        .style(Style::default().bg(THEME.header_bg));
+
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    if todos.is_empty() {
+        let empty = Paragraph::new(Line::from(Span::styled(
+            "  No todos yet",
+            Style::default().fg(ASHEN.smoke),
+        )));
+        f.render_widget(empty, inner);
+        return;
+    }
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut last_group = String::new();
+    for t in &todos {
+        if t.group != last_group {
+            if !lines.is_empty() {
+                lines.push(Line::from(""));
+            }
+            let group_label = if t.group.is_empty() { "General".to_string() } else { t.group.clone() };
+            lines.push(Line::from(Span::styled(
+                format!("  {}", group_label),
+                Style::default()
+                    .fg(ASHEN.ember)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            last_group = t.group.clone();
+        }
+
+        let (check, status_style) = match t.status {
+            crate::todo::TodoStatus::Completed => ("x ", Style::default().fg(ASHEN.moss)),
+            crate::todo::TodoStatus::Cancelled => ("- ", Style::default().fg(ASHEN.deep_ash)),
+            crate::todo::TodoStatus::InProgress => ("~ ", Style::default().fg(ASHEN.frost)),
+            crate::todo::TodoStatus::Pending => ("  ", Style::default().fg(ASHEN.bone)),
+        };
+
+        let priority = match t.priority.as_str() {
+            "high" => Span::styled(" !!", Style::default().fg(ASHEN.ember)),
+            "medium" => Span::styled(" !", Style::default().fg(ASHEN.smoke)),
+            _ => Span::raw(""),
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("[{}] ", check), status_style),
+            Span::styled(t.content.clone(), Style::default().fg(ASHEN.bone)),
+            priority,
+            Span::styled(
+                format!("  {}", t.id),
+                Style::default().fg(ASHEN.deep_ash),
+            ),
+        ]));
+    }
+
+    let para = Paragraph::new(lines);
+    f.render_widget(para, inner);
+}
+
 // ── App loop ───────────────────────────────────────────────────
 
 async fn app_loop(
@@ -635,6 +730,7 @@ async fn app_loop(
     let mut agent_busy = false;
     let mut agent_handle: Option<tokio::task::JoinHandle<()>> = None;
     let mut spinner_tick: usize = 0;
+    let mut show_todos = false;
 
     loop {
         let term_size = terminal.size()?;
@@ -708,6 +804,11 @@ async fn app_loop(
                 draw_autocomplete(f, chunks[5], &ac_matches, ac_idx, ac_scroll);
             }
 
+            // Todo popup overlay
+            if show_todos {
+                draw_todos(f, f.area());
+            }
+
             // Footer
             draw_footer(f, chunks[6], &model, messages.len(), &cwd, agent_busy, spinner_tick);
         })?;
@@ -738,7 +839,9 @@ async fn app_loop(
                 Event::Key(k) => {
                 match k.code {
                     KeyCode::Esc => {
-                        if !ac_matches.is_empty() {
+                        if show_todos {
+                            show_todos = false;
+                        } else if !ac_matches.is_empty() {
                             ac_matches.clear();
                             ac_idx = 0;
                         } else if agent_busy {
@@ -807,8 +910,11 @@ async fn app_loop(
                                 "/help" => {
                                     messages.push(Msg {
                                         role: "system".into(),
-                                        content: "/help /model <name> /clear /exit  ·  Enter send · Shift+Enter newline · Up/Down history · PgUp/PgDn scroll".into(),
+                                        content: "/help /todo /model <name> /clear /exit  ·  Enter send · Shift+Enter newline · Up/Down history · PgUp/PgDn scroll".into(),
                                     });
+                                }
+                                "/todo" => {
+                                    show_todos = !show_todos;
                                 }
                                 _ if prompt.starts_with("/model ") => {
                                     let m = prompt.strip_prefix("/model ").unwrap().trim();
