@@ -6,15 +6,25 @@ use std::collections::HashMap;
 
 pub const SYSTEM_PROMPT: &str = "You are a lean coding assistant. Be helpful, precise, and concise.\n\n\
 ## How to approach any task\n\n\
+**IMPORTANT: Every task requires a plan.** When you receive a task, your FIRST response must be:\n\
+1. State the goal in one sentence.\n\
+2. List the concrete steps you will take (read file, make change, verify, etc).\n\
+3. Then begin executing.\n\n\
+You will receive a focus context injection before each LLM call that reminds you of your goal, what you've done so far, and what comes next. **Always check this before responding.** If the focus context says you should be doing something, do it. Do not drift.\n\n\
+## Rules for staying on track\n\n\
+- **Always check the focus context** at the start of each response.\n\
+- **Never repeat a tool call** that already succeeded.\n\
+- If a tool call failed, diagnose the error and try a different approach. Do not retry the exact same call.\n\
+- After completing all steps, give a clear summary of what was done.\n\
+- If you find yourself unsure what to do next, re-read the original task and your progress.\n\n\
+## How to use tools\n\n\
 1. **Understand first.** Before changing anything, read the relevant files to understand the existing structure, style, and conventions. Never edit a file you haven't read.\n\n\
 2. **Plan minimally.** Decide the smallest set of changes that solves the problem. One function, one file, one fix at a time. Avoid large rewrites when a small edit will do.\n\n\
 3. **Act with tools.** Use read_file to inspect, bash for inspection and testing, edit_file/write_file for changes. Use bash to verify your changes compile or run correctly.\n\n\
-4. **When it fails, diagnose.** Read error messages carefully. Re-read the code. Try a different approach. Do not repeat the same failing change. If a tool call fails, check the output, fix the cause, and retry.\n\n\
+4. **When it fails, diagnose.** Read error messages carefully. Re-read the code. Try a different approach. Do not repeat the same failing change.\n\n\
 5. **Verify after.** After making changes, run a build, test, or relevant command to confirm it works. Don't assume success.\n\n\
-## Rules\n\n\
 - Be fully autonomous until the task is done.\n\
 - Prefer read_file before edit_file.\n\
-- Use bash for inspection, building, and testing — not just for running the user's request.\n\
 - Make the smallest change that works.\n\
 - If something is unclear, gather more context from the codebase before guessing.\n\n\
 ## Memory\n\n\
@@ -75,6 +85,79 @@ struct ToolAccum {
     args: String,
 }
 
+/// Tracks the agent's goal, progress, and tool usage across steps.
+/// Injected into the conversation as a focus context so the LLM stays on task.
+struct PlanTracker {
+    goal: String,
+    steps_done: Vec<String>,
+    last_tools: Vec<String>,
+}
+
+impl PlanTracker {
+    fn new(goal: &str) -> Self {
+        Self {
+            goal: goal.to_string(),
+            steps_done: Vec::new(),
+            last_tools: Vec::new(),
+        }
+    }
+
+    /// Build a focus injection message to insert into the conversation.
+    fn focus_context(&self, step: usize) -> String {
+        let mut out = String::from("[FOCUS CONTEXT -- READ THIS BEFORE RESPONDING]\n");
+        out.push_str(&format!("Goal: {}\n", self.goal));
+        if !self.steps_done.is_empty() {
+            out.push_str(&format!(
+                "Progress so far ({} items):\n",
+                self.steps_done.len()
+            ));
+            for (i, s) in self.steps_done.iter().enumerate() {
+                out.push_str(&format!("  {}. {}\n", i + 1, s));
+            }
+        } else {
+            out.push_str("Progress so far: starting\n");
+        }
+        if !self.last_tools.is_empty() {
+            out.push_str(&format!(
+                "Last tool calls: {}\n",
+                self.last_tools.join(", ")
+            ));
+        }
+        out.push_str(&format!(
+            "Current step: {}. If your plan is complete, summarize what you did and stop.\n",
+            step
+        ));
+        out.push_str("Do NOT repeat actions already listed in progress. Stay focused on the goal.");
+        out
+    }
+
+    /// Update tracker with completed tool names.
+    fn record_tools(&mut self, tool_names: &[String]) {
+        self.last_tools = tool_names.to_vec();
+        for name in tool_names {
+            self.steps_done.push(format!("called {}", name));
+        }
+    }
+
+    /// Update tracker with the assistant's text output (concise summary of what happened).
+    fn record_text(&mut self, text: &str) {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            // Keep it short: first sentence or first 200 chars
+            let summary = if let Some(period) = trimmed.find('.') {
+                if period < 200 {
+                    trimmed[..period + 1].to_string()
+                } else {
+                    trimmed.chars().take(200).collect()
+                }
+            } else {
+                trimmed.chars().take(200).collect()
+            };
+            self.steps_done.push(summary);
+        }
+    }
+}
+
 pub fn run_agent(
     user_prompt: String,
     model: String,
@@ -85,17 +168,17 @@ pub fn run_agent(
         let system = build_system_prompt().await;
         let mut messages: Vec<Value> = vec![
             json!({"role": "system", "content": system}),
-            json!({"role": "user", "content": user_prompt}),
+            json!({"role": "user", "content": &user_prompt}),
         ];
 
         let mut final_text = String::new();
+        let mut tracker = PlanTracker::new(&user_prompt);
 
         for step in 0..max_steps {
             yield AgentEvent::Step { n: step + 1 };
 
-            // Autorecall: search memories using recent conversation context
+            // ── Autorecall: search memories using recent conversation context ──
             if step > 0 {
-                // Build context from last few messages
                 let context: String = messages
                     .iter()
                     .rev()
@@ -105,7 +188,6 @@ pub fn run_agent(
                     .join(" ");
                 if let Some(memory_note) = crate::memory::autorecall(&context) {
                     let recall_msg = json!({"role": "system", "content": memory_note});
-                    // Replace previous autorecall injection if present, else insert
                     if messages.len() > 1
                         && messages[1].get("role").and_then(|r| r.as_str()) == Some("system")
                         && messages[1].get("content").and_then(|c| c.as_str())
@@ -119,7 +201,35 @@ pub fn run_agent(
                 }
             }
 
-            // Build request
+            // ── Inject focus context so the LLM stays on task ──
+            // Position: right before the last assistant/tool messages, so the
+            // LLM sees "here's what you're doing" immediately before deciding
+            // what to do next. We insert at a stable position: index 2
+            // (after system + optional recall, before user and rest).
+            let focus_msg = json!({"role": "system", "content": tracker.focus_context(step + 1)});
+            // Remove any previous focus injection (look for the marker)
+            let marker = "[FOCUS CONTEXT";
+            let mut removed_old = false;
+            for i in (2..messages.len()).rev() {
+                if messages[i].get("role").and_then(|r| r.as_str()) == Some("system")
+                    && messages[i].get("content").and_then(|c| c.as_str())
+                        .map(|c| c.starts_with(marker))
+                        .unwrap_or(false)
+                {
+                    messages.remove(i);
+                    removed_old = true;
+                    break;
+                }
+            }
+            // Insert at position 2 (or wherever it was before)
+            let insert_at = if removed_old { 2 } else { 2 };
+            if insert_at < messages.len() {
+                messages.insert(insert_at, focus_msg);
+            } else {
+                messages.push(focus_msg);
+            }
+
+            // ── Build request ──
             let body = json!({
                 "model": model,
                 "messages": messages,
@@ -146,7 +256,7 @@ pub fn run_agent(
                 break;
             }
 
-            // SSE parsing
+            // ── SSE parsing ──
             let mut accum_text = String::new();
             let mut accum_reasoning = String::new();
             let mut tool_acc: HashMap<usize, ToolAccum> = HashMap::new();
@@ -237,6 +347,8 @@ pub fn run_agent(
             if !accum_text.is_empty() {
                 final_text.push_str(&accum_text);
                 yield AgentEvent::TextDone { text: accum_text.clone() };
+                // Track what the assistant said for progress
+                tracker.record_text(&accum_text);
             }
 
             if tool_acc.is_empty() {
@@ -244,10 +356,15 @@ pub fn run_agent(
                 break;
             }
 
-            // Prepare tool calls in index order
+            // ── Prepare tool calls in index order ──
             let mut ordered: Vec<(usize, ToolAccum)> = tool_acc.into_iter().collect();
             ordered.sort_by_key(|(k, _)| *k);
-            let mut tool_results: Vec<(String, String, String, Value)> = Vec::new(); // id, name, result, args
+
+            // Track which tools are being called
+            let tool_names: Vec<String> = ordered.iter().map(|(_, acc)| acc.name.clone()).collect();
+            tracker.record_tools(&tool_names);
+
+            let mut tool_results: Vec<(String, String, String, Value)> = Vec::new();
             // Yield tool_start for all
             for (_, acc) in &ordered {
                 let args_val: Value = serde_json::from_str(&acc.args).unwrap_or(Value::String(acc.args.clone()));
@@ -270,7 +387,7 @@ pub fn run_agent(
                 tool_results.push((id, name, result, args_val));
             }
 
-            // Append assistant tool_calls to messages
+            // ── Append assistant tool_calls to messages ──
             let tool_calls_json: Vec<Value> = ordered.iter().map(|(_, acc)| {
                 json!({
                     "id": acc.id,
@@ -279,16 +396,10 @@ pub fn run_agent(
                 })
             }).collect();
             messages.push(json!({"role": "assistant", "content": accum_text, "tool_calls": tool_calls_json}));
-            for (id, name, result, _) in tool_results {
+            for (id, _name, result, _) in tool_results {
                 let truncated = truncate_for_llm(&result);
                 messages.push(json!({"role": "tool", "tool_call_id": id, "content": truncated}));
-                // CWD update: if bash did cd, try to track
-                if name == "bash" {
-                    // heuristic: if command contains `cd `, try to update current_dir
-                    // actual cd in subshell doesn't affect parent, so footer CWD stays launch dir — document limitation
-                }
             }
-            // Also push usage to messages? No, just continue loop. Footer can use usage if needed via separate channel.
             let _ = usage;
         }
         yield AgentEvent::Done { text: final_text };
