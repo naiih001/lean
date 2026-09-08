@@ -3,9 +3,9 @@ use crate::theme::{ASHEN, THEME};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Paragraph, Wrap};
 use std::io::Stdout;
 
 pub async fn run(model: String) -> anyhow::Result<()> {
@@ -40,91 +40,253 @@ struct Msg {
     content: String,
 }
 
+impl Msg {
+    /// Render this message as styled ratatui Lines.
+    fn render_lines(&self) -> Vec<Line<'static>> {
+        match self.role.as_str() {
+            "user" => self
+                .content
+                .lines()
+                .map(|l| {
+                    Line::from(Span::styled(
+                        l.to_string(),
+                        Style::default().fg(ASHEN.bone),
+                    ))
+                })
+                .collect(),
+            "assistant" => self
+                .content
+                .lines()
+                .map(|l| {
+                    Line::from(Span::styled(
+                        l.to_string(),
+                        Style::default().fg(ASHEN.bone),
+                    ))
+                })
+                .collect(),
+            "thinking" => {
+                let mut lines = vec![Line::from(Span::styled(
+                    "Thinking...".to_string(),
+                    Style::default()
+                        .fg(ASHEN.frost)
+                        .add_modifier(Modifier::ITALIC),
+                ))];
+                for l in self.content.lines().take(3) {
+                    lines.push(Line::from(Span::styled(
+                        l.to_string(),
+                        Style::default()
+                            .fg(ASHEN.deep_ash)
+                            .add_modifier(Modifier::ITALIC),
+                    )));
+                }
+                lines
+            }
+            "tool" => self.render_tool_lines(),
+            _ => self
+                .content
+                .lines()
+                .map(|l| {
+                    Line::from(Span::styled(
+                        l.to_string(),
+                        Style::default().fg(ASHEN.frost),
+                    ))
+                })
+                .collect(),
+        }
+    }
+
+    /// Render tool messages with styled name, path/command, and result.
+    fn render_tool_lines(&self) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+
+        if let Some(pos) = self.content.find(" → ") {
+            // ── Tool result ──
+            let name = self.content[..pos].trim();
+            let result = &self.content[pos + 3..];
+
+            lines.push(Line::from(Span::styled(
+                format!("{} ✓", name),
+                Style::default().fg(ASHEN.ember),
+            )));
+
+            let result_lines: Vec<&str> = result.lines().collect();
+            let show = result_lines.len().min(5);
+            for l in &result_lines[..show] {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", l),
+                    Style::default().fg(ASHEN.smoke),
+                )));
+            }
+            if result_lines.len() > 5 {
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  ... ({} earlier lines, ctrl+o to expand)",
+                        result_lines.len()
+                    ),
+                    Style::default().fg(ASHEN.deep_ash),
+                )));
+            }
+        } else {
+            // ── Tool start ──
+            let first_space = self.content.find(' ');
+            if let Some(pos) = first_space {
+                let name = &self.content[..pos];
+                let args_str = self.content[pos..].trim();
+
+                lines.push(Line::from(Span::styled(
+                    name.to_string(),
+                    Style::default().fg(ASHEN.ember),
+                )));
+
+                // Try to pretty-print known JSON arg shapes
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(args_str) {
+                    if let Some(path) = v.get("path").and_then(|p| p.as_str()) {
+                        let home = std::env::var("HOME").unwrap_or_default();
+                        let display = if let Some(rest) = path.strip_prefix(&home) {
+                            format!("~{}", rest)
+                        } else {
+                            path.to_string()
+                        };
+                        lines.push(Line::from(Span::styled(
+                            format!("  {}", display),
+                            Style::default().fg(ASHEN.smoke),
+                        )));
+                    } else if let Some(cmd) = v.get("command").and_then(|c| c.as_str()) {
+                        lines.push(Line::from(Span::styled(
+                            format!("  $ {}", cmd),
+                            Style::default().fg(ASHEN.light_ash),
+                        )));
+                    } else if let Some(url) = v.get("url").and_then(|u| u.as_str()) {
+                        lines.push(Line::from(Span::styled(
+                            format!("  {}", url),
+                            Style::default().fg(ASHEN.smoke),
+                        )));
+                    } else if let Some(q) = v.get("query").and_then(|q| q.as_str()) {
+                        lines.push(Line::from(Span::styled(
+                            format!("  \"{}\"", q),
+                            Style::default().fg(ASHEN.smoke),
+                        )));
+                    } else {
+                        lines.push(Line::from(Span::styled(
+                            format!("  {}", args_str),
+                            Style::default().fg(ASHEN.smoke),
+                        )));
+                    }
+                } else {
+                    lines.push(Line::from(Span::styled(
+                        format!("  {}", args_str),
+                        Style::default().fg(ASHEN.smoke),
+                    )));
+                }
+            }
+        }
+
+        if lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+        lines
+    }
+}
+
+/// Count the rendered lines for all messages (for scroll calculations).
+fn total_rendered_lines(messages: &[Msg]) -> usize {
+    messages.iter().map(|m| m.render_lines().len() + 1).sum()
+}
+
 async fn app_loop(
     terminal: &mut ratatui::Terminal<CrosstermBackend<Stdout>>,
     model: String,
 ) -> anyhow::Result<()> {
     let mut messages: Vec<Msg> = Vec::new();
-    let mut scroll: usize = 0;
+    let mut scroll: u16 = 0;
+    let mut auto_scroll = true;
     let mut status = String::from("Ready");
     let mut cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
-    let mut ctx_info = String::from("ctx: 0 msgs");
-    let mut running: Option<tokio::task::JoinHandle<()>> = None;
+    let mut ctx_info = String::from("0 msgs");
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
 
-    // history for Up/Down
+    // input history
     let mut history: Vec<String> = Vec::new();
     let mut hist_idx: Option<usize> = None;
     let mut input_text = String::new();
 
     loop {
-        // update ctx_info
-        ctx_info = format!("ctx: {} msgs, {} chars", messages.len(), messages.iter().map(|m| m.content.len()).sum::<usize>());
+        ctx_info = format!("{} msgs", messages.len());
+
+        let term_size = terminal.size()?;
+        let viewport_height = term_size.height.saturating_sub(2).max(1) as usize;
 
         terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Min(5),
-                    Constraint::Length(5),
-                    Constraint::Length(1),
+                    Constraint::Min(1),   // main content – fills remaining space
+                    Constraint::Length(1), // input line
+                    Constraint::Length(1), // footer
                 ])
                 .split(f.area());
 
-            // List
-            let items: Vec<ListItem> = messages
-                .iter()
-                .map(|m| {
-                    let color = match m.role.as_str() {
-                        "user" => ASHEN.ember,
-                        "tool" => Color::Rgb(0x28, 0x2e, 0x28),
-                        _ => Color::White,
-                    };
-                    let style = Style::default().fg(color);
-                    // truncate display to 2000 chars
-                    let content = if m.content.len() > 2000 {
-                        format!("{}… [truncated {} chars]", &m.content[..2000], m.content.len() - 2000)
-                    } else {
-                        m.content.clone()
-                    };
-                    let line = Line::from(vec![
-                        Span::styled(format!("[{}] ", m.role), style),
-                        Span::raw(content),
-                    ]);
-                    ListItem::new(line)
-                })
-                .collect();
+            // ── Build all message lines ──
+            let mut all_lines: Vec<Line<'static>> = Vec::new();
+            for m in &messages {
+                all_lines.extend(m.render_lines());
+                all_lines.push(Line::from("")); // blank separator
+            }
 
-            let mut list_state = ratatui::widgets::ListState::default();
-            // simple scroll: show from scroll offset
-            let visible: Vec<ListItem> = if scroll < items.len() {
-                items.into_iter().skip(scroll).collect()
+            let total_lines = all_lines.len();
+
+            if auto_scroll {
+                scroll = total_lines.saturating_sub(viewport_height) as u16;
+            }
+
+            // ── Main content: no borders, dark page background ──
+            let content_block = Block::default().style(Style::default().bg(THEME.page_bg));
+            let para = Paragraph::new(all_lines)
+                .block(content_block)
+                .wrap(Wrap { trim: false })
+                .scroll((scroll, 0));
+            f.render_widget(para, chunks[0]);
+
+            // ── Input: single line, minimal, no border ──
+            let input_line = if input_text.is_empty() {
+                Line::from(Span::styled(" ", Style::default().fg(ASHEN.deep_ash)))
             } else {
-                vec![]
+                Line::from(Span::styled(
+                    input_text.as_str(),
+                    Style::default().fg(ASHEN.smoke),
+                ))
             };
-            let list = List::new(visible)
-                .block(Block::default().borders(Borders::ALL).title(" lean "));
-            f.render_stateful_widget(list, chunks[0], &mut list_state);
+            let input_para = Paragraph::new(input_line)
+                .style(Style::default().bg(THEME.page_bg));
+            f.render_widget(input_para, chunks[1]);
 
-            // Input
-            let para = Paragraph::new(input_text.as_str())
-                .block(Block::default().borders(Borders::ALL).title(" Input "));
-            f.render_widget(para, chunks[1]);
-
-            // Footer
-            let footer = Paragraph::new(Line::from(vec![
-                Span::styled(format!(" model: {} ", model), Style::default().fg(ASHEN.ember)),
-                Span::raw(format!("| dir: {} ", cwd)),
-                Span::raw(format!("| {} ", ctx_info)),
-                Span::styled(status.clone(), Style::default().fg(ASHEN.frost)),
-            ]))
-            .style(Style::default().bg(THEME.page_bg));
+            // ── Footer: muted, low contrast ──
+            let footer_line = Line::from(vec![
+                Span::styled(
+                    format!(" {} ", model),
+                    Style::default().fg(ASHEN.deep_ash),
+                ),
+                Span::styled(
+                    format!(" {} ", cwd),
+                    Style::default().fg(ASHEN.deep_ash),
+                ),
+                Span::styled(
+                    format!(" {} ", ctx_info),
+                    Style::default().fg(ASHEN.deep_ash),
+                ),
+                Span::styled(
+                    status.clone(),
+                    Style::default().fg(ASHEN.deep_ash),
+                ),
+            ]);
+            let footer = Paragraph::new(footer_line)
+                .style(Style::default().bg(THEME.page_bg));
             f.render_widget(footer, chunks[2]);
         })?;
 
-        // handle events with timeout to also poll rx
+        // ── Handle keyboard events ──
         if event::poll(std::time::Duration::from_millis(50))? {
             if let Event::Key(k) = event::read()? {
                 match k.code {
@@ -143,36 +305,47 @@ async fn app_loop(
                                 "/clear" => {
                                     messages.clear();
                                     scroll = 0;
+                                    auto_scroll = true;
                                 }
                                 "/help" => {
-                                    messages.push(Msg { role: "system".into(), content: "Commands: /help /model <name> /clear /exit. Enter send, Shift+Enter newline, Up/Down history, Esc quit, PgUp/PgDn scroll".into() });
+                                    messages.push(Msg {
+                                        role: "system".into(),
+                                        content: "Commands: /help /model <name> /clear /exit. Enter send, Shift+Enter newline, Up/Down history, Esc quit, PgUp/PgDn scroll".into(),
+                                    });
                                 }
                                 _ if prompt.starts_with("/model ") => {
                                     let m = prompt.strip_prefix("/model ").unwrap().trim();
-                                    messages.push(Msg { role: "system".into(), content: format!("Model switch requested: {} (restart to apply)", m) });
+                                    messages.push(Msg {
+                                        role: "system".into(),
+                                        content: format!("Model: {} (restart to apply)", m),
+                                    });
                                 }
                                 _ => {
-                                    messages.push(Msg { role: "system".into(), content: format!("Unknown command: {}", prompt) });
+                                    messages.push(Msg {
+                                        role: "system".into(),
+                                        content: format!("Unknown: {}", prompt),
+                                    });
                                 }
                             }
                             input_text.clear();
                             hist_idx = None;
                             continue;
                         }
-                        // push user message
+                        // Send user message
                         history.push(prompt.clone());
                         hist_idx = None;
-                        messages.push(Msg { role: "user".into(), content: prompt.clone() });
+                        messages.push(Msg {
+                            role: "user".into(),
+                            content: prompt.clone(),
+                        });
                         status = "Thinking…".into();
                         input_text.clear();
+                        auto_scroll = true;
 
-                        // spawn agent task
                         let tx_clone = tx.clone();
                         let model_clone = model.clone();
-                        let prompt_clone = prompt.clone();
                         tokio::spawn(async move {
-                            let mut stream = agent::run_agent(prompt_clone, model_clone, 100);
-                            // need to box stream: run_agent returns impl Stream, we can poll
+                            let mut stream = agent::run_agent(prompt, model_clone, 100);
                             use futures::StreamExt;
                             let mut s = Box::pin(stream);
                             while let Some(ev) = s.next().await {
@@ -181,8 +354,12 @@ async fn app_loop(
                         });
                     }
                     KeyCode::Up => {
-                        if history.is_empty() { continue; }
-                        let idx = hist_idx.map(|i| if i == 0 { 0 } else { i - 1 }).unwrap_or(history.len() - 1);
+                        if history.is_empty() {
+                            continue;
+                        }
+                        let idx = hist_idx
+                            .map(|i| if i == 0 { 0 } else { i - 1 })
+                            .unwrap_or(history.len() - 1);
                         hist_idx = Some(idx);
                         input_text = history[idx].clone();
                     }
@@ -204,23 +381,30 @@ async fn app_loop(
                         input_text.pop();
                     }
                     KeyCode::PageUp => {
-                        scroll = scroll.saturating_sub(10);
+                        scroll = scroll.saturating_sub(viewport_height as u16);
+                        auto_scroll = false;
                     }
                     KeyCode::PageDown => {
-                        scroll = (scroll + 10).min(messages.len().saturating_sub(1));
+                        let total = total_rendered_lines(&messages);
+                        let max_scroll = total.saturating_sub(viewport_height) as u16;
+                        scroll = (scroll + viewport_height as u16).min(max_scroll);
+                        if scroll >= max_scroll {
+                            auto_scroll = true;
+                        }
                     }
                     KeyCode::Home => {
                         scroll = 0;
+                        auto_scroll = false;
                     }
                     KeyCode::End => {
-                        scroll = messages.len().saturating_sub(1);
+                        auto_scroll = true;
                     }
                     _ => {}
                 }
             }
         }
 
-        // poll agent events without blocking
+        // ── Poll agent events (non-blocking) ──
         while let Ok(ev) = rx.try_recv() {
             match ev {
                 AgentEvent::Text { delta } => {
@@ -228,44 +412,72 @@ async fn app_loop(
                         if last.role == "assistant" {
                             last.content.push_str(&delta);
                         } else {
-                            messages.push(Msg { role: "assistant".into(), content: delta });
+                            messages.push(Msg {
+                                role: "assistant".into(),
+                                content: delta,
+                            });
                         }
                     } else {
-                        messages.push(Msg { role: "assistant".into(), content: delta });
+                        messages.push(Msg {
+                            role: "assistant".into(),
+                            content: delta,
+                        });
                     }
                     status = "Streaming…".into();
+                    auto_scroll = true;
                 }
                 AgentEvent::Reasoning { delta } => {
                     if let Some(last) = messages.last_mut() {
                         if last.role == "thinking" {
                             last.content.push_str(&delta);
                         } else {
-                            messages.push(Msg { role: "thinking".into(), content: delta });
+                            messages.push(Msg {
+                                role: "thinking".into(),
+                                content: delta,
+                            });
                         }
                     } else {
-                        messages.push(Msg { role: "thinking".into(), content: delta });
+                        messages.push(Msg {
+                            role: "thinking".into(),
+                            content: delta,
+                        });
                     }
+                    auto_scroll = true;
                 }
                 AgentEvent::TextDone { text } => {
-                    // already streamed, no-op
                     let _ = text;
                 }
                 AgentEvent::ToolStart { name, args, id: _ } => {
-                    messages.push(Msg { role: "tool".into(), content: format!("{} {}", name, serde_json::to_string(&args).unwrap_or_default()) });
+                    messages.push(Msg {
+                        role: "tool".into(),
+                        content: format!(
+                            "{} {}",
+                            name,
+                            serde_json::to_string(&args).unwrap_or_default()
+                        ),
+                    });
+                    auto_scroll = true;
                 }
                 AgentEvent::ToolResult { name, result, id: _ } => {
                     let display = if result.len() > 2000 {
-                        format!("{}… [truncated {} chars]", &result[..2000], result.len() - 2000)
+                        format!(
+                            "{}… [truncated {} chars]",
+                            &result[..2000],
+                            result.len() - 2000
+                        )
                     } else {
                         result
                     };
-                    messages.push(Msg { role: "tool".into(), content: format!("{} → {}", name, display) });
-                    // update cwd after bash
+                    messages.push(Msg {
+                        role: "tool".into(),
+                        content: format!("{} → {}", name, display),
+                    });
                     if name == "bash" {
                         if let Ok(new_cwd) = std::env::current_dir() {
                             cwd = new_cwd.display().to_string();
                         }
                     }
+                    auto_scroll = true;
                 }
                 AgentEvent::Step { n } => {
                     status = format!("Step {}", n);
@@ -275,8 +487,7 @@ async fn app_loop(
                     let _ = text;
                 }
             }
-            // auto-scroll to bottom when new messages arrive
-            scroll = messages.len().saturating_sub(1);
+            auto_scroll = true;
         }
     }
 
