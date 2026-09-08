@@ -306,9 +306,11 @@ fn draw_input(f: &mut Frame, area: Rect, input_text: &str, status: &str) {
             format!("{}{}", prompt, " ".repeat(available)),
             Style::default().fg(ASHEN.charcoal).bg(THEME.input_bg),
         )
-    } else if input_text.len() >= available {
+    } else if input_text.chars().count() >= available {
         // Truncate from left, show cursor at end
-        let truncated = &input_text[input_text.len() - available + 1..];
+        let char_count = input_text.chars().count();
+        let skip = char_count - available + 1;
+        let truncated: String = input_text.chars().skip(skip).collect();
         Span::styled(
             format!("▸{}█", truncated),
             Style::default().fg(ASHEN.bone).bg(THEME.input_bg),
@@ -402,7 +404,7 @@ async fn app_loop(
 
     loop {
         let term_size = terminal.size()?;
-        let viewport_height = term_size.height.saturating_sub(4).max(1) as usize; // header + sep + input + footer = 4
+        let viewport_height = term_size.height.saturating_sub(5).max(1) as usize; // header + sep + sep + input + footer = 5 fixed rows
 
         terminal.draw(|f| {
             let chunks = Layout::default()
@@ -434,7 +436,7 @@ async fn app_loop(
             draw_separator(f, chunks[3]);
 
             // Input
-            let status = if messages.iter().any(|m| m.role == "tool") {
+            let status = if messages.last().map_or(false, |m| m.role == "tool") {
                 "exec"
             } else {
                 ""
@@ -449,7 +451,7 @@ async fn app_loop(
         if event::poll(std::time::Duration::from_millis(50))? {
             if let Event::Key(k) = event::read()? {
                 match k.code {
-                    KeyCode::Esc => break,
+                    KeyCode::Esc | KeyCode::Char('d') if k.modifiers.contains(KeyModifiers::CONTROL) => break,
                     KeyCode::Enter if k.modifiers.contains(KeyModifiers::SHIFT) => {
                         input_text.push('\n');
                     }
