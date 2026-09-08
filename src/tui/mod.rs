@@ -1,6 +1,6 @@
 use crate::agent::{self, AgentEvent};
 use crate::theme::{ASHEN, THEME};
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -460,12 +460,13 @@ fn autocomplete_matches(input: &str) -> Vec<&'static str> {
         .collect()
 }
 
-/// Draw a small autocomplete popup above the input area.
+/// Draw a scrollable autocomplete popup above the input area.
 fn draw_autocomplete(
     f: &mut Frame,
     input_area: Rect,
     matches: &[&str],
     selected: usize,
+    scroll_offset: usize,
 ) {
     if matches.is_empty() {
         return;
@@ -473,9 +474,12 @@ fn draw_autocomplete(
 
     let max_cmd_len = matches.iter().map(|c| c.len()).max().unwrap_or(10);
     let popup_width = (max_cmd_len + 4) as u16;
-    let popup_height = matches.len() as u16 + 2; // +2 for borders
 
-    // Position: right-aligned above input, or left if not enough space
+    // Cap height to available space above input
+    let max_visible = input_area.y.saturating_sub(1) as usize; // leave 1 row gap
+    let visible_items = matches.len().min(max_visible.max(1));
+    let popup_height = (visible_items + 2) as u16; // +2 for borders
+
     let x = input_area.x;
     let y = input_area.y.saturating_sub(popup_height);
 
@@ -483,7 +487,7 @@ fn draw_autocomplete(
         x,
         y,
         width: popup_width.min(input_area.width),
-        height: popup_height.min(input_area.y),
+        height: popup_height,
     };
 
     if area.height < 2 || area.width < 4 {
@@ -498,11 +502,17 @@ fn draw_autocomplete(
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let items: Vec<Line<'static>> = matches
+    // Render only visible items
+    let visible_h = inner.height as usize;
+    let start = scroll_offset;
+    let end = (start + visible_h).min(matches.len());
+
+    let items: Vec<Line<'static>> = matches[start..end]
         .iter()
         .enumerate()
         .map(|(i, cmd)| {
-            let style = if i == selected {
+            let real_idx = start + i;
+            let style = if real_idx == selected {
                 Style::default()
                     .fg(ASHEN.bone)
                     .add_modifier(Modifier::BOLD)
@@ -540,10 +550,18 @@ async fn app_loop(
     // autocomplete
     let mut ac_matches: Vec<&str> = Vec::new();
     let mut ac_idx: usize = 0;
+    let mut ac_scroll: usize = 0;
 
     loop {
         let term_size = terminal.size()?;
-        let viewport_height = term_size.height.saturating_sub(5).max(1) as usize; // header + sep + sep + input + footer = 5 fixed rows
+        let viewport_height = term_size.height.saturating_sub(5).max(1) as usize;
+        // Content area: starts at row 2 (after header + sep), height is the rest
+        let content_area = Rect {
+            x: 0,
+            y: 2,
+            width: term_size.width,
+            height: term_size.height.saturating_sub(5).max(1),
+        };
 
         terminal.draw(|f| {
             // Fill entire screen with page background first
@@ -588,16 +606,38 @@ async fn app_loop(
 
             // Autocomplete popup
             if !ac_matches.is_empty() {
-                draw_autocomplete(f, chunks[4], &ac_matches, ac_idx);
+                draw_autocomplete(f, chunks[4], &ac_matches, ac_idx, ac_scroll);
             }
 
             // Footer
             draw_footer(f, chunks[5], &model, messages.len(), &cwd);
         })?;
 
-        // Handle keyboard events
+        // Handle keyboard and mouse events
         if event::poll(std::time::Duration::from_millis(50))? {
-            if let Event::Key(k) = event::read()? {
+            match event::read()? {
+                Event::Mouse(m) => {
+                    let in_content = m.row >= content_area.y
+                        && m.row < content_area.y + content_area.height;
+                    if in_content {
+                        match m.kind {
+                            MouseEventKind::ScrollUp => {
+                                scroll = scroll.saturating_sub(3);
+                                auto_scroll = false;
+                            }
+                            MouseEventKind::ScrollDown => {
+                                let total = total_rendered_lines(&messages);
+                                let max_scroll = total.saturating_sub(viewport_height) as u16;
+                                scroll = (scroll + 3).min(max_scroll);
+                                if scroll >= max_scroll {
+                                    auto_scroll = true;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Event::Key(k) => {
                 match k.code {
                     KeyCode::Esc => {
                         if !ac_matches.is_empty() {
@@ -741,6 +781,8 @@ async fn app_loop(
                     }
                     _ => {}
                 }
+                }
+                _ => {}
             }
         }
 
