@@ -48,59 +48,61 @@ impl Msg {
     fn render_lines(&self) -> Vec<Line<'static>> {
         match self.role.as_str() {
             "user" => {
-                let mut lines = vec![Line::from(Span::styled(
-                    "you",
-                    Style::default()
-                        .fg(ASHEN.frost)
-                        .add_modifier(Modifier::BOLD),
-                ))];
+                let mut lines = vec![Line::from(vec![
+                    Span::styled("  ", Style::default()),
+                    Span::styled(">>", Style::default()
+                        .fg(ASHEN.slate)
+                        .add_modifier(Modifier::BOLD)),
+                    Span::styled(" you", Style::default()
+                        .fg(ASHEN.slate)
+                        .add_modifier(Modifier::BOLD)),
+                ])];
                 for l in self.content.lines() {
                     lines.push(Line::from(Span::styled(
-                        format!("  {}", l),
+                        format!("     {}", l),
                         Style::default().fg(ASHEN.bone),
                     )));
                 }
                 lines
             }
             "assistant" => {
-                let mut lines = vec![Line::from(Span::styled(
-                    "lean",
-                    Style::default()
+                let mut lines = vec![Line::from(vec![
+                    Span::styled("  ", Style::default()),
+                    Span::styled("lean", Style::default()
                         .fg(ASHEN.moss)
-                        .add_modifier(Modifier::BOLD),
-                ))];
+                        .add_modifier(Modifier::BOLD)),
+                ])];
                 for l in self.content.lines() {
                     lines.push(Line::from(Span::styled(
-                        format!("  {}", l),
+                        format!("     {}", l),
                         Style::default().fg(ASHEN.smoke),
                     )));
                 }
                 lines
             }
             "thinking" => {
-                let mut lines = vec![Line::from(Span::styled(
-                    "...",
-                    Style::default()
-                        .fg(ASHEN.deep_ash)
-                        .add_modifier(Modifier::ITALIC),
-                ))];
-                for l in self.content.lines().take(2) {
-                    lines.push(Line::from(Span::styled(
-                        format!("  {}", l),
-                        Style::default()
+                // Render thinking as a single collapsed block.
+                // If there's content, show first line as preview.
+                let first = self.content.lines().next().unwrap_or("");
+                if first.is_empty() {
+                    vec![Line::from(vec![
+                        Span::styled("  ", Style::default()),
+                        Span::styled("...", Style::default()
                             .fg(ASHEN.deep_ash)
-                            .add_modifier(Modifier::ITALIC),
-                    )));
-                }
-                if self.content.lines().count() > 2 {
-                    lines.push(Line::from(Span::styled(
-                        "  ...",
-                        Style::default()
+                            .add_modifier(Modifier::ITALIC)),
+                    ])]
+                } else {
+                    let preview: String = first.chars().take(80).collect();
+                    vec![Line::from(vec![
+                        Span::styled("  ", Style::default()),
+                        Span::styled("...", Style::default()
                             .fg(ASHEN.deep_ash)
-                            .add_modifier(Modifier::ITALIC),
-                    )));
+                            .add_modifier(Modifier::ITALIC)),
+                        Span::styled(format!(" {}", preview), Style::default()
+                            .fg(ASHEN.deep_ash)
+                            .add_modifier(Modifier::ITALIC)),
+                    ])]
                 }
-                lines
             }
             "tool" => self.render_tool_lines(),
             "system" => self
@@ -108,7 +110,7 @@ impl Msg {
                 .lines()
                 .map(|l| {
                     Line::from(Span::styled(
-                        format!("  {}", l),
+                        format!("   {}", l),
                         Style::default().fg(ASHEN.ember),
                     ))
                 })
@@ -131,40 +133,51 @@ impl Msg {
         let mut lines = Vec::new();
 
         if let Some(pos) = self.content.find(" → ") {
-            // Tool result
+            // Tool result: "tool_name → result"
             let name = self.content[..pos].trim();
             let result = &self.content[pos + " → ".len()..];
 
-            lines.push(Line::from(Span::styled(
-                format!("tool {}", name),
-                Style::default().fg(ASHEN.ember_glow),
-            )));
-
+            // Truncate long results
             let result_lines: Vec<&str> = result.lines().collect();
-            let show = result_lines.len().min(4);
+            let max_lines = 3;
+            let show = result_lines.len().min(max_lines);
+
+            lines.push(Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled("▸", Style::default().fg(ASHEN.ember)),
+                Span::styled(", ", Style::default().fg(ASHEN.charcoal)),
+                Span::styled(name.to_string(), Style::default()
+                    .fg(ASHEN.ember_glow)
+                    .add_modifier(Modifier::BOLD)),
+            ]));
+
             for l in &result_lines[..show] {
                 lines.push(Line::from(Span::styled(
-                    format!("  {}", l),
+                    format!("      {}", l),
                     Style::default().fg(ASHEN.deep_ash),
                 )));
             }
-            if result_lines.len() > 4 {
+            if result_lines.len() > max_lines {
                 lines.push(Line::from(Span::styled(
-                    format!("  ... +{} more lines", result_lines.len()),
+                    format!("      … +{} more lines", result_lines.len() - max_lines),
                     Style::default().fg(ASHEN.charcoal),
                 )));
             }
         } else {
-            // Tool invocation
+            // Tool invocation: "tool_name {json}"
             let first_space = self.content.find(' ');
             if let Some(pos) = first_space {
                 let name = &self.content[..pos];
                 let args_str = self.content[pos..].trim();
 
-                lines.push(Line::from(Span::styled(
-                    format!("tool {}", name),
-                    Style::default().fg(ASHEN.ember_glow),
-                )));
+                lines.push(Line::from(vec![
+                    Span::styled("  ", Style::default()),
+                    Span::styled("▸", Style::default().fg(ASHEN.ember)),
+                    Span::styled(", ", Style::default().fg(ASHEN.charcoal)),
+                    Span::styled(name.to_string(), Style::default()
+                        .fg(ASHEN.ember_glow)
+                        .add_modifier(Modifier::BOLD)),
+                ]));
 
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(args_str) {
                     if let Some(path) = v.get("path").and_then(|p| p.as_str()) {
@@ -175,28 +188,28 @@ impl Msg {
                             path.to_string()
                         };
                         lines.push(Line::from(Span::styled(
-                            format!("  {}", display),
+                            format!("      {}", display),
                             Style::default().fg(ASHEN.smoke),
                         )));
                     } else if let Some(cmd) = v.get("command").and_then(|c| c.as_str()) {
                         lines.push(Line::from(Span::styled(
-                            format!("  $ {}", cmd),
+                            format!("      $ {}", cmd),
                             Style::default().fg(ASHEN.light_ash),
                         )));
                     } else if let Some(q) = v.get("query").and_then(|q| q.as_str()) {
                         lines.push(Line::from(Span::styled(
-                            format!("  \"{}\"", q),
+                            format!("      \"{}\"", q),
                             Style::default().fg(ASHEN.smoke),
                         )));
                     } else {
                         lines.push(Line::from(Span::styled(
-                            format!("  {}", args_str),
+                            format!("      {}", args_str),
                             Style::default().fg(ASHEN.smoke),
                         )));
                     }
                 } else {
                     lines.push(Line::from(Span::styled(
-                        format!("  {}", args_str),
+                        format!("      {}", args_str),
                         Style::default().fg(ASHEN.smoke),
                     )));
                 }
@@ -210,9 +223,51 @@ impl Msg {
     }
 }
 
+/// Merge all consecutive/adjacent thinking messages into one.
+/// This fixes fragmented thinking from interleaved reasoning + tool events.
+fn merge_thinking(messages: &[Msg]) -> Vec<Msg> {
+    let mut out: Vec<Msg> = Vec::new();
+    let mut thinking_buf = String::new();
+    let mut in_thinking = false;
+
+    for m in messages {
+        if m.role == "thinking" {
+            if in_thinking {
+                thinking_buf.push_str(&m.content);
+            } else {
+                in_thinking = true;
+                thinking_buf = m.content.clone();
+            }
+        } else {
+            if in_thinking {
+                // Flush accumulated thinking
+                out.push(Msg {
+                    role: "thinking".into(),
+                    content: thinking_buf.clone(),
+                });
+                thinking_buf.clear();
+                in_thinking = false;
+            }
+            out.push(Msg {
+                role: m.role.clone(),
+                content: m.content.clone(),
+            });
+        }
+    }
+    // Flush trailing thinking
+    if in_thinking && !thinking_buf.is_empty() {
+        out.push(Msg {
+            role: "thinking".into(),
+            content: thinking_buf,
+        });
+    }
+    out
+}
+
 /// Count the rendered lines for all messages (for scroll calculations).
 fn total_rendered_lines(messages: &[Msg]) -> usize {
-    messages.iter().map(|m| m.render_lines().len() + 1).sum()
+    let merged = merge_thinking(messages);
+    merged.iter().map(|m| m.render_lines().len() + 1).sum()
 }
 
 // ── Rendering helpers ──────────────────────────────────────────
@@ -259,9 +314,21 @@ fn draw_content(
     viewport_height: usize,
 ) {
     let mut all_lines: Vec<Line<'static>> = Vec::new();
-    for m in messages {
+
+    let merged = merge_thinking(messages);
+    for (i, m) in merged.iter().enumerate() {
+        // Add a thin separator between tool blocks and other messages
+        if i > 0
+            && (m.role == "tool" || merged[i - 1].role == "tool")
+            && m.role != merged[i - 1].role
+        {
+            all_lines.push(Line::from(Span::styled(
+                format!("   {}", "─".repeat(6)),
+                Style::default().fg(ASHEN.charcoal),
+            )));
+        }
         all_lines.extend(m.render_lines());
-        all_lines.push(Line::from("")); // blank separator
+        all_lines.push(Line::from("")); // blank line between messages
     }
 
     // If empty, show a welcome line
@@ -269,18 +336,18 @@ fn draw_content(
         all_lines = vec![
             Line::from(""),
             Line::from(Span::styled(
-                "  lean",
+                "    lean",
                 Style::default()
-                    .fg(ASHEN.ember)
+                    .fg(ASHEN.moss)
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
-                "  light coding assistant",
+                "    light coding assistant",
                 Style::default().fg(ASHEN.deep_ash),
             )),
             Line::from(""),
             Line::from(Span::styled(
-                "  type a message below. /help for commands.",
+                "    type a message below. /help for commands.",
                 Style::default().fg(ASHEN.deep_ash),
             )),
             Line::from(""),
