@@ -552,6 +552,10 @@ async fn app_loop(
     let mut ac_idx: usize = 0;
     let mut ac_scroll: usize = 0;
 
+    // message queue
+    let mut msg_queue: Vec<String> = Vec::new();
+    let mut agent_busy = false;
+
     loop {
         let term_size = terminal.size()?;
         let viewport_height = term_size.height.saturating_sub(5).max(1) as usize;
@@ -597,12 +601,14 @@ async fn app_loop(
             draw_separator(f, chunks[3]);
 
             // Input
-            let status = if messages.last().map_or(false, |m| m.role == "tool") {
-                "exec"
+            let status = if !msg_queue.is_empty() {
+                format!("queued:{}", msg_queue.len())
+            } else if messages.last().map_or(false, |m| m.role == "tool") {
+                "exec".to_string()
             } else {
-                ""
+                "".to_string()
             };
-            draw_input(f, chunks[4], &input_text, status);
+            draw_input(f, chunks[4], &input_text, &status);
 
             // Autocomplete popup
             if !ac_matches.is_empty() {
@@ -672,6 +678,8 @@ async fn app_loop(
                                     scroll = 0;
                                     auto_scroll = true;
                                     step_info.clear();
+                                    msg_queue.clear();
+                                    agent_busy = false;
                                 }
                                 "/help" => {
                                     messages.push(Msg {
@@ -708,16 +716,23 @@ async fn app_loop(
                         input_text.clear();
                         auto_scroll = true;
 
-                        let tx_clone = tx.clone();
-                        let model_clone = model.clone();
-                        tokio::spawn(async move {
-                            let stream = agent::run_agent(prompt, model_clone, 100);
-                            use futures::StreamExt;
-                            let mut s = Box::pin(stream);
-                            while let Some(ev) = s.next().await {
-                                let _ = tx_clone.send(ev);
-                            }
-                        });
+                        if agent_busy {
+                            // Queue for later
+                            msg_queue.push(prompt);
+                        } else {
+                            // Send immediately
+                            agent_busy = true;
+                            let tx_clone = tx.clone();
+                            let model_clone = model.clone();
+                            tokio::spawn(async move {
+                                let stream = agent::run_agent(prompt, model_clone, 100);
+                                use futures::StreamExt;
+                                let mut s = Box::pin(stream);
+                                while let Some(ev) = s.next().await {
+                                    let _ = tx_clone.send(ev);
+                                }
+                            });
+                        }
                     }
                     KeyCode::Up => {
                         if !ac_matches.is_empty() {
@@ -867,6 +882,24 @@ async fn app_loop(
                 AgentEvent::Done { text } => {
                     step_info = "done".into();
                     let _ = text;
+
+                    // Send next queued message if any
+                    if !msg_queue.is_empty() {
+                        let next = msg_queue.remove(0);
+                        step_info = "...".into();
+                        let tx_clone = tx.clone();
+                        let model_clone = model.clone();
+                        tokio::spawn(async move {
+                            let stream = agent::run_agent(next, model_clone, 100);
+                            use futures::StreamExt;
+                            let mut s = Box::pin(stream);
+                            while let Some(ev) = s.next().await {
+                                let _ = tx_clone.send(ev);
+                            }
+                        });
+                    } else {
+                        agent_busy = false;
+                    }
                 }
             }
             auto_scroll = true;
