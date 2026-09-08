@@ -261,11 +261,6 @@ fn merge_thinking(messages: &[Msg]) -> Vec<Msg> {
     out
 }
 
-/// Count the rendered lines for all messages (for scroll calculations).
-fn total_rendered_lines(messages: &[Msg]) -> usize {
-    let merged = merge_thinking(messages);
-    merged.iter().map(|m| m.render_lines().len() + 1).sum()
-}
 
 // ── Rendering helpers ──────────────────────────────────────────
 
@@ -385,13 +380,14 @@ fn wrap_lines(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
     out
 }
 
+/// Build the full list of lines for the content area, wrap them, and render.
+/// Returns the total number of wrapped lines (for scroll calculations).
 fn draw_content(
     f: &mut Frame,
     area: Rect,
     messages: &[Msg],
     scroll: u16,
-    viewport_height: usize,
-) {
+) -> usize {
     let mut all_lines: Vec<Line<'static>> = Vec::new();
 
     let merged = merge_thinking(messages);
@@ -407,7 +403,10 @@ fn draw_content(
             )));
         }
         all_lines.extend(m.render_lines());
-        all_lines.push(Line::from("")); // blank line between messages
+        // Blank line between messages (but not after the last one)
+        if i + 1 < merged.len() {
+            all_lines.push(Line::from(""));
+        }
     }
 
     // If empty, show a welcome line
@@ -435,12 +434,13 @@ fn draw_content(
 
     // Wrap lines to fit the content area width
     let wrapped = wrap_lines(all_lines, area.width as usize);
+    let total = wrapped.len();
 
     let para = Paragraph::new(wrapped)
-        .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
     f.render_widget(para, area);
-    let _ = viewport_height;
+
+    total
 }
 
 fn draw_input(f: &mut Frame, area: Rect, input_text: &str) {
@@ -635,7 +635,6 @@ async fn app_loop(
         let term_size = terminal.size()?;
         let queue_rows = msg_queue.len().min(2) as u16;
         let overhead = 5 + queue_rows; // header + sep + sep + queue + input + footer
-        let viewport_height = term_size.height.saturating_sub(overhead).max(1) as usize;
         // Content area: starts at row 2 (after header + sep), height is the rest
         let content_area = Rect {
             x: 0,
@@ -644,11 +643,8 @@ async fn app_loop(
             height: term_size.height.saturating_sub(overhead).max(1),
         };
 
-        terminal.draw(|f| {
-            // Fill entire screen with page background first
-            let bg_block = Block::default().style(Style::default().bg(THEME.page_bg));
-            f.render_widget(bg_block, f.area());
-
+        // Pre-compute layout so we know content area dimensions
+        let chunks = {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -660,7 +656,31 @@ async fn app_loop(
                     Constraint::Length(1), // input
                     Constraint::Length(1), // footer
                 ])
-                .split(f.area());
+                .split(Rect {
+                    x: 0,
+                    y: 0,
+                    width: term_size.width,
+                    height: term_size.height,
+                });
+            chunks
+        };
+        let content_height = chunks[2].height as usize;
+
+        // First pass: render to count wrapped lines, then fix auto-scroll
+        let mut total_lines: usize = 0;
+        terminal.draw(|f| {
+            let bg_block = Block::default().style(Style::default().bg(THEME.page_bg));
+            f.render_widget(bg_block, f.area());
+            total_lines = draw_content(f, chunks[2], &messages, 0);
+        })?;
+        if auto_scroll {
+            scroll = total_lines.saturating_sub(content_height) as u16;
+        }
+
+        // Second pass: render with correct scroll
+        terminal.draw(|f| {
+            let bg_block = Block::default().style(Style::default().bg(THEME.page_bg));
+            f.render_widget(bg_block, f.area());
 
             // Header
             draw_header(f, chunks[0], &model, &step_info, spinner_tick);
@@ -669,11 +689,7 @@ async fn app_loop(
             draw_separator(f, chunks[1]);
 
             // Content
-            let total = total_rendered_lines(&messages);
-            if auto_scroll {
-                scroll = total.saturating_sub(viewport_height) as u16;
-            }
-            draw_content(f, chunks[2], &messages, scroll, viewport_height);
+            draw_content(f, chunks[2], &messages, scroll);
 
             // Separator
             draw_separator(f, chunks[3]);
@@ -706,8 +722,7 @@ async fn app_loop(
                                 auto_scroll = false;
                             }
                             MouseEventKind::ScrollDown => {
-                                let total = total_rendered_lines(&messages);
-                                let max_scroll = total.saturating_sub(viewport_height) as u16;
+                                let max_scroll = total_lines.saturating_sub(content_height) as u16;
                                 scroll = (scroll + 3).min(max_scroll);
                                 if scroll >= max_scroll {
                                     auto_scroll = true;
@@ -782,19 +797,19 @@ async fn app_loop(
                         // Send user message
                         history.push(prompt.clone());
                         hist_idx = None;
-                        messages.push(Msg {
-                            role: "user".into(),
-                            content: prompt.clone(),
-                        });
                         step_info = "...".into();
                         input_text.clear();
                         auto_scroll = true;
 
                         if agent_busy {
-                            // Queue for later
+                            // Queue for later — don't add to messages yet
                             msg_queue.push(prompt);
                         } else {
                             // Send immediately
+                            messages.push(Msg {
+                                role: "user".into(),
+                                content: prompt.clone(),
+                            });
                             agent_busy = true;
                             let tx_clone = tx.clone();
                             let model_clone = model.clone();
@@ -850,13 +865,12 @@ async fn app_loop(
                         }
                     }
                     KeyCode::PageUp => {
-                        scroll = scroll.saturating_sub(viewport_height as u16);
+                        scroll = scroll.saturating_sub(content_height as u16);
                         auto_scroll = false;
                     }
                     KeyCode::PageDown => {
-                        let total = total_rendered_lines(&messages);
-                        let max_scroll = total.saturating_sub(viewport_height) as u16;
-                        scroll = (scroll + viewport_height as u16).min(max_scroll);
+                        let max_scroll = total_lines.saturating_sub(content_height) as u16;
+                        scroll = (scroll + content_height as u16).min(max_scroll);
                         if scroll >= max_scroll {
                             auto_scroll = true;
                         }
@@ -960,6 +974,10 @@ async fn app_loop(
                     // Send next queued message if any
                     if !msg_queue.is_empty() {
                         let next = msg_queue.remove(0);
+                        messages.push(Msg {
+                            role: "user".into(),
+                            content: next.clone(),
+                        });
                         step_info = "...".into();
                         let tx_clone = tx.clone();
                         let model_clone = model.clone();
