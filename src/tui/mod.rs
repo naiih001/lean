@@ -837,6 +837,7 @@ async fn app_loop(
                     }
                 }
                 Event::Key(k) => {
+                let mut submit_pending = false;
                 match k.code {
                     KeyCode::Esc => {
                         if show_todos {
@@ -878,7 +879,16 @@ async fn app_loop(
                         }
                     }
                     KeyCode::Char('d') if k.modifiers.contains(KeyModifiers::CONTROL) => break,
+                    KeyCode::Enter if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                        // Ctrl+Enter: always submit
+                        ac_matches.clear();
+                        ac_idx = 0;
+                        if !input_text.trim().is_empty() {
+                            submit_pending = true;
+                        }
+                    }
                     KeyCode::Enter if k.modifiers.contains(KeyModifiers::SHIFT) => {
+                        // Shift+Enter: always newline
                         input_text.push('\n');
                         ac_matches = autocomplete_matches(&input_text);
                         ac_idx = 0;
@@ -890,82 +900,15 @@ async fn app_loop(
                             ac_matches.clear();
                             ac_idx = 0;
                         }
-                        let prompt = input_text.trim().to_string();
-                        if prompt.is_empty() {
+                        // Enter inserts a newline when at the end of input
+                        if !input_text.ends_with('\n') && !input_text.is_empty() {
+                            input_text.push('\n');
                             continue;
                         }
                         ac_matches.clear();
                         ac_idx = 0;
-                        if prompt.starts_with('/') {
-                            match prompt.as_str() {
-                                "/exit" | "/quit" => break,
-                                "/new" | "/clear" => {
-                                    if let Some(handle) = agent_handle.take() {
-                                        handle.abort();
-                                    }
-                                    // Drain stale events from the aborted agent
-                                    while rx.try_recv().is_ok() {}
-                                    messages.clear();
-                                    scroll = 0;
-                                    auto_scroll = true;
-                                    step_info.clear();
-                                    msg_queue.clear();
-                                    agent_busy = false;
-                                }
-                                "/help" => {
-                                    messages.push(Msg {
-                                        role: "system".into(),
-                                        content: "/help /new /todo /model <name> /clear /exit  ·  Enter send · Shift+Enter newline · Up/Down history · PgUp/PgDn scroll".into(),
-                                    });
-                                }
-                                "/todo" => {
-                                    show_todos = !show_todos;
-                                }
-                                _ if prompt.starts_with("/model ") => {
-                                    let m = prompt.strip_prefix("/model ").unwrap().trim();
-                                    messages.push(Msg {
-                                        role: "system".into(),
-                                        content: format!("model: {} (restart to apply)", m),
-                                    });
-                                }
-                                _ => {
-                                    messages.push(Msg {
-                                        role: "system".into(),
-                                        content: format!("unknown command: {}", prompt),
-                                    });
-                                }
-                            }
-                            input_text.clear();
-                            hist_idx = None;
-                            continue;
-                        }
-                        // Send user message
-                        history.push(prompt.clone());
-                        hist_idx = None;
-                        step_info = "...".into();
-                        input_text.clear();
-                        auto_scroll = true;
-
-                        if agent_busy {
-                            // Queue for later — don't add to messages yet
-                            msg_queue.push(prompt);
-                        } else {
-                            // Send immediately
-                            messages.push(Msg {
-                                role: "user".into(),
-                                content: prompt.clone(),
-                            });
-                            agent_busy = true;
-                            let tx_clone = tx.clone();
-                            let model_clone = model.clone();
-                            agent_handle = Some(tokio::spawn(async move {
-                                let stream = agent::run_agent(prompt, model_clone, 100);
-                                use futures::StreamExt;
-                                let mut s = Box::pin(stream);
-                                while let Some(ev) = s.next().await {
-                                    let _ = tx_clone.send(ev);
-                                }
-                            }));
+                        if !input_text.trim().is_empty() {
+                            submit_pending = true;
                         }
                     }
                     KeyCode::Up => {
@@ -1028,6 +971,80 @@ async fn app_loop(
                         auto_scroll = true;
                     }
                     _ => {}
+                }
+                // Handle pending submit (Ctrl+Enter or Enter at end)
+                if submit_pending {
+                    let prompt = input_text.trim().to_string();
+                    if prompt.is_empty() {
+                        // skip
+                    } else if prompt.starts_with('/') {
+                        match prompt.as_str() {
+                            "/exit" | "/quit" => break,
+                            "/new" | "/clear" => {
+                                if let Some(handle) = agent_handle.take() {
+                                    handle.abort();
+                                }
+                                while rx.try_recv().is_ok() {}
+                                messages.clear();
+                                scroll = 0;
+                                auto_scroll = true;
+                                step_info.clear();
+                                msg_queue.clear();
+                                agent_busy = false;
+                            }
+                            "/help" => {
+                                messages.push(Msg {
+                                    role: "system".into(),
+                                    content: "/help /new /todo /model <name> /clear /exit  ·  Ctrl+Enter send · Enter newline · Shift+Enter newline · Up/Down history · PgUp/PgDn scroll".into(),
+                                });
+                            }
+                            "/todo" => {
+                                show_todos = !show_todos;
+                            }
+                            _ if prompt.starts_with("/model ") => {
+                                let m = prompt.strip_prefix("/model ").unwrap().trim();
+                                messages.push(Msg {
+                                    role: "system".into(),
+                                    content: format!("model: {} (restart to apply)", m),
+                                });
+                            }
+                            _ => {
+                                messages.push(Msg {
+                                    role: "system".into(),
+                                    content: format!("unknown command: {}", prompt),
+                                });
+                            }
+                        }
+                        input_text.clear();
+                        hist_idx = None;
+                    } else {
+                        // Send user message
+                        history.push(prompt.clone());
+                        hist_idx = None;
+                        step_info = "...".into();
+                        input_text.clear();
+                        auto_scroll = true;
+
+                        if agent_busy {
+                            msg_queue.push(prompt);
+                        } else {
+                            messages.push(Msg {
+                                role: "user".into(),
+                                content: prompt.clone(),
+                            });
+                            agent_busy = true;
+                            let tx_clone = tx.clone();
+                            let model_clone = model.clone();
+                            agent_handle = Some(tokio::spawn(async move {
+                                let stream = agent::run_agent(prompt, model_clone, 100);
+                                use futures::StreamExt;
+                                let mut s = Box::pin(stream);
+                                while let Some(ev) = s.next().await {
+                                    let _ = tx_clone.send(ev);
+                                }
+                            }));
+                        }
+                    }
                 }
                 }
                 _ => {}
