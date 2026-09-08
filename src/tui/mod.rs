@@ -396,12 +396,6 @@ async fn app_loop(
     let mut hist_idx: Option<usize> = None;
     let mut input_text = String::new();
 
-    // Show cursor at start
-    crossterm::execute!(
-        terminal.backend_mut(),
-        crossterm::cursor::Show
-    )?;
-
     loop {
         let term_size = terminal.size()?;
         let viewport_height = term_size.height.saturating_sub(5).max(1) as usize; // header + sep + sep + input + footer = 5 fixed rows
