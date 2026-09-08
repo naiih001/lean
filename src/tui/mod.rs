@@ -524,7 +524,7 @@ fn draw_footer(f: &mut Frame, area: Rect, model: &str, msg_count: usize, cwd: &s
 
 // ── Autocomplete ─────────────────────────────────────────────
 
-const COMMANDS: &[&str] = &["/help", "/clear", "/exit", "/quit", "/model"];
+const COMMANDS: &[&str] = &["/help", "/new", "/clear", "/todo", "/exit", "/quit", "/model"];
 
 /// Filter commands matching the current input prefix.
 fn autocomplete_matches(input: &str) -> Vec<&'static str> {
@@ -899,7 +899,10 @@ async fn app_loop(
                         if prompt.starts_with('/') {
                             match prompt.as_str() {
                                 "/exit" | "/quit" => break,
-                                "/clear" => {
+                                "/new" | "/clear" => {
+                                    if let Some(handle) = agent_handle.take() {
+                                        handle.abort();
+                                    }
                                     messages.clear();
                                     scroll = 0;
                                     auto_scroll = true;
@@ -910,7 +913,7 @@ async fn app_loop(
                                 "/help" => {
                                     messages.push(Msg {
                                         role: "system".into(),
-                                        content: "/help /todo /model <name> /clear /exit  ·  Enter send · Shift+Enter newline · Up/Down history · PgUp/PgDn scroll".into(),
+                                        content: "/help /new /todo /model <name> /clear /exit  ·  Enter send · Shift+Enter newline · Up/Down history · PgUp/PgDn scroll".into(),
                                     });
                                 }
                                 "/todo" => {
