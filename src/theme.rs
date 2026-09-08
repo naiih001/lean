@@ -16,6 +16,7 @@ pub struct Ashen {
     pub bone: Color,
     pub phantom: Color,
     pub stone: Color,
+    pub whisper: Color,
 }
 
 pub const ASHEN: Ashen = Ashen {
@@ -34,6 +35,7 @@ pub const ASHEN: Ashen = Ashen {
     bone: Color::Rgb(0xd8, 0xd8, 0xdc),
     phantom: Color::Rgb(0x46, 0x50, 0x54),
     stone: Color::Rgb(0x38, 0x3c, 0x40),
+    whisper: Color::Rgb(0x4a, 0x4a, 0x50),
 };
 
 pub struct Theme {
