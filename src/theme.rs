@@ -38,6 +38,9 @@ pub struct Theme {
     pub page_bg: Color,
     pub user_bg: Color,
     pub selected_bg: Color,
+    pub header_bg: Color,
+    pub input_bg: Color,
+    pub separator: Color,
 }
 
 pub const THEME: Theme = Theme {
@@ -46,6 +49,9 @@ pub const THEME: Theme = Theme {
     page_bg: Color::Rgb(0x1a, 0x1a, 0x1e),
     user_bg: Color::Rgb(0x2e, 0x2e, 0x32),
     selected_bg: Color::Rgb(0x38, 0x38, 0x3c),
+    header_bg: Color::Rgb(0x22, 0x22, 0x26),
+    input_bg: Color::Rgb(0x1e, 0x1e, 0x22),
+    separator: Color::Rgb(0x36, 0x36, 0x3a),
 };
 
 impl Theme {
@@ -56,6 +62,9 @@ impl Theme {
             page_bg: THEME.page_bg,
             user_bg: THEME.user_bg,
             selected_bg: THEME.selected_bg,
+            header_bg: THEME.header_bg,
+            input_bg: THEME.input_bg,
+            separator: THEME.separator,
         }
     }
 }
