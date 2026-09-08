@@ -5,7 +5,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::{Block, Paragraph, Wrap};
 use ratatui::Frame;
 use std::io::Stdout;
 
@@ -301,7 +301,7 @@ fn draw_header(f: &mut Frame, area: Rect, model: &str, step_info: &str) {
 fn draw_separator(f: &mut Frame, area: Rect) {
     let sep = Paragraph::new(Line::from(Span::styled(
         "─".repeat(area.width as usize),
-        Style::default().fg(THEME.separator),
+        Style::default().fg(THEME.separator).bg(THEME.page_bg),
     )));
     f.render_widget(sep, area);
 }
@@ -355,6 +355,7 @@ fn draw_content(
     }
 
     let para = Paragraph::new(all_lines)
+        .style(Style::default().bg(THEME.page_bg))
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
     f.render_widget(para, area);
@@ -397,7 +398,7 @@ fn draw_input(f: &mut Frame, area: Rect, input_text: &str, status: &str) {
         ),
     ]);
 
-    let para = Paragraph::new(line);
+    let para = Paragraph::new(line).style(Style::default().bg(THEME.input_bg));
     f.render_widget(para, area);
 }
 
@@ -438,7 +439,7 @@ fn draw_footer(f: &mut Frame, area: Rect, model: &str, msg_count: usize, cwd: &s
 
     let footer = Paragraph::new(Line::from(Span::styled(
         footer_text,
-        Style::default().fg(ASHEN.charcoal),
+        Style::default().fg(ASHEN.charcoal).bg(THEME.page_bg),
     )));
     f.render_widget(footer, area);
 }
@@ -468,6 +469,10 @@ async fn app_loop(
         let viewport_height = term_size.height.saturating_sub(5).max(1) as usize; // header + sep + sep + input + footer = 5 fixed rows
 
         terminal.draw(|f| {
+            // Fill entire screen with page background first
+            let bg_block = Block::default().style(Style::default().bg(THEME.page_bg));
+            f.render_widget(bg_block, f.area());
+
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -631,6 +636,9 @@ async fn app_loop(
         while let Ok(ev) = rx.try_recv() {
             match ev {
                 AgentEvent::Text { delta } => {
+                    if delta.is_empty() {
+                        continue;
+                    }
                     if let Some(last) = messages.last_mut() {
                         if last.role == "assistant" {
                             last.content.push_str(&delta);
