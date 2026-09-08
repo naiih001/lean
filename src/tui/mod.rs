@@ -102,7 +102,7 @@ impl Msg {
         if let Some(pos) = self.content.find(" → ") {
             // ── Tool result ──
             let name = self.content[..pos].trim();
-            let result = &self.content[pos + 3..];
+            let result = &self.content[pos + " → ".len()..];
 
             lines.push(Line::from(Span::styled(
                 format!("{} ✓", name),
@@ -456,11 +456,12 @@ async fn app_loop(
                     });
                 }
                 AgentEvent::ToolResult { name, result, id: _ } => {
-                    let display = if result.len() > 2000 {
+                    let truncated: String = result.chars().take(2000).collect();
+                    let display = if result.chars().count() > 2000 {
                         format!(
                             "{}… [truncated {} chars]",
-                            &result[..2000],
-                            result.len() - 2000
+                            truncated,
+                            result.chars().count() - 2000
                         )
                     } else {
                         result
