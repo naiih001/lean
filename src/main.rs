@@ -3,6 +3,7 @@ mod llm;
 mod memory;
 mod skills;
 mod theme;
+mod todo;
 mod tools;
 mod tui;
 

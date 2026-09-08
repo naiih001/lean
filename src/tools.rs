@@ -277,6 +277,27 @@ pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
             let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("");
             Ok(crate::memory::api_forget(id))
         }
+        "todo" => {
+            let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("list");
+            match action {
+                "add" => {
+                    let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                    let priority = args.get("priority").and_then(|v| v.as_str()).unwrap_or("medium");
+                    let group = args.get("group").and_then(|v| v.as_str()).unwrap_or("");
+                    Ok(crate::todo::api_add(content, priority, group))
+                }
+                "update" => {
+                    let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    let status = args.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                    Ok(crate::todo::api_update(id, status))
+                }
+                "remove" => {
+                    let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    Ok(crate::todo::api_remove(id))
+                }
+                _ => Ok(crate::todo::api_list()),
+            }
+        }
         _ => Err(format!("unknown tool: {}", name)),
     };
     match res {
