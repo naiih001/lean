@@ -462,11 +462,10 @@ fn draw_footer(f: &mut Frame, area: Rect, model: &str, msg_count: usize, cwd: &s
     let width = area.width as usize;
 
     let spinner = ["\u{280b}", "\u{2819}", "\u{2813}", "\u{2827}", "\u{2836}", "\u{2834}", "\u{2826}", "\u{282e}"];
-    let left = if agent_busy {
-        let ch = spinner[spinner_tick % spinner.len()];
-        format!(" {} {} ", ch, model)
+    let spinner_char = if agent_busy {
+        format!("{} ", spinner[spinner_tick % spinner.len()])
     } else {
-        format!(" {} ", model)
+        String::new()
     };
     let right = format!(" {} msgs ", msg_count);
 
@@ -481,7 +480,7 @@ fn draw_footer(f: &mut Frame, area: Rect, model: &str, msg_count: usize, cwd: &s
     };
     let center = format!(" {} ", short_cwd);
 
-    let used = left.len() + center.len() + right.len();
+    let used = spinner_char.len() + 1 + model.len() + 2 + center.len() + right.len();
     let gap = if used < width {
         width - used
     } else {
@@ -490,19 +489,36 @@ fn draw_footer(f: &mut Frame, area: Rect, model: &str, msg_count: usize, cwd: &s
     let gap_left = gap / 2;
     let gap_right = gap - gap_left;
 
-    let footer_text = format!(
-        "{}{}{}{}{}",
-        left,
+    let mut spans = vec![
+        Span::styled(
+            format!(" {} ", model),
+            Style::default().fg(ASHEN.charcoal).bg(THEME.page_bg),
+        ),
+    ];
+    if !spinner_char.is_empty() {
+        spans.insert(0, Span::styled(
+            spinner_char,
+            Style::default().fg(ASHEN.bone).bg(THEME.page_bg).add_modifier(Modifier::BOLD),
+        ));
+    }
+    spans.push(Span::styled(
         " ".repeat(gap_left),
+        Style::default().bg(THEME.page_bg),
+    ));
+    spans.push(Span::styled(
         center,
-        " ".repeat(gap_right),
-        right,
-    );
-
-    let footer = Paragraph::new(Line::from(Span::styled(
-        footer_text,
         Style::default().fg(ASHEN.charcoal).bg(THEME.page_bg),
-    )));
+    ));
+    spans.push(Span::styled(
+        " ".repeat(gap_right),
+        Style::default().bg(THEME.page_bg),
+    ));
+    spans.push(Span::styled(
+        right,
+        Style::default().fg(ASHEN.charcoal).bg(THEME.page_bg),
+    ));
+
+    let footer = Paragraph::new(Line::from(spans));
     f.render_widget(footer, area);
 }
 
