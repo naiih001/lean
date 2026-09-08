@@ -492,7 +492,7 @@ fn draw_footer(f: &mut Frame, area: Rect, model: &str, msg_count: usize, cwd: &s
     let mut spans = vec![
         Span::styled(
             format!(" {} ", model),
-            Style::default().fg(ASHEN.charcoal).bg(THEME.page_bg),
+            Style::default().fg(ASHEN.smoke).bg(THEME.page_bg),
         ),
     ];
     if !spinner_char.is_empty() {
@@ -507,7 +507,7 @@ fn draw_footer(f: &mut Frame, area: Rect, model: &str, msg_count: usize, cwd: &s
     ));
     spans.push(Span::styled(
         center,
-        Style::default().fg(ASHEN.charcoal).bg(THEME.page_bg),
+        Style::default().fg(ASHEN.smoke).bg(THEME.page_bg),
     ));
     spans.push(Span::styled(
         " ".repeat(gap_right),
@@ -515,7 +515,7 @@ fn draw_footer(f: &mut Frame, area: Rect, model: &str, msg_count: usize, cwd: &s
     ));
     spans.push(Span::styled(
         right,
-        Style::default().fg(ASHEN.charcoal).bg(THEME.page_bg),
+        Style::default().fg(ASHEN.smoke).bg(THEME.page_bg),
     ));
 
     let footer = Paragraph::new(Line::from(spans));
@@ -633,6 +633,7 @@ async fn app_loop(
     // message queue
     let mut msg_queue: Vec<String> = Vec::new();
     let mut agent_busy = false;
+    let mut agent_handle: Option<tokio::task::JoinHandle<()>> = None;
     let mut spinner_tick: usize = 0;
 
     loop {
@@ -740,6 +741,17 @@ async fn app_loop(
                         if !ac_matches.is_empty() {
                             ac_matches.clear();
                             ac_idx = 0;
+                        } else if agent_busy {
+                            // Abort the running agent
+                            if let Some(handle) = agent_handle.take() {
+                                handle.abort();
+                            }
+                            agent_busy = false;
+                            step_info.clear();
+                            messages.push(Msg {
+                                role: "system".into(),
+                                content: "[interrupted]".into(),
+                            });
                         }
                     }
                     KeyCode::Char('d') if k.modifiers.contains(KeyModifiers::CONTROL) => break,
@@ -815,14 +827,14 @@ async fn app_loop(
                             agent_busy = true;
                             let tx_clone = tx.clone();
                             let model_clone = model.clone();
-                            tokio::spawn(async move {
+                            agent_handle = Some(tokio::spawn(async move {
                                 let stream = agent::run_agent(prompt, model_clone, 100);
                                 use futures::StreamExt;
                                 let mut s = Box::pin(stream);
                                 while let Some(ev) = s.next().await {
                                     let _ = tx_clone.send(ev);
                                 }
-                            });
+                            }));
                         }
                     }
                     KeyCode::Up => {
@@ -972,6 +984,7 @@ async fn app_loop(
                 AgentEvent::Done { text } => {
                     step_info = "done".into();
                     let _ = text;
+                    agent_handle.take();
 
                     // Send next queued message if any
                     if !msg_queue.is_empty() {
@@ -983,14 +996,14 @@ async fn app_loop(
                         step_info = "...".into();
                         let tx_clone = tx.clone();
                         let model_clone = model.clone();
-                        tokio::spawn(async move {
+                        agent_handle = Some(tokio::spawn(async move {
                             let stream = agent::run_agent(next, model_clone, 100);
                             use futures::StreamExt;
                             let mut s = Box::pin(stream);
                             while let Some(ev) = s.next().await {
                                 let _ = tx_clone.send(ev);
                             }
-                        });
+                        }));
                     } else {
                         agent_busy = false;
                     }
