@@ -5,7 +5,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 use std::io::Stdout;
 
@@ -444,6 +444,79 @@ fn draw_footer(f: &mut Frame, area: Rect, model: &str, msg_count: usize, cwd: &s
     f.render_widget(footer, area);
 }
 
+// ── Autocomplete ─────────────────────────────────────────────
+
+const COMMANDS: &[&str] = &["/help", "/clear", "/exit", "/quit", "/model"];
+
+/// Filter commands matching the current input prefix.
+fn autocomplete_matches(input: &str) -> Vec<&'static str> {
+    if input.is_empty() || !input.starts_with('/') {
+        return Vec::new();
+    }
+    COMMANDS
+        .iter()
+        .copied()
+        .filter(|cmd| cmd.starts_with(input))
+        .collect()
+}
+
+/// Draw a small autocomplete popup above the input area.
+fn draw_autocomplete(
+    f: &mut Frame,
+    input_area: Rect,
+    matches: &[&str],
+    selected: usize,
+) {
+    if matches.is_empty() {
+        return;
+    }
+
+    let max_cmd_len = matches.iter().map(|c| c.len()).max().unwrap_or(10);
+    let popup_width = (max_cmd_len + 4) as u16;
+    let popup_height = matches.len() as u16 + 2; // +2 for borders
+
+    // Position: right-aligned above input, or left if not enough space
+    let x = input_area.x;
+    let y = input_area.y.saturating_sub(popup_height);
+
+    let area = Rect {
+        x,
+        y,
+        width: popup_width.min(input_area.width),
+        height: popup_height.min(input_area.y),
+    };
+
+    if area.height < 2 || area.width < 4 {
+        return;
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ASHEN.charcoal))
+        .style(Style::default().bg(THEME.header_bg));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let items: Vec<Line<'static>> = matches
+        .iter()
+        .enumerate()
+        .map(|(i, cmd)| {
+            let style = if i == selected {
+                Style::default()
+                    .fg(ASHEN.bone)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(ASHEN.smoke)
+            };
+            Line::from(Span::styled(format!(" {} ", cmd), style))
+        })
+        .collect();
+
+    let para = Paragraph::new(items);
+    f.render_widget(para, inner);
+}
+
 // ── App loop ───────────────────────────────────────────────────
 
 async fn app_loop(
@@ -463,6 +536,10 @@ async fn app_loop(
     let mut history: Vec<String> = Vec::new();
     let mut hist_idx: Option<usize> = None;
     let mut input_text = String::new();
+
+    // autocomplete
+    let mut ac_matches: Vec<&str> = Vec::new();
+    let mut ac_idx: usize = 0;
 
     loop {
         let term_size = terminal.size()?;
@@ -509,6 +586,11 @@ async fn app_loop(
             };
             draw_input(f, chunks[4], &input_text, status);
 
+            // Autocomplete popup
+            if !ac_matches.is_empty() {
+                draw_autocomplete(f, chunks[4], &ac_matches, ac_idx);
+            }
+
             // Footer
             draw_footer(f, chunks[5], &model, messages.len(), &cwd);
         })?;
@@ -517,15 +599,31 @@ async fn app_loop(
         if event::poll(std::time::Duration::from_millis(50))? {
             if let Event::Key(k) = event::read()? {
                 match k.code {
-                    KeyCode::Esc | KeyCode::Char('d') if k.modifiers.contains(KeyModifiers::CONTROL) => break,
+                    KeyCode::Esc => {
+                        if !ac_matches.is_empty() {
+                            ac_matches.clear();
+                            ac_idx = 0;
+                        }
+                    }
+                    KeyCode::Char('d') if k.modifiers.contains(KeyModifiers::CONTROL) => break,
                     KeyCode::Enter if k.modifiers.contains(KeyModifiers::SHIFT) => {
                         input_text.push('\n');
+                        ac_matches = autocomplete_matches(&input_text);
+                        ac_idx = 0;
                     }
                     KeyCode::Enter => {
+                        // If autocomplete is visible, complete first
+                        if !ac_matches.is_empty() {
+                            input_text = ac_matches[ac_idx].to_string();
+                            ac_matches.clear();
+                            ac_idx = 0;
+                        }
                         let prompt = input_text.trim().to_string();
                         if prompt.is_empty() {
                             continue;
                         }
+                        ac_matches.clear();
+                        ac_idx = 0;
                         if prompt.starts_with('/') {
                             match prompt.as_str() {
                                 "/exit" | "/quit" => break,
@@ -582,17 +680,20 @@ async fn app_loop(
                         });
                     }
                     KeyCode::Up => {
-                        if history.is_empty() {
-                            continue;
+                        if !ac_matches.is_empty() {
+                            ac_idx = if ac_idx == 0 { ac_matches.len() - 1 } else { ac_idx - 1 };
+                        } else if !history.is_empty() {
+                            let idx = hist_idx
+                                .map(|i| if i == 0 { 0 } else { i - 1 })
+                                .unwrap_or(history.len() - 1);
+                            hist_idx = Some(idx);
+                            input_text = history[idx].clone();
                         }
-                        let idx = hist_idx
-                            .map(|i| if i == 0 { 0 } else { i - 1 })
-                            .unwrap_or(history.len() - 1);
-                        hist_idx = Some(idx);
-                        input_text = history[idx].clone();
                     }
                     KeyCode::Down => {
-                        if let Some(idx) = hist_idx {
+                        if !ac_matches.is_empty() {
+                            ac_idx = (ac_idx + 1) % ac_matches.len();
+                        } else if let Some(idx) = hist_idx {
                             if idx + 1 < history.len() {
                                 hist_idx = Some(idx + 1);
                                 input_text = history[idx + 1].clone();
@@ -604,9 +705,20 @@ async fn app_loop(
                     }
                     KeyCode::Char(c) => {
                         input_text.push(c);
+                        ac_matches = autocomplete_matches(&input_text);
+                        ac_idx = 0;
                     }
                     KeyCode::Backspace => {
                         input_text.pop();
+                        ac_matches = autocomplete_matches(&input_text);
+                        ac_idx = 0;
+                    }
+                    KeyCode::Tab => {
+                        if !ac_matches.is_empty() {
+                            input_text = ac_matches[ac_idx].to_string();
+                            ac_matches.clear();
+                            ac_idx = 0;
+                        }
                     }
                     KeyCode::PageUp => {
                         scroll = scroll.saturating_sub(viewport_height as u16);
