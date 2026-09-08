@@ -204,7 +204,7 @@ async fn app_loop(
     let mut cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
-    let mut ctx_info = String::from("0 msgs");
+    let mut ctx_info = String::new();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
 
     // input history
@@ -345,7 +345,7 @@ async fn app_loop(
                         let tx_clone = tx.clone();
                         let model_clone = model.clone();
                         tokio::spawn(async move {
-                            let mut stream = agent::run_agent(prompt, model_clone, 100);
+                            let stream = agent::run_agent(prompt, model_clone, 100);
                             use futures::StreamExt;
                             let mut s = Box::pin(stream);
                             while let Some(ev) = s.next().await {
@@ -424,7 +424,6 @@ async fn app_loop(
                         });
                     }
                     status = "Streaming…".into();
-                    auto_scroll = true;
                 }
                 AgentEvent::Reasoning { delta } => {
                     if let Some(last) = messages.last_mut() {
@@ -442,7 +441,6 @@ async fn app_loop(
                             content: delta,
                         });
                     }
-                    auto_scroll = true;
                 }
                 AgentEvent::TextDone { text } => {
                     let _ = text;
@@ -456,7 +454,6 @@ async fn app_loop(
                             serde_json::to_string(&args).unwrap_or_default()
                         ),
                     });
-                    auto_scroll = true;
                 }
                 AgentEvent::ToolResult { name, result, id: _ } => {
                     let display = if result.len() > 2000 {
@@ -477,7 +474,6 @@ async fn app_loop(
                             cwd = new_cwd.display().to_string();
                         }
                     }
-                    auto_scroll = true;
                 }
                 AgentEvent::Step { n } => {
                     status = format!("Step {}", n);
