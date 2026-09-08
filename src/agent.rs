@@ -97,7 +97,18 @@ pub fn run_agent(
                     .collect::<Vec<&str>>()
                     .join(" ");
                 if let Some(memory_note) = crate::memory::autorecall(&context) {
-                    messages.insert(1, json!({"role": "system", "content": memory_note}));
+                    let recall_msg = json!({"role": "system", "content": memory_note});
+                    // Replace previous autorecall injection if present, else insert
+                    if messages.len() > 1
+                        && messages[1].get("role").and_then(|r| r.as_str()) == Some("system")
+                        && messages[1].get("content").and_then(|c| c.as_str())
+                            .map(|c| c.starts_with("Recalled memories"))
+                            .unwrap_or(false)
+                    {
+                        messages[1] = recall_msg;
+                    } else {
+                        messages.insert(1, recall_msg);
+                    }
                 }
             }
 
