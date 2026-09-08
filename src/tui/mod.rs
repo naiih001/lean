@@ -903,6 +903,8 @@ async fn app_loop(
                                     if let Some(handle) = agent_handle.take() {
                                         handle.abort();
                                     }
+                                    // Drain stale events from the aborted agent
+                                    while rx.try_recv().is_ok() {}
                                     messages.clear();
                                     scroll = 0;
                                     auto_scroll = true;
