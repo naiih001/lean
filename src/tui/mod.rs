@@ -9,6 +9,8 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 use std::io::Stdout;
 
+mod markdown;
+
 pub async fn run(model: String) -> anyhow::Result<()> {
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
@@ -72,12 +74,7 @@ impl Msg {
                         .fg(ASHEN.moss)
                         .add_modifier(Modifier::BOLD)),
                 ])];
-                for l in self.content.lines() {
-                    lines.push(Line::from(Span::styled(
-                        format!("     {}", l),
-                        Style::default().fg(ASHEN.smoke),
-                    )));
-                }
+                lines.extend(markdown::render_markdown(&self.content, 5));
                 lines
             }
             "thinking" => {
@@ -154,7 +151,7 @@ impl Msg {
             for l in &result_lines[..show] {
                 lines.push(Line::from(Span::styled(
                     format!("      {}", l),
-                    Style::default().fg(ASHEN.deep_ash),
+                    Style::default().fg(ASHEN.smoke),
                 )));
             }
             if result_lines.len() > max_lines {
@@ -194,7 +191,7 @@ impl Msg {
                     } else if let Some(cmd) = v.get("command").and_then(|c| c.as_str()) {
                         lines.push(Line::from(Span::styled(
                             format!("      $ {}", cmd),
-                            Style::default().fg(ASHEN.light_ash),
+                            Style::default().fg(ASHEN.whisper),
                         )));
                     } else if let Some(q) = v.get("query").and_then(|q| q.as_str()) {
                         lines.push(Line::from(Span::styled(
@@ -272,15 +269,20 @@ fn total_rendered_lines(messages: &[Msg]) -> usize {
 
 // ── Rendering helpers ──────────────────────────────────────────
 
-fn draw_header(f: &mut Frame, area: Rect, model: &str, step_info: &str) {
+fn draw_header(f: &mut Frame, area: Rect, model: &str, step_info: &str, spinner_tick: usize) {
     let inner = area;
     let width = inner.width as usize;
 
     // Left: app name
     let left = " lean ";
-    // Right: model + step
+    // Right: model + step + spinner
+    let spinner = ["\u{280b}", "\u{2819}", "\u{2813}", "\u{2827}", "\u{2836}", "\u{2834}", "\u{2826}", "\u{282e}"];
+    let spinner_char = spinner[spinner_tick % spinner.len()];
     let right = if step_info.is_empty() {
         format!(" {} ", model)
+    } else if step_info == "..." {
+        // Waiting for agent — show spinner
+        format!(" {} {} {} ", spinner_char, model, spinner_char)
     } else {
         format!(" {} · {} ", model, step_info)
     };
@@ -296,6 +298,40 @@ fn draw_header(f: &mut Frame, area: Rect, model: &str, step_info: &str) {
             .add_modifier(Modifier::BOLD),
     )));
     f.render_widget(header, inner);
+}
+
+fn draw_queue(f: &mut Frame, area: Rect, queue: &[String]) {
+    let max_show = queue.len().min(2);
+    let start = queue.len().saturating_sub(max_show);
+    let visible = &queue[start..];
+    let width = area.width as usize;
+
+    let lines: Vec<Line<'static>> = visible
+        .iter()
+        .enumerate()
+        .map(|(i, msg)| {
+            let n = start + i + 1;
+            let prefix = format!("  {:>2} queued  ", n);
+            let display: String = msg.chars().take(width.saturating_sub(prefix.chars().count())).collect();
+            Line::from(vec![
+                Span::styled(
+                    prefix,
+                    Style::default()
+                        .fg(ASHEN.charcoal)
+                        .bg(THEME.input_bg),
+                ),
+                Span::styled(
+                    display,
+                    Style::default()
+                        .fg(ASHEN.deep_ash)
+                        .bg(THEME.input_bg),
+                ),
+            ])
+        })
+        .collect();
+
+    let para = Paragraph::new(lines).style(Style::default().bg(THEME.input_bg));
+    f.render_widget(para, area);
 }
 
 fn draw_separator(f: &mut Frame, area: Rect) {
@@ -407,11 +443,10 @@ fn draw_content(
     let _ = viewport_height;
 }
 
-fn draw_input(f: &mut Frame, area: Rect, input_text: &str, status: &str) {
+fn draw_input(f: &mut Frame, area: Rect, input_text: &str) {
     let width = area.width as usize;
     let prompt = " ▸ ";
-    let status_width = status.len();
-    let available = width.saturating_sub(prompt.len() + status_width);
+    let available = width.saturating_sub(prompt.len());
 
     let display_input = if input_text.is_empty() {
         // Show placeholder with dim style
@@ -435,13 +470,7 @@ fn draw_input(f: &mut Frame, area: Rect, input_text: &str, status: &str) {
         )
     };
 
-    let line = Line::from(vec![
-        display_input,
-        Span::styled(
-            format!("{:>width$}", status, width = status_width),
-            Style::default().fg(ASHEN.deep_ash).bg(THEME.input_bg),
-        ),
-    ]);
+    let line = Line::from(display_input);
 
     let para = Paragraph::new(line).style(Style::default().bg(THEME.input_bg));
     f.render_widget(para, area);
@@ -600,16 +629,19 @@ async fn app_loop(
     // message queue
     let mut msg_queue: Vec<String> = Vec::new();
     let mut agent_busy = false;
+    let mut spinner_tick: usize = 0;
 
     loop {
         let term_size = terminal.size()?;
-        let viewport_height = term_size.height.saturating_sub(5).max(1) as usize;
+        let queue_rows = msg_queue.len().min(2) as u16;
+        let overhead = 5 + queue_rows; // header + sep + sep + queue + input + footer
+        let viewport_height = term_size.height.saturating_sub(overhead).max(1) as usize;
         // Content area: starts at row 2 (after header + sep), height is the rest
         let content_area = Rect {
             x: 0,
             y: 2,
             width: term_size.width,
-            height: term_size.height.saturating_sub(5).max(1),
+            height: term_size.height.saturating_sub(overhead).max(1),
         };
 
         terminal.draw(|f| {
@@ -624,13 +656,14 @@ async fn app_loop(
                     Constraint::Length(1), // separator
                     Constraint::Min(1),   // content
                     Constraint::Length(1), // separator
+                    Constraint::Length(queue_rows), // queue (0-2)
                     Constraint::Length(1), // input
                     Constraint::Length(1), // footer
                 ])
                 .split(f.area());
 
             // Header
-            draw_header(f, chunks[0], &model, &step_info);
+            draw_header(f, chunks[0], &model, &step_info, spinner_tick);
 
             // Separator
             draw_separator(f, chunks[1]);
@@ -645,23 +678,19 @@ async fn app_loop(
             // Separator
             draw_separator(f, chunks[3]);
 
+            // Queue
+            draw_queue(f, chunks[4], &msg_queue);
+
             // Input
-            let status = if !msg_queue.is_empty() {
-                format!("queued:{}", msg_queue.len())
-            } else if messages.last().map_or(false, |m| m.role == "tool") {
-                "exec".to_string()
-            } else {
-                "".to_string()
-            };
-            draw_input(f, chunks[4], &input_text, &status);
+            draw_input(f, chunks[5], &input_text);
 
             // Autocomplete popup
             if !ac_matches.is_empty() {
-                draw_autocomplete(f, chunks[4], &ac_matches, ac_idx, ac_scroll);
+                draw_autocomplete(f, chunks[5], &ac_matches, ac_idx, ac_scroll);
             }
 
             // Footer
-            draw_footer(f, chunks[5], &model, messages.len(), &cwd);
+            draw_footer(f, chunks[6], &model, messages.len(), &cwd);
         })?;
 
         // Handle keyboard and mouse events
@@ -949,6 +978,9 @@ async fn app_loop(
             }
             auto_scroll = true;
         }
+
+        // Advance spinner
+        spinner_tick = spinner_tick.wrapping_add(1);
     }
 
     Ok(())
