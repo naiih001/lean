@@ -1,5 +1,6 @@
 pub mod llm;
 pub mod memory;
+pub mod models;
 pub mod observer;
 pub mod skills;
 pub mod telemetry;
