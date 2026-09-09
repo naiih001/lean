@@ -4,23 +4,26 @@ use futures::Stream;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
-pub const SYSTEM_PROMPT: &str = "You are an autonomous coding agent. You must complete tasks fully before stopping.\n\n\
-## CRITICAL RULES (follow these every time)\n\n\
-1. **DO NOT STOP until the task is complete.** You are an autonomous agent. When given a task, you work through it step by step using tools until it is fully done. Never give up, never ask the user to do it themselves, never stop early.\n\n\
+pub const SYSTEM_PROMPT: &str = "You are lean — a lightweight, friendly coding assistant.\n\n\
+## Conversation vs Task — READ FIRST\n\n\
+- **Greeting / smalltalk / thanks / \"hi\" / \"how are you\" with NO explicit task → reply warmly in 1-2 sentences, offer help, and STOP.** Do NOT call tools, do NOT search memory, do NOT list steps, do NOT invent work. A single friendly response is complete. Replying 3 times to \"Hi\" is a bug — reply once and stop.\n\
+- **Only enter TASK MODE** when the user explicitly asks you to do something (write/edit code, research, build UI, fix bug, manage configs, run commands, etc.).\n\n\
+## CRITICAL RULES (only in TASK MODE)\n\n\
+1. **DO NOT STOP until the task is complete.** In task mode you are autonomous: work step by step with tools until fully done. Never give up, never ask the user to do it themselves, never stop early.\n\n\
 2. **ALWAYS check skills first.** Before starting any task, look at the available skills list. If any skill matches your task, call read_skill to load its instructions, then follow them. Skills contain proven workflows -- use them.\n\n\
 3. **ALWAYS search memory first.** At the start of a task, use search_memory to find relevant context from past sessions. If you learn something important during the task, remember it with the remember tool.\n\n\
 4. **Verify your work.** After making changes, run relevant commands (build, test, lint, etc.) to confirm they work. Never assume success.\n\n\
 5. **Use tools liberally.** Read files before editing them. Use bash to test. Use web_search if you need information. The more tools you use, the better your work.\n\n\
-## How to approach any task\n\n\
+## How to approach a task (TASK MODE only)\n\n\
 When you receive a task, your FIRST response must:\n\
 1. Search memory for relevant context\n\
 2. Check if any skill applies (call read_skill if so)\n\
 3. State the goal in one sentence\n\
 4. List concrete steps (read file, make change, verify, etc)\n\
 5. Begin executing immediately\n\n\
-You will receive a focus context injection before each LLM call that reminds you of your goal, progress, and next step. **Always check this before responding.** If the focus context says you should be doing something, do it.\n\n\
+You will receive a focus context injection before each LLM call that reminds you of your goal, progress, and next step. **In task mode, always check this before responding.** If the focus context says you should be doing something, do it.\n\n\
 ## Staying on track\n\n\
-- **Always check the focus context** at the start of each response.\n\
+- **In task mode, always check the focus context** at the start of each response.\n\
 - **Never repeat a tool call** that already succeeded.\n\
 - If a tool call failed, diagnose the error and try a different approach.\n\
 - After completing all steps, give a clear summary and explicitly state you are done.\n\
@@ -53,7 +56,7 @@ Available skills are listed at the top of this prompt. When a task matches a ski
 3. Follow the skill's workflow\n\n\
 **Do not ignore skills. They exist to make you better at your job.**\n\n\
 ## Final reminder\n\n\
-**You are an autonomous agent. You do the work. You don't stop until it's done. You use skills. You use memory. You verify your work.**";
+**Conversation: one friendly reply and stop. Task mode: you do the work — don't stop until it's done. You use skills. You use memory. You verify your work.**";
 
 pub async fn build_system_prompt() -> String {
     let catalog = skills::get_skill_catalog().await;
@@ -171,8 +174,43 @@ impl PlanTracker {
         matches >= 2 || (matches >= 1 && text.len() >= 100)
     }
 
+    fn is_conversational_goal(&self) -> bool {
+        let g = self.goal.trim().to_lowercase();
+        // strip trailing punctuation for comparison
+        let stripped = g.trim_matches(|c: char| c == '!' || c == '.' || c == ',' || c == '?' || c == '\'' || c == '"').trim();
+        let conversational_exact = [
+            "hi", "hello", "hey", "hi there", "hello there", "hey there", "thanks", "thank you",
+            "thanks!", "thank you!", "yo", "sup", "howdy", "hola", "how are you", "how are you?",
+            "hey!", "hello!", "hi!",
+        ];
+        if conversational_exact.contains(&stripped) {
+            return true;
+        }
+        // very short with greeting prefix and no task verbs
+        if stripped.len() < 30 {
+            let has_task_verb = ["write", "create", "fix", "build", "edit", "read", "search", "make", "add", "update", "implement", "explain", "help with", "can you", "could you", "please"].iter().any(|v| stripped.contains(v));
+            if !has_task_verb {
+                let greet_prefixes = ["hi ", "hello ", "hey ", "thanks ", "thank you "];
+                if greet_prefixes.iter().any(|p| stripped.starts_with(p)) {
+                    return true;
+                }
+                // single short word with no verb
+                if stripped.split_whitespace().count() <= 3 && !has_task_verb {
+                    // check if it looks like greeting not task
+                    if ["hi", "hello", "hey"].iter().any(|w| stripped.contains(w)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Build a focus injection message to insert into the conversation.
     fn focus_context(&self, step: usize) -> String {
+        if self.is_conversational_goal() {
+            return format!("[FOCUS CONTEXT — conversational turn]\nGoal: \"{}\" — this is smalltalk/greeting, NOT a task. Respond warmly in 1-2 sentences and STOP. Do NOT call tools, do NOT search memory, do NOT list steps.\nCurrent step: {}. No focus tracking needed.", self.goal, step);
+        }
         let mut out = String::from("[FOCUS CONTEXT -- READ THIS BEFORE RESPONDING]\n");
         out.push_str(&format!("Goal: {}\n", self.goal));
         if !self.steps_done.is_empty() {
@@ -471,6 +509,14 @@ pub fn run_agent_with_history(
             }
 
             if tool_acc.is_empty() {
+                // Conversational turn: single response is complete, don't loop
+                if tracker.is_conversational_goal() {
+                    if !accum_text.is_empty() {
+                        messages.push(json!({"role": "assistant", "content": accum_text}));
+                    }
+                    yield AgentEvent::Done { text: final_text.clone(), history: messages.clone() };
+                    break;
+                }
                 tracker.nocall_streak += 1;
                 let complete = PlanTracker::looks_complete(&accum_text);
                 if complete || tracker.nocall_streak >= MAX_NOCALL_STREAK {
