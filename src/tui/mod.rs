@@ -5,7 +5,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use ratatui_textarea::{CursorMove, Input as TAInput, Key as TAKey, TextArea};
 use std::io::Stdout;
@@ -60,6 +60,7 @@ pub async fn run(opts: RunOpts) -> anyhow::Result<()> {
 
 // ── Message model ──────────────────────────────────────────────
 
+#[derive(Clone)]
 struct Msg {
     role: String,
     content: String,
@@ -424,10 +425,17 @@ fn wrap_lines(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
     out
 }
 
+fn is_banner(s: &str) -> bool {
+    let l = s.to_lowercase();
+    l.contains("mcp server running on stdio") || l.contains("github mcp server running on stdio")
+}
+
 /// Build the full list of styled lines from messages (without wrapping).
 fn build_content_lines(messages: &[Msg]) -> Vec<Line<'static>> {
     let mut all_lines: Vec<Line<'static>> = Vec::new();
-    let merged = merge_thinking(messages);
+    // Filter out server banner noise anywhere — user asked to never show it
+    let filtered: Vec<Msg> = messages.iter().filter(|m| !is_banner(&m.content)).cloned().collect();
+    let merged = merge_thinking(&filtered);
 
     for (i, m) in merged.iter().enumerate() {
         // Add a thin separator between tool blocks and other messages
@@ -535,7 +543,21 @@ fn draw_footer(
     agent_busy: bool,
     spinner_tick: usize,
 ) {
+    // Always clear footer area first to avoid ghosting when popup was over it
+    f.render_widget(Clear, area);
     let width = area.width as usize;
+    // Footer never shows MCP status — check via /mcp only (as requested)
+    // Narrow terminal (<10 cols) – just show truncated model to avoid overflow/wrap bleed
+    if width < 15 {
+        let txt = if model.chars().count() > width.saturating_sub(2) {
+            format!(" {}… ", model.chars().take(width.saturating_sub(3)).collect::<String>())
+        } else {
+            format!(" {} ", model)
+        };
+        let para = Paragraph::new(Line::from(Span::styled(txt, Style::default().fg(ASHEN.smoke).bg(THEME.page_bg))));
+        f.render_widget(para, area);
+        return;
+    }
 
     let spinner = [
         "\u{280b}", "\u{2819}", "\u{2813}", "\u{2827}", "\u{2836}", "\u{2834}", "\u{2826}",
@@ -609,7 +631,7 @@ fn draw_footer(
 
 // ── Autocomplete ─────────────────────────────────────────────
 
-const COMMANDS: &[&str] = &["/help", "/new", "/clear", "/exit", "/quit", "/model", "/sessions", "/resume", "/allowlist", "/allowlist clear", "/memory", "/memory stats", "/memory consolidate"];
+const COMMANDS: &[&str] = &["/help", "/new", "/clear", "/exit", "/quit", "/model", "/sessions", "/resume", "/allowlist", "/allowlist clear", "/mcp", "/memory", "/memory stats", "/memory consolidate"];
 
 /// Filter commands matching the current input prefix.
 fn autocomplete_matches(input: &str) -> Vec<&'static str> {
@@ -663,6 +685,7 @@ fn draw_autocomplete(
         .style(Style::default().bg(THEME.header_bg));
 
     let inner = block.inner(area);
+    f.render_widget(Clear, area);
     f.render_widget(block, area);
 
     // Render only visible items
@@ -695,18 +718,20 @@ fn draw_approval(f: &mut Frame, area: Rect, req: &crate::approval::ApprovalReque
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     let rect = Rect { x, y, width, height };
     let is_dir = req.reasons.iter().any(|r| r.contains("outside CWD"));
-    let title = if is_dir { " Dir Guard — Approval Required (outside CWD) " } else { " Bash Guard — Approval Required " };
-    let border_col = if is_dir { ASHEN.frost } else { ASHEN.ember };
+    let is_mcp = req.reasons.iter().any(|r| r.contains("MCP tool"));
+    let title = if is_mcp { " MCP Guard — Approval Required " } else if is_dir { " Dir Guard — Approval Required (outside CWD) " } else { " Bash Guard — Approval Required " };
+    let border_col = if is_mcp { ASHEN.moss } else if is_dir { ASHEN.frost } else { ASHEN.ember };
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_col))
         .style(Style::default().bg(THEME.header_bg).fg(ASHEN.bone));
     let inner = block.inner(rect);
+    f.render_widget(Clear, rect);
     f.render_widget(block, rect);
     let sev = match req.severity { crate::bash_guard::Severity::High => "HIGH", crate::bash_guard::Severity::Medium => "MEDIUM" };
     let sev_style = if sev == "HIGH" { Style::default().fg(ASHEN.ember).add_modifier(Modifier::BOLD) } else { Style::default().fg(ASHEN.frost) };
-    let cmd_label = if is_dir && req.cmd.contains(' ') && !req.cmd.contains('/') { format!("  $ {}", req.cmd) } else if is_dir { format!("  path: {}", req.cmd) } else { format!("  $ {}", req.cmd) };
+    let cmd_label = if is_mcp { format!("  MCP: {}", req.cmd) } else if is_dir && req.cmd.contains(' ') && !req.cmd.contains('/') { format!("  $ {}", req.cmd) } else if is_dir { format!("  path: {}", req.cmd) } else { format!("  $ {}", req.cmd) };
     let lines = vec![
         Line::from(vec![Span::styled(format!("  {} risk:  ", sev), sev_style), Span::styled(req.reasons.join("; "), Style::default().fg(ASHEN.smoke))]),
         Line::from(Span::styled(cmd_label, Style::default().fg(ASHEN.whisper))),
@@ -762,6 +787,7 @@ fn draw_sessions(f: &mut Frame, area: Rect, selected: usize, scroll: usize, filt
         .border_style(Style::default().fg(ASHEN.frost))
         .style(Style::default().bg(THEME.header_bg).fg(ASHEN.bone));
     let inner = block.inner(rect);
+    f.render_widget(Clear, rect);
     f.render_widget(block, rect);
     if sessions.is_empty() {
         let msg = if !filter.is_empty() {
@@ -791,6 +817,92 @@ fn draw_sessions(f: &mut Frame, area: Rect, selected: usize, scroll: usize, filt
     f.render_widget(para, inner);
 }
 
+fn draw_mcp(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
+    let servers = crate::mcp::snapshot();
+    let width = (area.width.saturating_sub(4)).min(90);
+    let height = (18.min(servers.len() * 2 + 7) as u16).min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let rect = Rect { x, y, width, height };
+    let connected = servers.iter().filter(|s| matches!(s.status, crate::mcp::ServerStatus::Connected)).count();
+    let total = servers.len();
+    let global_off = crate::mcp::is_global_disabled();
+    let mut title = if total == 0 {
+        " MCP Servers — No servers configured ".to_string()
+    } else if global_off {
+        format!(" MCP Servers [GLOBAL OFF] ({}/{} connected) — g/enable, Esc close ", connected, total)
+    } else {
+        format!(" MCP Servers ({}/{} connected) — d/toggle, g/global, r/reconnect, Esc close ", connected, total)
+    };
+    // Truncate title to fit popup width for narrow terminals (<10 cols)
+    if title.chars().count() > width as usize - 4 {
+        title = format!("{}… ", title.chars().take(width as usize - 5).collect::<String>());
+    }
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ASHEN.moss))
+        .style(Style::default().bg(THEME.header_bg).fg(ASHEN.bone));
+    let inner = block.inner(rect);
+    f.render_widget(Clear, rect);
+    f.render_widget(block, rect);
+    if servers.is_empty() {
+        let para = Paragraph::new(vec![
+            Line::from(Span::styled("  No MCP servers configured", Style::default().fg(ASHEN.deep_ash))),
+            Line::from(Span::styled("  Create ~/.lean/mcp.json or .lean/mcp.json", Style::default().fg(ASHEN.charcoal))),
+            Line::from(Span::styled("  See mcp.json.example for format", Style::default().fg(ASHEN.charcoal))),
+        ]);
+        f.render_widget(para, inner);
+        return;
+    }
+    let visible_h = inner.height as usize;
+    let start = scroll.min(servers.len().saturating_sub(1));
+    let end = (start + visible_h).min(servers.len());
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, srv) in servers[start..end].iter().enumerate() {
+        let idx = start + i;
+        let sel = idx == selected;
+        let style = if sel { Style::default().fg(ASHEN.bone).add_modifier(Modifier::BOLD).bg(ASHEN.stone) } else { Style::default().fg(ASHEN.smoke) };
+        let (status_str, status_style) = match srv.status {
+            crate::mcp::ServerStatus::Connected => ("connected", Style::default().fg(ASHEN.moss)),
+            crate::mcp::ServerStatus::Connecting => ("connecting", Style::default().fg(ASHEN.frost)),
+            crate::mcp::ServerStatus::Error(_) => ("error", Style::default().fg(ASHEN.ember)),
+            crate::mcp::ServerStatus::Disabled => ("disabled", Style::default().fg(ASHEN.charcoal)),
+        };
+        let tool_cnt = srv.tools.len();
+        let header = Line::from(vec![
+            Span::styled(format!("  {} ", srv.name), style),
+            Span::styled(format!("[{}] ", status_str), status_style),
+            Span::styled(format!("{} tools", tool_cnt), Style::default().fg(ASHEN.charcoal)),
+        ]);
+        lines.push(header);
+        // detail line — truncated to inner width to avoid wrapping/bleed, especially for <10 cols
+        let detail_max = inner.width.saturating_sub(4) as usize;
+        let detail = if let Some(err) = &srv.error_detail {
+            let t = err.chars().take(detail_max).collect::<String>();
+            Span::styled(format!("    {}", t), Style::default().fg(ASHEN.ember))
+        } else if srv.status.as_str() == "connected" && tool_cnt > 0 {
+            let preview: Vec<String> = srv.tools.iter().take(3).map(|t| t.name.clone()).collect();
+            let mut txt = preview.join(", ");
+            if txt.chars().count() > detail_max { txt = format!("{}…", txt.chars().take(detail_max.saturating_sub(1)).collect::<String>()); }
+            Span::styled(format!("    {}", txt), Style::default().fg(ASHEN.deep_ash))
+        } else if let Some(url) = &srv.config.url {
+            let t = url.chars().take(detail_max).collect::<String>();
+            Span::styled(format!("    {}", t), Style::default().fg(ASHEN.deep_ash))
+        } else if let Some(cmd) = &srv.config.command {
+            let args = srv.config.args.clone().unwrap_or_default().join(" ");
+            let full = format!("{} {}", cmd, args);
+            let t = full.chars().take(detail_max).collect::<String>();
+            Span::styled(format!("    {}", t), Style::default().fg(ASHEN.deep_ash))
+        } else {
+            Span::styled("    ".to_string(), Style::default().fg(ASHEN.deep_ash))
+        };
+        lines.push(Line::from(detail));
+    }
+    let para = Paragraph::new(lines);
+    f.render_widget(para, inner);
+}
+
 fn draw_allowlist(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
     let bash_list = crate::bash_guard::allowlist_list();
     let dir_list = crate::dir_guard::allowlist_list();
@@ -810,6 +922,7 @@ fn draw_allowlist(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
         .border_style(Style::default().fg(ASHEN.moss))
         .style(Style::default().bg(THEME.header_bg).fg(ASHEN.bone));
     let inner = block.inner(rect);
+    f.render_widget(Clear, rect);
     f.render_widget(block, rect);
     if combined.is_empty() {
         let para = Paragraph::new(vec![
@@ -991,6 +1104,11 @@ async fn app_loop(
     let mut show_allowlist = false;
     let mut allowlist_selected: usize = 0;
     let mut allowlist_scroll: usize = 0;
+    let mut show_mcp = false;
+    let mut mcp_selected: usize = 0;
+    let mut mcp_scroll: usize = 0;
+    // Eager MCP init (background)
+    tokio::spawn(async move { crate::mcp::init().await; });
 
     loop {
         // Poll for bash-guard approval requests from agent
@@ -1080,6 +1198,9 @@ async fn app_loop(
             }
             if show_allowlist {
                 draw_allowlist(f, f.area(), allowlist_selected, allowlist_scroll);
+            }
+            if show_mcp {
+                draw_mcp(f, f.area(), mcp_selected, mcp_scroll);
             }
 
             // Footer
@@ -1254,17 +1375,78 @@ async fn app_loop(
                         }
                         continue;
                     }
-                    // Guard approval modal: hijack all keys (covers bash + dir guard)
+                    // MCP picker modal: hijack keys
+                    if show_mcp {
+                        match k.code {
+                            KeyCode::Esc => {
+                                show_mcp = false;
+                                mcp_scroll = 0;
+                            }
+                            KeyCode::Enter | KeyCode::Char('r') => {
+                                let servers = crate::mcp::snapshot();
+                                if let Some(srv) = servers.get(mcp_selected).cloned() {
+                                    if crate::mcp::is_server_disabled(&srv.name) || matches!(srv.status, crate::mcp::ServerStatus::Disabled) {
+                                        // stay open, show [disabled] instantly — no chat spam
+                                    } else {
+                                        let name = srv.name.clone();
+                                        tokio::spawn(async move {
+                                            let _ = crate::mcp::reconnect(&name).await;
+                                        });
+                                    }
+                                }
+                            }
+                            KeyCode::Char('d') | KeyCode::Char('t') | KeyCode::Char(' ') => {
+                                let servers = crate::mcp::snapshot();
+                                if let Some(srv) = servers.get(mcp_selected).cloned() {
+                                    let now_disabled = crate::mcp::toggle_server_disabled(&srv.name);
+                                    if !now_disabled {
+                                        let name = srv.name.clone();
+                                        tokio::spawn(async move {
+                                            let _ = crate::mcp::reconnect(&name).await;
+                                        });
+                                    }
+                                }
+                            }
+                            KeyCode::Char('g') => {
+                                let was = crate::mcp::is_global_disabled();
+                                crate::mcp::set_global_disabled(!was);
+                                if was {
+                                    tokio::spawn(async move { crate::mcp::init().await; });
+                                }
+                            }
+                            KeyCode::Up => {
+                                if mcp_selected > 0 {
+                                    mcp_selected -= 1;
+                                    if mcp_selected < mcp_scroll { mcp_scroll = mcp_selected; }
+                                }
+                            }
+                            KeyCode::Down => {
+                                let len = crate::mcp::snapshot().len();
+                                if mcp_selected + 1 < len {
+                                    mcp_selected += 1;
+                                    if mcp_selected >= mcp_scroll + 8 { mcp_scroll += 1; }
+                                }
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+                    // Guard approval modal: hijack all keys (covers bash + dir + mcp guard)
                     if pending_approval.is_some() {
                         let mut req = pending_approval.take().unwrap();
                         let is_dir = req.reasons.iter().any(|r| r.contains("outside CWD"));
+                        let is_mcp = req.reasons.iter().any(|r| r.contains("MCP tool"));
                         match k.code {
                             KeyCode::Char('a') if !k.modifiers.contains(KeyModifiers::CONTROL) => {
                                 if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
-                                crate::telemetry::record(if is_dir { "dir_guard_allow_once" } else { "bash_guard_allow_once" });
+                                crate::telemetry::record(if is_mcp { "mcp_guard_allow_once" } else if is_dir { "dir_guard_allow_once" } else { "bash_guard_allow_once" });
                             }
                             KeyCode::Char('A') => {
-                                if is_dir {
+                                if is_mcp {
+                                    // MCP: every call needs approval, 'A' is treated as allow once (no persist)
+                                    if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
+                                    crate::telemetry::record("mcp_guard_allow_once");
+                                } else if is_dir {
                                     // Extract offending paths from reasons "outside CWD (path → resolved)"
                                     for r in &req.reasons {
                                         if let Some(s) = r.find('(') {
@@ -1283,20 +1465,22 @@ async fn app_loop(
                                 } else {
                                     crate::bash_guard::allowlist_add(&req.cmd);
                                 }
-                                if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
-                                crate::telemetry::record(if is_dir { "dir_guard_allow_always" } else { "bash_guard_allow_always" });
+                                if !is_mcp {
+                                    if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
+                                    crate::telemetry::record(if is_dir { "dir_guard_allow_always" } else { "bash_guard_allow_always" });
+                                }
                             }
                             KeyCode::Char('d') | KeyCode::Char('D') => {
                                 if let Some(tx) = req.tx.take() { let _ = tx.send(false); }
-                                crate::telemetry::record("bash_guard_deny");
+                                crate::telemetry::record(if is_mcp { "mcp_guard_deny" } else { "bash_guard_deny" });
                             }
                             KeyCode::Enter => {
                                 if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
-                                crate::telemetry::record("bash_guard_allow_once");
+                                crate::telemetry::record(if is_mcp { "mcp_guard_allow_once" } else if is_dir { "dir_guard_allow_once" } else { "bash_guard_allow_once" });
                             }
                             KeyCode::Esc => {
                                 if let Some(tx) = req.tx.take() { let _ = tx.send(false); }
-                                crate::telemetry::record("bash_guard_deny");
+                                crate::telemetry::record(if is_mcp { "mcp_guard_deny" } else { "bash_guard_deny" });
                             }
                             _ => {
                                 pending_approval = Some(req);
@@ -1616,8 +1800,13 @@ async fn app_loop(
                                 "/help" => {
                                     messages.push(Msg {
                                         role: "system".into(),
-                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /memory stats|consolidate /model <name> /clear /exit  ·  Enter send · Shift+Enter newline · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll".into(),
+                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /mcp /memory stats|consolidate /model <name> /clear /exit  ·  Enter send · Shift+Enter newline · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll".into(),
                                     });
+                                }
+                                "/mcp" => {
+                                    show_mcp = true;
+                                    mcp_selected = 0;
+                                    mcp_scroll = 0;
                                 }
                                 "/sessions" => {
                                     show_sessions = true;
