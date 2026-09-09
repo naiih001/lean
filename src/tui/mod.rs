@@ -634,14 +634,32 @@ fn draw_footer(
 const COMMANDS: &[&str] = &["/help", "/new", "/clear", "/exit", "/quit", "/model", "/sessions", "/resume", "/allowlist", "/allowlist clear", "/mcp", "/memory", "/memory stats", "/memory consolidate"];
 
 /// Filter commands matching the current input prefix.
-fn autocomplete_matches(input: &str) -> Vec<&'static str> {
+/// Also completes model aliases after `/model `.
+fn autocomplete_matches(input: &str) -> Vec<String> {
     if input.is_empty() || !input.starts_with('/') {
         return Vec::new();
     }
+    // Model alias completion: "/model " or "/model <prefix>"
+    if input.starts_with("/model ") {
+        let prefix = input.strip_prefix("/model ").unwrap_or("");
+        if let Ok(cfg) = crate::models::load() {
+            let mut aliases: Vec<String> = cfg.models.keys().cloned().collect();
+            aliases.sort();
+            let filtered: Vec<String> = aliases
+                .into_iter()
+                .filter(|a| a.starts_with(prefix))
+                .map(|a| format!("/model {}", a))
+                .collect();
+            return filtered;
+        }
+        return Vec::new();
+    }
+    // Handle "/model" partial -> command, but if user typed "/model" exactly and hits Tab we want alias list on next space
+    // Normal command completion
     COMMANDS
         .iter()
-        .copied()
         .filter(|cmd| cmd.starts_with(input))
+        .map(|s| s.to_string())
         .collect()
 }
 
@@ -649,7 +667,7 @@ fn autocomplete_matches(input: &str) -> Vec<&'static str> {
 fn draw_autocomplete(
     f: &mut Frame,
     input_area: Rect,
-    matches: &[&str],
+    matches: &[String],
     selected: usize,
     scroll_offset: usize,
 ) {
@@ -1010,7 +1028,7 @@ async fn app_loop(
     terminal: &mut ratatui::Terminal<CrosstermBackend<Stdout>>,
     opts: RunOpts,
 ) -> anyhow::Result<()> {
-    let model = opts.model.clone();
+    let mut model = opts.model.clone();
     let mut messages: Vec<Msg> = Vec::new();
     // ── Session restore ──
     let mut session = if opts.no_session {
@@ -1041,10 +1059,19 @@ async fn app_loop(
     } else {
         Some(crate::session::Session::new(&model))
     };
-    // helper to persist
-    let persist = |msgs: &Vec<Msg>, sess: &mut Option<crate::session::Session>| {
+    // Warn if resumed session has a legacy alias not in models.json
+    if let Some(ref sess) = session {
+        if crate::models::resolve(Some(&sess.model)).is_err() {
+            messages.push(Msg {
+                role: "system".into(),
+                content: format!("[warn: session model '{}' not in {} — use /model to switch]", sess.model, crate::models::path_display()),
+            });
+        }
+    }
+    // helper to persist (cur_model passed explicitly to avoid borrow across mutation)
+    let persist = |msgs: &Vec<Msg>, sess: &mut Option<crate::session::Session>, cur_model: &str| {
         if let Some(s) = sess {
-            s.model = model.clone();
+            s.model = cur_model.to_string();
             s.cwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
             s.messages = msgs.iter().map(|m| crate::session::SavedMsg { role: m.role.clone(), content: m.content.clone() }).collect();
             let _ = s.save();
@@ -1085,7 +1112,7 @@ async fn app_loop(
     };
 
     // autocomplete
-    let mut ac_matches: Vec<&'static str> = Vec::new();
+    let mut ac_matches: Vec<String> = Vec::new();
     let mut ac_idx: usize = 0;
     let mut ac_scroll: usize = 0;
 
@@ -1876,12 +1903,59 @@ async fn app_loop(
                                         messages.push(Msg { role: "system".into(), content: format!("session {} not found", rid) });
                                     }
                                 }
+                                "/model" => {
+                                    // List current alias + available
+                                    match crate::models::load() {
+                                        Ok(cfg) => {
+                                            let entry = cfg.models.get(&model);
+                                            let detail = if let Some(e) = entry {
+                                                format!(" → {} @ {}", e.model, e.base_url.as_deref().unwrap_or("env: OPENCODE_BASE_URL"))
+                                            } else {
+                                                String::new()
+                                            };
+                                            let mut aliases: Vec<String> = cfg.models.keys().cloned().collect();
+                                            aliases.sort();
+                                            let available = aliases.join(", ");
+                                            messages.push(Msg {
+                                                role: "system".into(),
+                                                content: format!("current model: {}{} (available: {})\nconfig: {} — use /model <alias> to switch", model, detail, available, crate::models::path_display()),
+                                            });
+                                        }
+                                        Err(e) => {
+                                            messages.push(Msg { role: "system".into(), content: format!("models.json error: {}", e) });
+                                        }
+                                    }
+                                }
                                 _ if prompt.starts_with("/model ") => {
                                     let m = prompt.strip_prefix("/model ").unwrap().trim();
-                                    messages.push(Msg {
-                                        role: "system".into(),
-                                        content: format!("model: {} (restart to apply)", m),
-                                    });
+                                    if m.is_empty() {
+                                        // bare /model with trailing space → list
+                                        match crate::models::load() {
+                                            Ok(cfg) => {
+                                                let mut aliases: Vec<String> = cfg.models.keys().cloned().collect();
+                                                aliases.sort();
+                                                messages.push(Msg { role: "system".into(), content: format!("current model: {} (available: {})", model, aliases.join(", ")) });
+                                            }
+                                            Err(e) => messages.push(Msg { role: "system".into(), content: format!("models.json error: {}", e) }),
+                                        }
+                                    } else {
+                                        match crate::models::resolve(Some(m)) {
+                                            Ok(r) => {
+                                                model = r.alias.clone();
+                                                if let Some(s) = &mut session {
+                                                    s.model = model.clone();
+                                                    let _ = s.save();
+                                                }
+                                                messages.push(Msg {
+                                                    role: "system".into(),
+                                                    content: format!("switched to {} ({} @ {}) — live + persisted", r.alias, r.model, r.base_url),
+                                                });
+                                            }
+                                            Err(e) => {
+                                                messages.push(Msg { role: "system".into(), content: format!("model switch failed: {}", e) });
+                                            }
+                                        }
+                                    }
                                 }
                                 _ => {
                                     messages.push(Msg {
@@ -2091,7 +2165,7 @@ async fn app_loop(
         }
 
         // Persist session (fire-and-forget, cheap json write)
-        persist(&messages, &mut session);
+        persist(&messages, &mut session, &model);
         // Advance spinner
         spinner_tick = spinner_tick.wrapping_add(1);
     }
