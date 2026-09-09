@@ -25,6 +25,8 @@ You will receive a focus context injection before each LLM call that reminds you
 - If a tool call failed, diagnose the error and try a different approach.\n\
 - After completing all steps, give a clear summary and explicitly state you are done.\n\
 - If you find yourself unsure what to do next, re-read the original task, check your progress, and figure it out.\n\n\
+## Directory confinement (HARD WALL)\n\n\
+You are confined to the project CWD (shown in footer/session). Any read/write/edit/bash that touches a path outside CWD will be BLOCKED and require user approval [a]/[A]. The user chose hard-wall mode: stay inside unless they explicitly asked to go outside.\n\n\
 ## Tool usage\n\n\
 1. **Understand first.** Before changing anything, read the relevant files. Never edit a file you haven't read.\n\
 2. **Plan minimally.** Decide the smallest set of changes that solves the problem.\n\
@@ -37,7 +39,9 @@ You have persistent memory. Use it.\n\n\
 - `search_memory` -- Search memories by keyword (DO THIS at task start)\n\
 - `recall_memory` -- List most recent memories\n\
 - `list_memories` -- List by tag\n\
-- `forget_memory` -- Delete by id\n\n\
+- `forget_memory` -- Delete by id\n\
+- `consolidate_memory` -- Deduplicate Jaccard>0.75, bound buffer\n\
+- `memory_stats` -- Show stats by category/scope\n\n\
 Categories: fact, preference, correction, procedure.\n\
 Scopes: global (always recalled), project (current codebase only).\n\n\
 **When you learn something important, remember it. When starting a task, search memory.**\n\n\
@@ -48,21 +52,20 @@ Available skills are listed at the top of this prompt. When a task matches a ski
 2. Read the returned instructions carefully\n\
 3. Follow the skill's workflow\n\n\
 **Do not ignore skills. They exist to make you better at your job.**\n\n\
-## Todos\n\n\
-You have a todo system for multi-step tasks.\n\n\
-- `todo { action: \"add\", content: \"...\", priority: \"high|medium|low\", group: \"optional\" }`\n\
-- `todo { action: \"update\", id: \"...\", status: \"pending|in_progress|completed|cancelled\" }`\n\
-- `todo { action: \"list\" }`\n\
-- `todo { action: \"remove\", id: \"...\" }`\n\n\
-Break complex tasks into todos and update them as you work.\n\n\
 ## Final reminder\n\n\
 **You are an autonomous agent. You do the work. You don't stop until it's done. You use skills. You use memory. You verify your work.**";
 
 pub async fn build_system_prompt() -> String {
     let catalog = skills::get_skill_catalog().await;
+    let cwd = crate::dir_guard::project_root().display().to_string();
+    let dir_note = if crate::dir_guard::is_disabled() {
+        String::new()
+    } else {
+        format!("\n\n## Confinement\nYou are confined to CWD: `{}`. Any file or bash path outside this dir will be blocked until the user approves ([a]/[A]). Do not try to bypass with `../` or absolute paths unless the user asked to go outside.", cwd)
+    };
     format!(
-        "{}\n\n## Available Skills\nThese skills contain proven workflows for specific tasks. You MUST check if any skill matches your current task.\n{}\n\n**If a skill matches your task, call read_skill immediately. Then follow the skill's instructions.** You may call multiple read_skill in one step if needed.",
-        SYSTEM_PROMPT, catalog
+        "{}\n\n## Available Skills\nThese skills contain proven workflows for specific tasks. You MUST check if any skill matches your current task.\n{}\n\n**If a skill matches your task, call read_skill immediately. Then follow the skill's instructions.** You may call multiple read_skill in one step if needed.{}",
+        SYSTEM_PROMPT, catalog, dir_note
     )
 }
 
@@ -89,7 +92,7 @@ pub enum AgentEvent {
     ToolStart { name: String, args: Value, id: String },
     ToolResult { name: String, result: String, id: String },
     Step { n: usize },
-    Done { text: String },
+    Done { text: String, history: Vec<Value> },
 }
 
 struct ToolAccum {
@@ -221,13 +224,38 @@ pub fn run_agent(
     model: String,
     max_steps: usize,
 ) -> impl Stream<Item = AgentEvent> {
+    run_agent_with_history(user_prompt, model, max_steps, Vec::new())
+}
+
+pub fn run_agent_with_history(
+    user_prompt: String,
+    model: String,
+    max_steps: usize,
+    history: Vec<Value>,
+) -> impl Stream<Item = AgentEvent> {
     async_stream::stream! {
         let client = Client::from_env();
         let system = build_system_prompt().await;
         let mut messages: Vec<Value> = vec![
             json!({"role": "system", "content": system}),
-            json!({"role": "user", "content": &user_prompt}),
         ];
+        // Inject exact llm history if available (tool_calls preserved), else fallback
+        // history is already Vec<Value> with proper roles (user/assistant/tool/system)
+        // Truncate to last 20 entries and 3000 chars per text content to stay in context
+        let hist_slice = if history.len() > 20 { &history[history.len()-20..] } else { &history[..] };
+        for v in hist_slice {
+            // Clone and truncate text content if needed
+            let mut val = v.clone();
+            if let Some(content) = val.get("content") {
+                if let Some(s) = content.as_str() {
+                    if s.len() > 3000 {
+                        val["content"] = json!(format!("{}… [truncated]", &s[..3000]));
+                    }
+                }
+            }
+            messages.push(val);
+        }
+        messages.push(json!({"role": "user", "content": &user_prompt}));
 
         let mut final_text = String::new();
         let mut tracker = PlanTracker::new(&user_prompt);
@@ -413,7 +441,7 @@ pub fn run_agent(
                 tracker.nocall_streak += 1;
                 let complete = PlanTracker::looks_complete(&accum_text);
                 if complete || tracker.nocall_streak >= MAX_NOCALL_STREAK {
-                    yield AgentEvent::Done { text: final_text.clone() };
+                    yield AgentEvent::Done { text: final_text.clone(), history: messages.clone() };
                     break;
                 }
                 // Push the assistant's text so the model sees its own response
@@ -492,6 +520,6 @@ pub fn run_agent(
             }
             let _ = usage;
         }
-        yield AgentEvent::Done { text: final_text };
+        yield AgentEvent::Done { text: final_text, history: messages.clone() };
     }
 }

@@ -192,6 +192,22 @@ pub async fn edit_file(path: &str, old: &str, new: &str) -> Result<String, Strin
         ));
     }
     let updated = raw.replacen(old, new, 1);
+    // Compute unified diff for native feel (like pi diff_mode)
+    let diff = {
+        use similar::TextDiff;
+        let diff = TextDiff::from_lines(&raw, &updated);
+        let unified = diff.unified_diff().context_radius(3).header("before", "after").to_string();
+        let mut out = format!("Edited {} — diff:\n{}", path, unified);
+        let lines: Vec<&str> = out.lines().collect();
+        if lines.len() > 120 {
+            let kept = &lines[..120];
+            format!("{}\n… [diff truncated {} lines]", kept.join("\n"), lines.len() - 120)
+        } else if unified.trim().is_empty() {
+            format!("Edited {} ({} bytes -> {} bytes)", path, raw.len(), updated.len())
+        } else {
+            out
+        }
+    };
     if let Some(parent) = p.parent() {
         if !parent.as_os_str().is_empty() {
             tokio::fs::create_dir_all(parent)
@@ -202,7 +218,7 @@ pub async fn edit_file(path: &str, old: &str, new: &str) -> Result<String, Strin
     tokio::fs::write(p, updated)
         .await
         .map_err(|e| format!("write error: {}", e))?;
-    Ok(format!("Edited {}", path))
+    Ok(diff)
 }
 
 pub async fn run_bash(command: &str) -> Result<String, String> {
@@ -273,19 +289,109 @@ pub async fn web_search(query: &str) -> Result<String, String> {
     Ok(truncate_output(&text, TruncateStrategy::Head))
 }
 
+async fn guard_path(path: &str, tool: &str) -> Option<String> {
+    // returns Some(block_message) if denied, None if allowed
+    let risk = crate::dir_guard::analyze_path(path)?;
+    let reason_str = risk.reasons.join("; ");
+    let display = format!("{} {}", tool, path);
+    // Reuse approval system but tag as dir-guard via reason prefix
+    let approved = {
+        let fut = crate::approval::request(display.clone(), crate::bash_guard::Severity::High, risk.reasons.clone());
+        match tokio::time::timeout(std::time::Duration::from_secs(300), fut).await {
+            Ok(v) => v,
+            Err(_) => false, // hard wall: deny on timeout
+        }
+    };
+    if !approved {
+        return Some(format!(
+            "[dir-guard BLOCKED (HIGH): {}]\n{}: {}\nHint: outside CWD '{}' — approve with [a]/[A] or add to ~/.lean/dir_allowlist.json or run with LEAN_DIR_GUARD_DISABLED=1",
+            reason_str, tool, path, crate::dir_guard::project_root().display()
+        ));
+    }
+    None
+}
+
+async fn guard_bash(cmd: &str) -> Option<String> {
+    // Check both guards and merge; dir-guard is HIGH severity hard wall
+    // Returns Some(string) if the caller should return that string directly (blocked OR approved-medium annotated output).
+    // Returns None if allowed to proceed to normal run_bash.
+    let bash_risk = crate::bash_guard::analyze(cmd);
+    let dir_risk = crate::dir_guard::analyze_bash(cmd);
+
+    if bash_risk.is_none() && dir_risk.is_none() {
+        return None;
+    }
+
+    let mut reasons = Vec::new();
+    let mut severity = crate::bash_guard::Severity::Medium;
+    let mut is_dir_guard = false;
+
+    if let Some(r) = &bash_risk {
+        reasons.extend(r.reasons.clone());
+        if r.severity == crate::bash_guard::Severity::High { severity = crate::bash_guard::Severity::High; }
+    }
+    if let Some(r) = &dir_risk {
+        reasons.extend(r.reasons.clone());
+        severity = crate::bash_guard::Severity::High;
+        is_dir_guard = true;
+    }
+
+    let reasons_clone = reasons.clone();
+    let sev_clone = severity.clone();
+    let approved = {
+        let fut = crate::approval::request(cmd.to_string(), sev_clone, reasons_clone);
+        match tokio::time::timeout(std::time::Duration::from_secs(300), fut).await {
+            Ok(v) => v,
+            Err(_) => {
+                if is_dir_guard { false } else {
+                    match severity { crate::bash_guard::Severity::High => false, crate::bash_guard::Severity::Medium => true }
+                }
+            }
+        }
+    };
+    if !approved {
+        let sev_str = match severity { crate::bash_guard::Severity::High => "HIGH", crate::bash_guard::Severity::Medium => "MEDIUM" };
+        let guard = if is_dir_guard { "dir-guard" } else { "bash-guard" };
+        let reason_str = reasons.join("; ");
+        return Some(format!("[{} BLOCKED ({}): {}]\nCommand: {}\nHint: {} — use allowlist or LEAN_DIR_GUARD_DISABLED=1 / --bash-guard-disabled", guard, sev_str, reason_str, cmd, if is_dir_guard { format!("outside CWD '{}'", crate::dir_guard::project_root().display()) } else { "risky command".to_string() }));
+    }
+    // Approved
+    if !is_dir_guard && severity == crate::bash_guard::Severity::Medium {
+        // Medium bash risk: run and annotate, return directly to avoid second prompt
+        let out = run_bash(cmd).await.unwrap_or_else(|e| format!("Error: {}", e));
+        let reason_str = reasons.join("; ");
+        return Some(format!("[bash-guard approved (MEDIUM): {}]\n{}", reason_str, out));
+    }
+    // High dir-guard or high bash-guard approved: proceed to normal execution (no annotation needed)
+    // But we already approved, so just allow normal run_bash without re-prompting. To avoid re-prompt,
+    // we temporarily allowlist this exact command for the next call? Instead we run here and return.
+    if is_dir_guard || severity == crate::bash_guard::Severity::High {
+        let out = run_bash(cmd).await.unwrap_or_else(|e| format!("Error: {}", e));
+        // Add a small prefix so user knows it was dir-guarded but approved
+        if is_dir_guard {
+            return Some(format!("[dir-guard approved (HIGH): {}]\n{}", reasons.join("; "), out));
+        }
+        return Some(out);
+    }
+    None
+}
+
 pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
     let res = match name {
         "read_file" => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if let Some(blocked) = guard_path(path, "read_file").await { return blocked; }
             read_file(path).await
         }
         "write_file" => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if let Some(blocked) = guard_path(path, "write_file").await { return blocked; }
             let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
             write_file(path, content).await
         }
         "edit_file" => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if let Some(blocked) = guard_path(path, "edit_file").await { return blocked; }
             let old = args.get("oldText").and_then(|v| v.as_str()).unwrap_or("");
             let new = args.get("newText").and_then(|v| v.as_str()).unwrap_or("");
             // also support snake_case fallback
@@ -303,6 +409,8 @@ pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
         }
         "bash" => {
             let cmd = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            // Unified guard for both bash-risk and directory escape — if Some, it is either blocked OR already-executed approved output
+            if let Some(result) = guard_bash(cmd).await { return result; }
             run_bash(cmd).await
         }
         "web_search" => {
@@ -341,26 +449,11 @@ pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
             let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("");
             Ok(crate::memory::api_forget(id))
         }
-        "todo" => {
-            let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("list");
-            match action {
-                "add" => {
-                    let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                    let priority = args.get("priority").and_then(|v| v.as_str()).unwrap_or("medium");
-                    let group = args.get("group").and_then(|v| v.as_str()).unwrap_or("");
-                    Ok(crate::todo::api_add(content, priority, group))
-                }
-                "update" => {
-                    let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                    let status = args.get("status").and_then(|v| v.as_str()).unwrap_or("");
-                    Ok(crate::todo::api_update(id, status))
-                }
-                "remove" => {
-                    let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                    Ok(crate::todo::api_remove(id))
-                }
-                _ => Ok(crate::todo::api_list()),
-            }
+        "consolidate_memory" => {
+            Ok(crate::memory::api_consolidate())
+        }
+        "memory_stats" => {
+            Ok(crate::memory::api_stats())
         }
         _ => Err(format!("unknown tool: {}", name)),
     };

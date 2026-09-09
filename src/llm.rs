@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 pub const DEFAULT_MODEL: &str = "mimo-v2.5-free";
@@ -191,19 +191,22 @@ pub fn tool_definitions() -> Vec<Value> {
         json!({
             "type": "function",
             "function": {
-                "name": "todo",
-                "description": "Manage session todos",
+                "name": "consolidate_memory",
+                "description": "Consolidate duplicate memories (deduplicate via Jaccard >0.75)",
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        "action": {"type": "string", "description": "add, update, list, or remove"},
-                        "content": {"type": "string", "description": "Todo description (for add)"},
-                        "id": {"type": "string", "description": "Todo id (for update/remove)"},
-                        "status": {"type": "string", "description": "pending, in_progress, completed, or cancelled (for update)"},
-                        "priority": {"type": "string", "description": "high, medium, or low (for add, default: medium)"},
-                        "group": {"type": "string", "description": "Group name (for add, optional)"}
-                    },
-                    "required": ["action"]
+                    "properties": {}
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "memory_stats",
+                "description": "Show memory stats by category/scope and recent count",
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
                 }
             }
         }),

@@ -1,4 +1,10 @@
+pub mod llm;
 pub mod memory;
+pub mod observer;
 pub mod skills;
-pub mod todo;
+pub mod telemetry;
+pub mod bash_guard;
+pub mod dir_guard;
+pub mod approval;
+pub mod session;
 pub mod tools;
