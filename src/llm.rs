@@ -24,6 +24,14 @@ impl Client {
         }
     }
 
+    pub fn from_resolved(resolved: &crate::models::ResolvedModel) -> Self {
+        Self {
+            api_key: resolved.api_key.clone(),
+            base_url: resolved.base_url.clone(),
+            http: reqwest::Client::new(),
+        }
+    }
+
     pub fn chat_url(&self) -> String {
         format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
     }
