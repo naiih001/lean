@@ -612,14 +612,32 @@ fn draw_footer(
 const COMMANDS: &[&str] = &["/help", "/new", "/clear", "/exit", "/quit", "/model", "/sessions", "/resume", "/allowlist", "/allowlist clear", "/memory", "/memory stats", "/memory consolidate"];
 
 /// Filter commands matching the current input prefix.
-fn autocomplete_matches(input: &str) -> Vec<&'static str> {
+/// Also completes model aliases after `/model `.
+fn autocomplete_matches(input: &str) -> Vec<String> {
     if input.is_empty() || !input.starts_with('/') {
         return Vec::new();
     }
+    // Model alias completion: "/model " or "/model <prefix>"
+    if input.starts_with("/model ") {
+        let prefix = input.strip_prefix("/model ").unwrap_or("");
+        if let Ok(cfg) = crate::models::load() {
+            let mut aliases: Vec<String> = cfg.models.keys().cloned().collect();
+            aliases.sort();
+            let filtered: Vec<String> = aliases
+                .into_iter()
+                .filter(|a| a.starts_with(prefix))
+                .map(|a| format!("/model {}", a))
+                .collect();
+            return filtered;
+        }
+        return Vec::new();
+    }
+    // Handle "/model" partial -> command, but if user typed "/model" exactly and hits Tab we want alias list on next space
+    // Normal command completion
     COMMANDS
         .iter()
-        .copied()
         .filter(|cmd| cmd.starts_with(input))
+        .map(|s| s.to_string())
         .collect()
 }
 
@@ -627,7 +645,7 @@ fn autocomplete_matches(input: &str) -> Vec<&'static str> {
 fn draw_autocomplete(
     f: &mut Frame,
     input_area: Rect,
-    matches: &[&str],
+    matches: &[String],
     selected: usize,
     scroll_offset: usize,
 ) {
@@ -981,7 +999,7 @@ async fn app_loop(
     };
 
     // autocomplete
-    let mut ac_matches: Vec<&'static str> = Vec::new();
+    let mut ac_matches: Vec<String> = Vec::new();
     let mut ac_idx: usize = 0;
     let mut ac_scroll: usize = 0;
 
