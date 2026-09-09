@@ -63,6 +63,30 @@ pub async fn run(opts: RunOpts) -> anyhow::Result<()> {
 struct Msg {
     role: String,
     content: String,
+    tool_id: Option<String>,
+    tool_name: Option<String>,
+    tool_args: Option<String>,
+    elapsed_ms: Option<u64>,
+}
+
+impl Msg {
+    fn new(role: impl Into<String>, content: impl Into<String>) -> Self {
+        Self { role: role.into(), content: content.into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None }
+    }
+    fn new_tool_start(name: String, args: String, id: String) -> Self {
+        Self { role: "tool".into(), content: format!("{} {}", name, args), tool_id: Some(id), tool_name: Some(name.clone()), tool_args: Some(args), elapsed_ms: None }
+    }
+    fn format_elapsed(&self) -> String {
+        if let Some(ms) = self.elapsed_ms {
+            if ms < 1000 { format!("{}ms", ms) } else { format!("{:.2}s", ms as f64 / 1000.0) }
+        } else { String::new() }
+    }
+}
+
+impl Clone for Msg {
+    fn clone(&self) -> Self {
+        Self { role: self.role.clone(), content: self.content.clone(), tool_id: self.tool_id.clone(), tool_name: self.tool_name.clone(), tool_args: self.tool_args.clone(), elapsed_ms: self.elapsed_ms }
+    }
 }
 
 impl Msg {
@@ -182,7 +206,7 @@ impl Msg {
                     ])]
                 }
             }
-            "tool" => self.render_tool_lines(),
+            "tool" => { if self.tool_id.is_some() { self.render_tool_box() } else { self.render_tool_lines() } },
             "system" => self
                 .content
                 .lines()
@@ -204,6 +228,81 @@ impl Msg {
                 })
                 .collect(),
         }
+    }
+
+    fn render_tool_box(&self) -> Vec<Line<'static>> {
+        let name = self.tool_name.clone().unwrap_or_else(|| {
+            if let Some(pos) = self.content.find(" → ") { self.content[..pos].trim().to_string() }
+            else if let Some(pos) = self.content.find(' ') { self.content[..pos].to_string() }
+            else { self.content.clone() }
+        });
+        let args_str = self.tool_args.clone().unwrap_or_else(|| {
+            if let Some(pos) = self.content.find(' ') { self.content[pos..].trim().to_string() } else { String::new() }
+        });
+        let has_result = self.content.contains(" → ");
+        let result = if has_result {
+            if let Some(pos) = self.content.find(" → ") { self.content[pos + " → ".len()..].to_string() } else { String::new() }
+        } else { String::new() };
+        let is_running = self.elapsed_ms.is_none();
+        let elapsed = self.format_elapsed();
+        let is_error = result.contains("Error:") || result.contains("BLOCKED") || result.to_lowercase().contains("error");
+        let border_col = if is_running { ASHEN.charcoal } else if is_error { ASHEN.ember } else { ASHEN.moss };
+        let timer_str = if is_running { "… running".to_string() } else { elapsed.clone() };
+        let header_title = if timer_str.is_empty() { name.clone() } else { format!("{} · {}", name, timer_str) };
+        let mut inner: Vec<Line<'static>> = Vec::new();
+        if !args_str.is_empty() && args_str != "{}" {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&args_str) {
+                if let Some(path) = v.get("path").and_then(|p| p.as_str()) {
+                    let home = std::env::var("HOME").unwrap_or_default();
+                    let display = if let Some(rest) = path.strip_prefix(&home) { format!("~{}", rest) } else { path.to_string() };
+                    inner.push(Line::from(Span::styled(display, Style::default().fg(ASHEN.smoke))));
+                } else if let Some(cmd) = v.get("command").and_then(|c| c.as_str()) {
+                    inner.push(Line::from(Span::styled(format!("$ {}", cmd), Style::default().fg(ASHEN.whisper))));
+                } else if let Some(q) = v.get("query").and_then(|q| q.as_str()) {
+                    inner.push(Line::from(Span::styled(format!("\"{}\"", q), Style::default().fg(ASHEN.smoke))));
+                } else {
+                    inner.push(Line::from(Span::styled(args_str.clone(), Style::default().fg(ASHEN.smoke))));
+                }
+            } else {
+                inner.push(Line::from(Span::styled(args_str.clone(), Style::default().fg(ASHEN.smoke))));
+            }
+        }
+        if has_result {
+            inner.push(Line::from(Span::styled("─".repeat(28), Style::default().fg(ASHEN.charcoal))));
+            let result_lines: Vec<&str> = result.lines().collect();
+            let is_diff = name == "edit_file" || result.contains("diff:") || result.contains("@@");
+            let max_lines = if is_diff { 12 } else { 3 };
+            let show = result_lines.len().min(max_lines);
+            for l in &result_lines[..show] {
+                let style = if l.starts_with('+') && !l.starts_with("+++") { Style::default().fg(ASHEN.moss) }
+                    else if l.starts_with('-') && !l.starts_with("---") { Style::default().fg(ASHEN.ember) }
+                    else if l.starts_with("@@") { Style::default().fg(ASHEN.frost).add_modifier(Modifier::BOLD) }
+                    else if is_diff { Style::default().fg(ASHEN.deep_ash) }
+                    else { Style::default().fg(ASHEN.smoke) };
+                inner.push(Line::from(Span::styled(l.to_string(), style)));
+            }
+            if result_lines.len() > max_lines {
+                inner.push(Line::from(Span::styled(format!("… +{} more lines", result_lines.len() - max_lines), Style::default().fg(ASHEN.charcoal))));
+            }
+        } else if is_running {
+            inner.push(Line::from(Span::styled("  ● running", Style::default().fg(ASHEN.charcoal).add_modifier(Modifier::ITALIC))));
+        }
+        let width_est: usize = 60;
+        let top = format!("┌─ {} ─", header_title);
+        let top_border = {
+            let rem = width_est.saturating_sub(top.chars().count() + 1);
+            format!("{}{}┐", top, "─".repeat(rem))
+        };
+        let bottom = format!("└{}┘", "─".repeat(width_est));
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        lines.push(Line::from(Span::styled(top_border, Style::default().fg(border_col))));
+        for l in inner {
+            let mut spans = vec![Span::styled("│ ".to_string(), Style::default().fg(border_col))];
+            spans.extend(l.spans);
+            lines.push(Line::from(spans));
+        }
+        lines.push(Line::from(Span::styled(bottom, Style::default().fg(border_col))));
+        lines
     }
 
     /// Render tool messages compactly.
@@ -338,25 +437,16 @@ fn merge_thinking(messages: &[Msg]) -> Vec<Msg> {
         } else {
             if in_thinking {
                 // Flush accumulated thinking
-                out.push(Msg {
-                    role: "thinking".into(),
-                    content: thinking_buf.clone(),
-                });
+                out.push(Msg::new("thinking", thinking_buf.clone()));
                 thinking_buf.clear();
                 in_thinking = false;
             }
-            out.push(Msg {
-                role: m.role.clone(),
-                content: m.content.clone(),
-            });
+            out.push(m.clone());
         }
     }
     // Flush trailing thinking
     if in_thinking && !thinking_buf.is_empty() {
-        out.push(Msg {
-            role: "thinking".into(),
-            content: thinking_buf,
-        });
+        out.push(Msg::new("thinking", thinking_buf));
     }
     out
 }
@@ -1108,15 +1198,17 @@ fn draw_autocomplete(
 
 fn draw_approval(f: &mut Frame, area: Rect, req: &crate::approval::ApprovalRequest) {
     let width = (area.width.saturating_sub(4)).min(90);
+    let queued = crate::approval::queue_len();
+    let queue_label = if queued > 0 { format!(" [{}/{}]", 1, queued + 1) } else { String::new() };
     let height = 9.min(area.height.saturating_sub(4));
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     let rect = Rect { x, y, width, height };
     let is_dir = req.reasons.iter().any(|r| r.contains("outside CWD"));
-    let title = if is_dir { " Dir Guard — Approval Required (outside CWD) " } else { " Bash Guard — Approval Required " };
+    let title = if is_dir { format!(" Dir Guard — Approval Required{} (outside CWD) ", queue_label) } else { format!(" Bash Guard — Approval Required{} ", queue_label) };
     let border_col = if is_dir { ASHEN.frost } else { ASHEN.ember };
     let block = Block::default()
-        .title(title)
+        .title(title.as_str())
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_col))
         .style(Style::default().bg(THEME.header_bg).fg(ASHEN.bone));
@@ -1326,19 +1418,19 @@ async fn app_loop(
         let found = list.into_iter().find(|sess| sess.id.starts_with(rid));
         match found {
             Some(sess) => {
-                messages = sess.messages.iter().map(|m| Msg { role: m.role.clone(), content: m.content.clone() }).collect();
+                messages = sess.messages.iter().map(|m| Msg { role: m.role.clone(), content: m.content.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None}).collect();
                 Some(sess)
             }
             None => {
                 // not found, start new but warn
-                let m = Msg { role: "system".into(), content: format!("[session {} not found, started new]", rid) };
+                let m = Msg { role: "system".into(), content: format!("[session {} not found, started new]", rid), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None};
                 messages.push(m);
                 Some(crate::session::Session::new(&model))
             }
         }
     } else if opts.continue_session {
         if let Some(sess) = crate::session::Session::latest() {
-            messages = sess.messages.iter().map(|m| Msg { role: m.role.clone(), content: m.content.clone() }).collect();
+            messages = sess.messages.iter().map(|m| Msg { role: m.role.clone(), content: m.content.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None}).collect();
             Some(sess)
         } else {
             Some(crate::session::Session::new(&model))
@@ -1620,8 +1712,8 @@ async fn app_loop(
                                     dir_filtered.into_iter().filter(|s| s.id.to_lowercase().contains(&lower) || s.cwd.to_lowercase().contains(&lower) || s.messages.iter().any(|m| m.content.to_lowercase().contains(&lower))).collect()
                                 };
                                 if let Some(sess) = filtered.get(sessions_selected).cloned() {
-                                    messages = sess.messages.iter().map(|m| Msg { role: m.role.clone(), content: m.content.clone() }).collect();
-                                    messages.push(Msg { role: "system".into(), content: format!("[resumed session {}]", sess.id) });
+                                    messages = sess.messages.iter().map(|m| Msg { role: m.role.clone(), content: m.content.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None}).collect();
+                                    messages.push(Msg { role: "system".into(), content: format!("[resumed session {}]", sess.id), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                     session = Some(sess);
                                 }
                                 show_sessions = false;
@@ -1738,15 +1830,13 @@ async fn app_loop(
                                     // don't flicker busy off -> braille keeps ticking
                                     messages.push(Msg {
                                         role: "system".into(),
-                                        content: "[interrupted → next queued]".into(),
-                                    });
+                                        content: "[interrupted → next queued]".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                     let next = msg_queue.remove(0);
                                     let expanded_next = expand_at_mentions(&next);
                                     let hist = llm_history_for_spawn(&session, &messages);
                                     messages.push(Msg {
                                         role: "user".into(),
-                                        content: next.clone(),
-                                    });
+                                        content: next.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                     // agent_busy stays true
                                     step_info = "...".into();
                         agent_handle = Some(spawn_agent_with_history(
@@ -1761,8 +1851,7 @@ async fn app_loop(
                                     step_info.clear();
                                     messages.push(Msg {
                                         role: "system".into(),
-                                        content: "[interrupted]".into(),
-                                    });
+                                        content: "[interrupted]".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                 }
                             } else {
                                 // Esc on empty input clears textarea
@@ -2120,8 +2209,7 @@ async fn app_loop(
                                 "/help" => {
                                     messages.push(Msg {
                                         role: "system".into(),
-                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /memory stats|consolidate /model <name> /clear /exit  ·  Enter send · Shift+Enter newline · @file to attach · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll".into(),
-                                    });
+                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /memory stats|consolidate /model <name> /clear /exit  ·  Enter send · Shift+Enter newline · @file to attach · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                 }
                                 "/sessions" => {
                                     show_sessions = true;
@@ -2137,45 +2225,45 @@ async fn app_loop(
                                 }
                                 "/memory" => {
                                     let stats = crate::memory::api_stats();
-                                    messages.push(Msg { role: "system".into(), content: stats });
+                                    messages.push(Msg { role: "system".into(), content: stats, tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                 }
                                 "/memory stats" => {
                                     let stats = crate::memory::api_stats();
-                                    messages.push(Msg { role: "system".into(), content: stats });
+                                    messages.push(Msg { role: "system".into(), content: stats, tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                 }
                                 "/memory consolidate" => {
                                     let out = crate::memory::api_consolidate();
-                                    messages.push(Msg { role: "system".into(), content: out });
+                                    messages.push(Msg { role: "system".into(), content: out, tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                 }
                                 _ if prompt.starts_with("/allowlist ") => {
                                     let rest = prompt.strip_prefix("/allowlist ").unwrap().trim();
                                     if rest == "clear" {
                                         crate::bash_guard::allowlist_clear();
                                         crate::dir_guard::allowlist_clear();
-                                        messages.push(Msg { role: "system".into(), content: "allowlists cleared (bash + dir)".into() });
+                                        messages.push(Msg { role: "system".into(), content: "allowlists cleared (bash + dir)".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                     } else if rest.starts_with("add ") {
                                         let pat = rest.strip_prefix("add ").unwrap().trim();
                                         // if pat looks like a path, add to dir allowlist, else bash
                                         if pat.contains('/') || pat.starts_with('~') || pat.starts_with('.') {
                                             crate::dir_guard::allowlist_add(pat);
-                                            messages.push(Msg { role: "system".into(), content: format!("dir-allowlisted: {}", pat) });
+                                            messages.push(Msg { role: "system".into(), content: format!("dir-allowlisted: {}", pat), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                         } else {
                                             crate::bash_guard::allowlist_add(pat);
-                                            messages.push(Msg { role: "system".into(), content: format!("allowlisted: {}", pat) });
+                                            messages.push(Msg { role: "system".into(), content: format!("allowlisted: {}", pat), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                         }
                                     } else if rest.starts_with("rm ") || rest.starts_with("remove ") {
                                         let pat = rest.split_once(' ').map(|(_, p)| p.trim()).unwrap_or(rest);
                                         crate::bash_guard::allowlist_remove(pat);
                                         crate::dir_guard::allowlist_remove(pat);
-                                        messages.push(Msg { role: "system".into(), content: format!("removed: {}", pat) });
+                                        messages.push(Msg { role: "system".into(), content: format!("removed: {}", pat), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                     } else {
                                         // heuristics: path-like → dir
                                         if rest.contains('/') || rest.starts_with('~') {
                                             crate::dir_guard::allowlist_add(rest);
-                                            messages.push(Msg { role: "system".into(), content: format!("dir-allowlisted: {}", rest) });
+                                            messages.push(Msg { role: "system".into(), content: format!("dir-allowlisted: {}", rest), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                         } else {
                                             crate::bash_guard::allowlist_add(rest);
-                                            messages.push(Msg { role: "system".into(), content: format!("allowlisted: {}", rest) });
+                                            messages.push(Msg { role: "system".into(), content: format!("allowlisted: {}", rest), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                         }
                                     }
                                 }
@@ -2184,25 +2272,23 @@ async fn app_loop(
                                     let list = crate::session::Session::list();
                                     if let Some(sess) = list.into_iter().find(|sess| sess.id.starts_with(rid)) {
                                         let sid = sess.id.clone();
-                                        messages = sess.messages.iter().map(|m| Msg { role: m.role.clone(), content: m.content.clone() }).collect();
-                                        messages.push(Msg { role: "system".into(), content: format!("[resumed session {}]", sid) });
+                                        messages = sess.messages.iter().map(|m| Msg { role: m.role.clone(), content: m.content.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None}).collect();
+                                        messages.push(Msg { role: "system".into(), content: format!("[resumed session {}]", sid), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                         session = Some(sess);
                                     } else {
-                                        messages.push(Msg { role: "system".into(), content: format!("session {} not found", rid) });
+                                        messages.push(Msg { role: "system".into(), content: format!("session {} not found", rid), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                     }
                                 }
                                 _ if prompt.starts_with("/model ") => {
                                     let m = prompt.strip_prefix("/model ").unwrap().trim();
                                     messages.push(Msg {
                                         role: "system".into(),
-                                        content: format!("model: {} (restart to apply)", m),
-                                    });
+                                        content: format!("model: {} (restart to apply)", m), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                 }
                                 _ => {
                                     messages.push(Msg {
                                         role: "system".into(),
-                                        content: format!("unknown command: {}", prompt),
-                                    });
+                                        content: format!("unknown command: {}", prompt), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                 }
                             }
                             textarea.select_all();
@@ -2227,8 +2313,7 @@ async fn app_loop(
                                 let hist = llm_history_for_spawn(&session, &messages);
                                 messages.push(Msg {
                                     role: "user".into(),
-                                    content: prompt.clone(),
-                                });
+                                    content: prompt.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                 agent_busy = true;
                                 agent_handle = Some(spawn_agent_with_history(
                                     expanded.clone(),
@@ -2258,14 +2343,12 @@ async fn app_loop(
                         } else {
                             messages.push(Msg {
                                 role: "assistant".into(),
-                                content: delta,
-                            });
+                                content: delta, tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                         }
                     } else {
                         messages.push(Msg {
                             role: "assistant".into(),
-                            content: delta,
-                        });
+                            content: delta, tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                     }
                     step_info = "".into();
                 }
@@ -2276,33 +2359,26 @@ async fn app_loop(
                         } else {
                             messages.push(Msg {
                                 role: "thinking".into(),
-                                content: delta,
-                            });
+                                content: delta, tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                         }
                     } else {
                         messages.push(Msg {
                             role: "thinking".into(),
-                            content: delta,
-                        });
+                            content: delta, tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                     }
                 }
                 AgentEvent::TextDone { text } => {
                     let _ = text;
                 }
-                AgentEvent::ToolStart { name, args, id: _ } => {
-                    messages.push(Msg {
-                        role: "tool".into(),
-                        content: format!(
-                            "{} {}",
-                            name,
-                            serde_json::to_string(&args).unwrap_or_default()
-                        ),
-                    });
+                AgentEvent::ToolStart { name, args, id } => {
+                    let args_str = serde_json::to_string(&args).unwrap_or_default();
+                    messages.push(Msg::new_tool_start(name, args_str, id));
                 }
                 AgentEvent::ToolResult {
                     name,
                     result,
-                    id: _,
+                    id,
+                    elapsed_ms,
                 } => {
                     let truncated: String = result.chars().take(2000).collect();
                     let display = if result.chars().count() > 2000 {
@@ -2314,10 +2390,22 @@ async fn app_loop(
                     } else {
                         result
                     };
-                    messages.push(Msg {
-                        role: "tool".into(),
-                        content: format!("{} → {}", name, display),
-                    });
+                    let mut found = false;
+                    for msg in messages.iter_mut().rev() {
+                        if msg.tool_id.as_deref() == Some(&id) && msg.elapsed_ms.is_none() {
+                            msg.content = format!("{} → {}", name, display);
+                            msg.elapsed_ms = Some(elapsed_ms);
+                            if msg.tool_name.is_none() { msg.tool_name = Some(name.clone()); }
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        let mut m = Msg::new_tool_start(name.clone(), String::new(), id.clone());
+                        m.content = format!("{} → {}", name, display);
+                        m.elapsed_ms = Some(elapsed_ms);
+                        messages.push(m);
+                    }
                     if name == "bash" {
                         if let Ok(new_cwd) = std::env::current_dir() {
                             cwd = new_cwd.display().to_string();
@@ -2353,8 +2441,7 @@ async fn app_loop(
                         let hist = llm_history_for_spawn(&session, &messages);
                         messages.push(Msg {
                             role: "user".into(),
-                            content: next.clone(),
-                        });
+                            content: next.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                         // stay busy — braille spinner keeps ticking
                         step_info = "...".into();
                         // agent_busy stays true
@@ -2387,8 +2474,7 @@ async fn app_loop(
                 let hist = llm_history_for_spawn(&session, &messages);
                 messages.push(Msg {
                     role: "user".into(),
-                    content: next.clone(),
-                });
+                    content: next.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                 step_info = "...".into();
                         agent_handle = Some(spawn_agent_with_history(
                             expanded_next,
@@ -2402,8 +2488,7 @@ async fn app_loop(
                 step_info = "error".into();
                 messages.push(Msg {
                     role: "system".into(),
-                    content: "[agent crashed]".into(),
-                });
+                    content: "[agent crashed]".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
             }
         }
 
