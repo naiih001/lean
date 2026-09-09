@@ -20,7 +20,10 @@ impl Client {
         Self {
             api_key,
             base_url,
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .user_agent("opencode/1.0")
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
         }
     }
 
@@ -28,7 +31,10 @@ impl Client {
         Self {
             api_key: resolved.api_key.clone(),
             base_url: resolved.base_url.clone(),
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .user_agent("opencode/1.0")
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
         }
     }
 
