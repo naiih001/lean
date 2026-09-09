@@ -112,7 +112,7 @@ pub enum AgentEvent {
     Reasoning { delta: String },
     TextDone { text: String },
     ToolStart { name: String, args: Value, id: String },
-    ToolResult { name: String, result: String, id: String },
+    ToolResult { name: String, result: String, id: String, elapsed_ms: u64 },
     Step { n: usize },
     Done { text: String, history: Vec<Value> },
 }
@@ -501,23 +501,25 @@ pub fn run_agent_with_history(
                 let args_val: Value = serde_json::from_str(&acc.args).unwrap_or(Value::String(acc.args.clone()));
                 yield AgentEvent::ToolStart { name: acc.name.clone(), args: args_val.clone(), id: acc.id.clone() };
             }
-            // Execute in parallel
+            // Execute in parallel — per-tool wall-clock timing
             let futs: Vec<_> = ordered.iter().map(|(_, acc)| {
                 let name = acc.name.clone();
                 let id = acc.id.clone();
                 let args_val: Value = serde_json::from_str(&acc.args).unwrap_or(Value::String(acc.args.clone()));
                 async move {
+                    let start = std::time::Instant::now();
                     let result = crate::tools::execute_tool(&name, args_val.clone()).await;
-                    (id, name, result, args_val)
+                    let elapsed_ms = start.elapsed().as_millis() as u64;
+                    (id, name, result, args_val, elapsed_ms)
                 }
             }).collect();
             let results = futures::future::join_all(futs).await;
-            for (id, name, result, args_val) in results {
+            for (id, name, result, args_val, elapsed_ms) in results {
                 let display = result.find("<<IMAGE:").map_or_else(
                     || result.clone(),
                     |pos| format!("{}[image data omitted for display]", result[..pos].trim_end()),
                 );
-                yield AgentEvent::ToolResult { name: name.clone(), result: display, id: id.clone() };
+                yield AgentEvent::ToolResult { name: name.clone(), result: display, id: id.clone(), elapsed_ms };
                 tool_results.push((id, name, result, args_val));
             }
 

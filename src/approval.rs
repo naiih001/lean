@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
 use tokio::sync::oneshot;
 
@@ -9,10 +10,10 @@ pub struct ApprovalRequest {
     pub tx: Option<oneshot::Sender<bool>>,
 }
 
-static PENDING: OnceLock<Mutex<Option<ApprovalRequest>>> = OnceLock::new();
+static PENDING: OnceLock<Mutex<VecDeque<ApprovalRequest>>> = OnceLock::new();
 
-fn pending_lock() -> &'static Mutex<Option<ApprovalRequest>> {
-    PENDING.get_or_init(|| Mutex::new(None))
+fn pending_lock() -> &'static Mutex<VecDeque<ApprovalRequest>> {
+    PENDING.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
 /// Called from tools::execute_tool (background tokio task) to request approval.
@@ -26,35 +27,45 @@ pub async fn request(cmd: String, severity: crate::bash_guard::Severity, reasons
     let (tx, rx) = oneshot::channel();
     {
         let mut lock = pending_lock().lock().unwrap();
-        *lock = Some(ApprovalRequest {
+        lock.push_back(ApprovalRequest {
             cmd: cmd.clone(),
             severity,
             reasons,
             tx: Some(tx),
         });
     }
-    // Wait for TUI to respond. If TUI not running, this will hang forever — but we are in agent task,
-    // caller should have timeout? For now wait indefinitely, TUI loop will resolve.
+    // Wait for TUI to respond. Queue preserves FIFO; TUI pops front.
     match rx.await {
         Ok(v) => v,
         Err(_) => false, // channel dropped -> denied
     }
 }
 
-/// TUI side: take pending request if any (non-blocking)
+/// TUI side: take pending request if any (non-blocking) — FIFO
 pub fn take_pending() -> Option<ApprovalRequest> {
     let mut lock = pending_lock().lock().unwrap();
-    lock.take()
+    lock.pop_front()
 }
 
-/// TUI side: put back if user hasn't decided yet (e.g., keep showing)
+/// TUI side: put back if user hasn't decided yet (e.g., keep showing) — push to front
 pub fn put_back(req: ApprovalRequest) {
     let mut lock = pending_lock().lock().unwrap();
-    *lock = Some(req);
+    lock.push_front(req);
 }
 
 /// Check if there's pending approval (for rendering)
 pub fn has_pending() -> bool {
     let lock = pending_lock().lock().unwrap();
-    lock.is_some()
+    !lock.is_empty()
+}
+
+/// Number of queued approvals (for "[1/N]" display)
+pub fn queue_len() -> usize {
+    let lock = pending_lock().lock().unwrap();
+    lock.len()
+}
+
+/// Peek queue length without consuming — used to compute label before pop
+pub fn pending_count() -> usize {
+    queue_len()
 }
