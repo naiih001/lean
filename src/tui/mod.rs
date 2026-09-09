@@ -7,28 +7,48 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
+use ratatui_textarea::{CursorMove, Input as TAInput, Key as TAKey, TextArea};
 use std::io::Stdout;
+use tokio::sync::broadcast;
 
 mod markdown;
 
-pub async fn run(model: String) -> anyhow::Result<()> {
+#[derive(Debug, Clone)]
+pub struct RunOpts {
+    pub model: String,
+    pub continue_session: bool,
+    pub resume_id: Option<String>,
+    pub no_session: bool,
+    pub bash_guard_disabled: bool,
+    pub dir_guard_disabled: bool,
+}
+
+pub async fn run(opts: RunOpts) -> anyhow::Result<()> {
+    // propagate guards globally
+    crate::bash_guard::set_disabled(opts.bash_guard_disabled);
+    crate::dir_guard::set_disabled(opts.dir_guard_disabled);
+    crate::dir_guard::init(None);
+    let _model = opts.model.clone();
+
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     crossterm::execute!(
         stdout,
         crossterm::terminal::EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture
+        crossterm::event::EnableMouseCapture,
+        crossterm::event::EnableBracketedPaste
     )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = ratatui::Terminal::new(backend)?;
 
-    let res = app_loop(&mut terminal, model).await;
+    let res = app_loop(&mut terminal, opts).await;
 
     crossterm::terminal::disable_raw_mode()?;
     crossterm::execute!(
         terminal.backend_mut(),
         crossterm::terminal::LeaveAlternateScreen,
-        crossterm::event::DisableMouseCapture
+        crossterm::event::DisableMouseCapture,
+        crossterm::event::DisableBracketedPaste
     )?;
     terminal.show_cursor()?;
 
@@ -52,12 +72,18 @@ impl Msg {
             "user" => {
                 let mut lines = vec![Line::from(vec![
                     Span::styled("  ", Style::default()),
-                    Span::styled(">>", Style::default()
-                        .fg(ASHEN.slate)
-                        .add_modifier(Modifier::BOLD)),
-                    Span::styled(" you", Style::default()
-                        .fg(ASHEN.slate)
-                        .add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        ">>",
+                        Style::default()
+                            .fg(ASHEN.slate)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        " you",
+                        Style::default()
+                            .fg(ASHEN.slate)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                 ])];
                 for l in self.content.lines() {
                     lines.push(Line::from(Span::styled(
@@ -70,9 +96,10 @@ impl Msg {
             "assistant" => {
                 let mut lines = vec![Line::from(vec![
                     Span::styled("  ", Style::default()),
-                    Span::styled("lean", Style::default()
-                        .fg(ASHEN.moss)
-                        .add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        "lean",
+                        Style::default().fg(ASHEN.moss).add_modifier(Modifier::BOLD),
+                    ),
                 ])];
                 lines.extend(markdown::render_markdown(&self.content, 5));
                 lines
@@ -84,20 +111,29 @@ impl Msg {
                 if first.is_empty() {
                     vec![Line::from(vec![
                         Span::styled("  ", Style::default()),
-                        Span::styled("...", Style::default()
-                            .fg(ASHEN.deep_ash)
-                            .add_modifier(Modifier::ITALIC)),
+                        Span::styled(
+                            "...",
+                            Style::default()
+                                .fg(ASHEN.deep_ash)
+                                .add_modifier(Modifier::ITALIC),
+                        ),
                     ])]
                 } else {
                     let preview: String = first.chars().take(80).collect();
                     vec![Line::from(vec![
                         Span::styled("  ", Style::default()),
-                        Span::styled("...", Style::default()
-                            .fg(ASHEN.deep_ash)
-                            .add_modifier(Modifier::ITALIC)),
-                        Span::styled(format!(" {}", preview), Style::default()
-                            .fg(ASHEN.deep_ash)
-                            .add_modifier(Modifier::ITALIC)),
+                        Span::styled(
+                            "...",
+                            Style::default()
+                                .fg(ASHEN.deep_ash)
+                                .add_modifier(Modifier::ITALIC),
+                        ),
+                        Span::styled(
+                            format!(" {}", preview),
+                            Style::default()
+                                .fg(ASHEN.deep_ash)
+                                .add_modifier(Modifier::ITALIC),
+                        ),
                     ])]
                 }
             }
@@ -134,24 +170,40 @@ impl Msg {
             let name = self.content[..pos].trim();
             let result = &self.content[pos + " → ".len()..];
 
-            // Truncate long results
+            // Truncate long results — show more for diffs (edit_file)
             let result_lines: Vec<&str> = result.lines().collect();
-            let max_lines = 3;
+            let is_diff = name == "edit_file" || result.contains("diff:") || result.contains("@@");
+            let max_lines = if is_diff { 12 } else { 3 };
             let show = result_lines.len().min(max_lines);
 
             lines.push(Line::from(vec![
                 Span::styled("  ", Style::default()),
                 Span::styled("▸", Style::default().fg(ASHEN.ember)),
                 Span::styled(", ", Style::default().fg(ASHEN.charcoal)),
-                Span::styled(name.to_string(), Style::default()
-                    .fg(ASHEN.ember_glow)
-                    .add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    name.to_string(),
+                    Style::default()
+                        .fg(ASHEN.ember_glow)
+                        .add_modifier(Modifier::BOLD),
+                ),
             ]));
 
             for l in &result_lines[..show] {
+                // Diff coloring for builder-native feel
+                let style = if l.starts_with('+') && !l.starts_with("+++") {
+                    Style::default().fg(ASHEN.moss)
+                } else if l.starts_with('-') && !l.starts_with("---") {
+                    Style::default().fg(ASHEN.ember)
+                } else if l.starts_with("@@") {
+                    Style::default().fg(ASHEN.frost).add_modifier(Modifier::BOLD)
+                } else if is_diff {
+                    Style::default().fg(ASHEN.deep_ash)
+                } else {
+                    Style::default().fg(ASHEN.smoke)
+                };
                 lines.push(Line::from(Span::styled(
                     format!("      {}", l),
-                    Style::default().fg(ASHEN.smoke),
+                    style,
                 )));
             }
             if result_lines.len() > max_lines {
@@ -171,9 +223,12 @@ impl Msg {
                     Span::styled("  ", Style::default()),
                     Span::styled("▸", Style::default().fg(ASHEN.ember)),
                     Span::styled(", ", Style::default().fg(ASHEN.charcoal)),
-                    Span::styled(name.to_string(), Style::default()
-                        .fg(ASHEN.ember_glow)
-                        .add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        name.to_string(),
+                        Style::default()
+                            .fg(ASHEN.ember_glow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                 ]));
 
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(args_str) {
@@ -261,10 +316,9 @@ fn merge_thinking(messages: &[Msg]) -> Vec<Msg> {
     out
 }
 
-
 // ── Rendering helpers ──────────────────────────────────────────
 
-fn draw_header(f: &mut Frame, area: Rect, model: &str, step_info: &str) {
+fn draw_header(f: &mut Frame, area: Rect, _model: &str, step_info: &str) {
     let inner = area;
     let width = inner.width as usize;
 
@@ -272,9 +326,9 @@ fn draw_header(f: &mut Frame, area: Rect, model: &str, step_info: &str) {
     let left = " lean ";
     // Right: model + step
     let right = if step_info.is_empty() {
-        format!(" {} ", model)
+        format!("")
     } else {
-        format!(" {} · {} ", model, step_info)
+        format!("{}", step_info)
     };
     let gap = width.saturating_sub(left.len() + right.len());
     let filler = " ".repeat(gap);
@@ -302,19 +356,18 @@ fn draw_queue(f: &mut Frame, area: Rect, queue: &[String]) {
         .map(|(i, msg)| {
             let n = start + i + 1;
             let prefix = format!("  {:>2} queued  ", n);
-            let display: String = msg.chars().take(width.saturating_sub(prefix.chars().count())).collect();
+            let display: String = msg
+                .chars()
+                .take(width.saturating_sub(prefix.chars().count()))
+                .collect();
             Line::from(vec![
                 Span::styled(
                     prefix,
-                    Style::default()
-                        .fg(ASHEN.charcoal)
-                        .bg(THEME.input_bg),
+                    Style::default().fg(ASHEN.charcoal).bg(THEME.input_bg),
                 ),
                 Span::styled(
                     display,
-                    Style::default()
-                        .fg(ASHEN.deep_ash)
-                        .bg(THEME.input_bg),
+                    Style::default().fg(ASHEN.deep_ash).bg(THEME.input_bg),
                 ),
             ])
         })
@@ -340,11 +393,7 @@ fn wrap_lines(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     for line in lines {
         // Calculate total text width of this line
-        let total: usize = line
-            .spans
-            .iter()
-            .map(|s| s.content.chars().count())
-            .sum();
+        let total: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
         if total <= width {
             out.push(line);
             continue;
@@ -404,9 +453,7 @@ fn build_content_lines(messages: &[Msg]) -> Vec<Line<'static>> {
             Line::from(""),
             Line::from(Span::styled(
                 "    lean",
-                Style::default()
-                    .fg(ASHEN.moss)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(ASHEN.moss).add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
                 "    light coding assistant",
@@ -424,44 +471,76 @@ fn build_content_lines(messages: &[Msg]) -> Vec<Line<'static>> {
     all_lines
 }
 
-
-fn draw_input(f: &mut Frame, area: Rect, input_text: &str) {
-    let width = area.width as usize;
-    let prompt = " ▸ ";
-    let available = width.saturating_sub(prompt.len());
-
-    let display_input = if input_text.is_empty() {
-        // Show placeholder with dim style
-        Span::styled(
-            format!("{}{}", prompt, " ".repeat(available)),
-            Style::default().fg(ASHEN.charcoal).bg(THEME.input_bg),
-        )
-    } else if input_text.chars().count() >= available {
-        // Truncate from left, show cursor at end
-        let char_count = input_text.chars().count();
-        let skip = char_count - available + 1;
-        let truncated: String = input_text.chars().skip(skip).collect();
-        Span::styled(
-            format!("▸{}█", truncated),
-            Style::default().fg(ASHEN.bone).bg(THEME.input_bg),
-        )
-    } else {
-        Span::styled(
-            format!("{}{}█", prompt, input_text),
-            Style::default().fg(ASHEN.bone).bg(THEME.input_bg),
-        )
+fn crossterm_key_to_input(k: crossterm::event::KeyEvent) -> TAInput {
+    let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = k.modifiers.contains(KeyModifiers::ALT);
+    let shift = k.modifiers.contains(KeyModifiers::SHIFT);
+    let key = match k.code {
+        KeyCode::Char(c) => TAKey::Char(c),
+        KeyCode::Backspace => TAKey::Backspace,
+        KeyCode::Enter => TAKey::Enter,
+        KeyCode::Left => TAKey::Left,
+        KeyCode::Right => TAKey::Right,
+        KeyCode::Up => TAKey::Up,
+        KeyCode::Down => TAKey::Down,
+        KeyCode::Tab => TAKey::Tab,
+        KeyCode::BackTab => TAKey::Tab,
+        KeyCode::Delete => TAKey::Delete,
+        KeyCode::Home => TAKey::Home,
+        KeyCode::End => TAKey::End,
+        KeyCode::PageUp => TAKey::PageUp,
+        KeyCode::PageDown => TAKey::PageDown,
+        KeyCode::Esc => TAKey::Esc,
+        KeyCode::F(n) => TAKey::F(n),
+        _ => TAKey::Null,
     };
-
-    let line = Line::from(display_input);
-
-    let para = Paragraph::new(line).style(Style::default().bg(THEME.input_bg));
-    f.render_widget(para, area);
+    TAInput {
+        key,
+        ctrl,
+        alt,
+        shift,
+    }
 }
 
-fn draw_footer(f: &mut Frame, area: Rect, model: &str, msg_count: usize, cwd: &str, agent_busy: bool, spinner_tick: usize) {
+fn draw_input(f: &mut Frame, area: Rect, textarea: &mut TextArea<'_>) {
+    // Apply ash styling every frame (cheap)
+    textarea.set_style(Style::default().fg(ASHEN.bone).bg(THEME.input_bg));
+    textarea.set_cursor_style(
+        Style::default()
+            .fg(ASHEN.bone)
+            .bg(ASHEN.ember)
+            .add_modifier(Modifier::REVERSED),
+    );
+    textarea.set_cursor_line_style(Style::default().bg(THEME.input_bg));
+    textarea.set_placeholder_text(
+        "  ▸  type a message…  (/help for commands, Enter send, Shift+Enter newline)",
+    );
+    textarea.set_placeholder_style(Style::default().fg(ASHEN.charcoal).bg(THEME.input_bg));
+    // prompt gutter: we prepend via block title style instead of manual truncation
+    let block = Block::default()
+        .borders(Borders::NONE)
+        .style(Style::default().bg(THEME.input_bg));
+    textarea.set_block(block);
+
+    // Render textarea as widget (single-line height, multiline expands via scrolling)
+    f.render_widget(&*textarea, area);
+}
+
+fn draw_footer(
+    f: &mut Frame,
+    area: Rect,
+    model: &str,
+    msg_count: usize,
+    cwd: &str,
+    agent_busy: bool,
+    spinner_tick: usize,
+) {
     let width = area.width as usize;
 
-    let spinner = ["\u{280b}", "\u{2819}", "\u{2813}", "\u{2827}", "\u{2836}", "\u{2834}", "\u{2826}", "\u{282e}"];
+    let spinner = [
+        "\u{280b}", "\u{2819}", "\u{2813}", "\u{2827}", "\u{2836}", "\u{2834}", "\u{2826}",
+        "\u{282e}",
+    ];
     let spinner_char = if agent_busy {
         format!("{} ", spinner[spinner_tick % spinner.len()])
     } else {
@@ -471,7 +550,13 @@ fn draw_footer(f: &mut Frame, area: Rect, model: &str, msg_count: usize, cwd: &s
 
     // Shorten cwd to show last 2 components
     let short_cwd = {
-        let parts: Vec<&str> = cwd.rsplit('/').take(2).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>();
+        let parts: Vec<&str> = cwd
+            .rsplit('/')
+            .take(2)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>();
         if parts.len() >= 2 {
             format!("{}/{}", parts[0], parts[1])
         } else {
@@ -481,25 +566,25 @@ fn draw_footer(f: &mut Frame, area: Rect, model: &str, msg_count: usize, cwd: &s
     let center = format!(" {} ", short_cwd);
 
     let used = spinner_char.len() + 1 + model.len() + 2 + center.len() + right.len();
-    let gap = if used < width {
-        width - used
-    } else {
-        0
-    };
+    let gap = if used < width { width - used } else { 0 };
     let gap_left = gap / 2;
     let gap_right = gap - gap_left;
 
-    let mut spans = vec![
-        Span::styled(
-            format!(" {} ", model),
-            Style::default().fg(ASHEN.smoke).bg(THEME.page_bg),
-        ),
-    ];
+    let mut spans = vec![Span::styled(
+        format!(" {} ", model),
+        Style::default().fg(ASHEN.smoke).bg(THEME.page_bg),
+    )];
     if !spinner_char.is_empty() {
-        spans.insert(0, Span::styled(
-            spinner_char,
-            Style::default().fg(ASHEN.bone).bg(THEME.page_bg).add_modifier(Modifier::BOLD),
-        ));
+        spans.insert(
+            0,
+            Span::styled(
+                spinner_char,
+                Style::default()
+                    .fg(ASHEN.bone)
+                    .bg(THEME.page_bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        );
     }
     spans.push(Span::styled(
         " ".repeat(gap_left),
@@ -524,7 +609,7 @@ fn draw_footer(f: &mut Frame, area: Rect, model: &str, msg_count: usize, cwd: &s
 
 // ── Autocomplete ─────────────────────────────────────────────
 
-const COMMANDS: &[&str] = &["/help", "/new", "/clear", "/todo", "/exit", "/quit", "/model"];
+const COMMANDS: &[&str] = &["/help", "/new", "/clear", "/exit", "/quit", "/model", "/sessions", "/resume", "/allowlist", "/allowlist clear", "/memory", "/memory stats", "/memory consolidate"];
 
 /// Filter commands matching the current input prefix.
 fn autocomplete_matches(input: &str) -> Vec<&'static str> {
@@ -591,9 +676,7 @@ fn draw_autocomplete(
         .map(|(i, cmd)| {
             let real_idx = start + i;
             let style = if real_idx == selected {
-                Style::default()
-                    .fg(ASHEN.bone)
-                    .add_modifier(Modifier::BOLD)
+                Style::default().fg(ASHEN.bone).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(ASHEN.smoke)
             };
@@ -605,108 +688,236 @@ fn draw_autocomplete(
     f.render_widget(para, inner);
 }
 
-fn draw_todos(f: &mut Frame, area: Rect) {
-    let todos = crate::todo::get_todos();
-
-    // Calculate popup size
-    let popup_width = (area.width as usize).min(60).max(30) as u16;
-    let max_lines = 20;
-    let line_count = if todos.is_empty() {
-        2 // just header + empty message
-    } else {
-        let mut count = 0;
-        let mut last_group = "";
-        for t in &todos {
-            if t.group != last_group {
-                count += 1; // group header
-                last_group = &t.group;
-            }
-            count += 1;
-        }
-        count
-    };
-    let popup_height = (line_count + 2).min(max_lines + 2) as u16; // +2 for borders
-
-    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
-    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
-
-    let rect = Rect {
-        x,
-        y,
-        width: popup_width,
-        height: popup_height,
-    };
-
+fn draw_approval(f: &mut Frame, area: Rect, req: &crate::approval::ApprovalRequest) {
+    let width = (area.width.saturating_sub(4)).min(90);
+    let height = 9.min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let rect = Rect { x, y, width, height };
+    let is_dir = req.reasons.iter().any(|r| r.contains("outside CWD"));
+    let title = if is_dir { " Dir Guard — Approval Required (outside CWD) " } else { " Bash Guard — Approval Required " };
+    let border_col = if is_dir { ASHEN.frost } else { ASHEN.ember };
     let block = Block::default()
-        .title(" Todos ")
+        .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(ASHEN.charcoal))
-        .style(Style::default().bg(THEME.header_bg));
-
+        .border_style(Style::default().fg(border_col))
+        .style(Style::default().bg(THEME.header_bg).fg(ASHEN.bone));
     let inner = block.inner(rect);
     f.render_widget(block, rect);
-
-    if todos.is_empty() {
-        let empty = Paragraph::new(Line::from(Span::styled(
-            "  No todos yet",
-            Style::default().fg(ASHEN.smoke),
-        )));
-        f.render_widget(empty, inner);
-        return;
-    }
-
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut last_group = String::new();
-    for t in &todos {
-        if t.group != last_group {
-            if !lines.is_empty() {
-                lines.push(Line::from(""));
-            }
-            let group_label = if t.group.is_empty() { "General".to_string() } else { t.group.clone() };
-            lines.push(Line::from(Span::styled(
-                format!("  {}", group_label),
-                Style::default()
-                    .fg(ASHEN.ember)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            last_group = t.group.clone();
-        }
-
-        let (check, status_style) = match t.status {
-            crate::todo::TodoStatus::Completed => ("x ", Style::default().fg(ASHEN.moss)),
-            crate::todo::TodoStatus::Cancelled => ("- ", Style::default().fg(ASHEN.deep_ash)),
-            crate::todo::TodoStatus::InProgress => ("~ ", Style::default().fg(ASHEN.frost)),
-            crate::todo::TodoStatus::Pending => ("  ", Style::default().fg(ASHEN.bone)),
-        };
-
-        let priority = match t.priority.as_str() {
-            "high" => Span::styled(" !!", Style::default().fg(ASHEN.ember)),
-            "medium" => Span::styled(" !", Style::default().fg(ASHEN.smoke)),
-            _ => Span::raw(""),
-        };
-
-        lines.push(Line::from(vec![
-            Span::styled(format!("[{}] ", check), status_style),
-            Span::styled(t.content.clone(), Style::default().fg(ASHEN.bone)),
-            priority,
-            Span::styled(
-                format!("  {}", t.id),
-                Style::default().fg(ASHEN.deep_ash),
-            ),
-        ]));
-    }
-
+    let sev = match req.severity { crate::bash_guard::Severity::High => "HIGH", crate::bash_guard::Severity::Medium => "MEDIUM" };
+    let sev_style = if sev == "HIGH" { Style::default().fg(ASHEN.ember).add_modifier(Modifier::BOLD) } else { Style::default().fg(ASHEN.frost) };
+    let cmd_label = if is_dir && req.cmd.contains(' ') && !req.cmd.contains('/') { format!("  $ {}", req.cmd) } else if is_dir { format!("  path: {}", req.cmd) } else { format!("  $ {}", req.cmd) };
+    let lines = vec![
+        Line::from(vec![Span::styled(format!("  {} risk:  ", sev), sev_style), Span::styled(req.reasons.join("; "), Style::default().fg(ASHEN.smoke))]),
+        Line::from(Span::styled(cmd_label, Style::default().fg(ASHEN.whisper))),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  [a] Allow once  ", Style::default().fg(ASHEN.moss).add_modifier(Modifier::BOLD)),
+            Span::styled("[d] Deny  ", Style::default().fg(ASHEN.ember)),
+            Span::styled("[A] Allow always  ", Style::default().fg(ASHEN.slate)),
+            Span::styled("Esc deny", Style::default().fg(ASHEN.charcoal)),
+        ]),
+        Line::from(Span::styled("  Press a/d/A or Enter to allow, Esc to deny", Style::default().fg(ASHEN.deep_ash))),
+    ];
     let para = Paragraph::new(lines);
     f.render_widget(para, inner);
+}
+
+
+fn draw_sessions(f: &mut Frame, area: Rect, selected: usize, scroll: usize, filter: &str) {
+    let all = crate::session::Session::list();
+    let filtered: Vec<crate::session::Session> = if filter.is_empty() {
+        all
+    } else {
+        let lower = filter.to_lowercase();
+        all.into_iter().filter(|s| {
+            s.id.to_lowercase().contains(&lower)
+                || s.cwd.to_lowercase().contains(&lower)
+                || s.messages.iter().any(|m| m.content.to_lowercase().contains(&lower))
+        }).collect()
+    };
+    let sessions = &filtered;
+    let width = (area.width.saturating_sub(4)).min(80);
+    let height = (14.min(sessions.len() + 6) as u16).min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let rect = Rect { x, y, width, height };
+    let title = if filter.is_empty() { " Sessions — Enter to resume, Esc close, type to filter ".to_string() } else { format!(" Sessions — filter: {} ", filter) };
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ASHEN.frost))
+        .style(Style::default().bg(THEME.header_bg).fg(ASHEN.bone));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    if sessions.is_empty() {
+        let para = Paragraph::new(Line::from(Span::styled(if filter.is_empty() { "  No sessions" } else { "  No match" }, Style::default().fg(ASHEN.deep_ash))));
+        f.render_widget(para, inner);
+        return;
+    }
+    let visible_h = inner.height as usize;
+    let start = scroll.min(sessions.len().saturating_sub(1));
+    let end = (start + visible_h).min(sessions.len());
+    let items: Vec<Line> = sessions[start..end].iter().enumerate().map(|(i, sess)| {
+        let idx = start + i;
+        let sel = idx == selected;
+        let style = if sel { Style::default().fg(ASHEN.bone).add_modifier(Modifier::BOLD).bg(ASHEN.stone) } else { Style::default().fg(ASHEN.smoke) };
+        let ts = sess.updated_at;
+        let preview = sess.messages.first().map(|m| m.content.chars().take(30).collect::<String>().replace("\n", " ")).unwrap_or_else(|| "-".to_string());
+        let id_short = sess.id.chars().take(8).collect::<String>();
+        Line::from(Span::styled(format!(" {} {} {}m {} ", id_short, preview, sess.messages.len(), ts), style))
+    }).collect();
+    let para = Paragraph::new(items);
+    f.render_widget(para, inner);
+}
+
+fn draw_allowlist(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
+    let bash_list = crate::bash_guard::allowlist_list();
+    let dir_list = crate::dir_guard::allowlist_list();
+    let mut combined: Vec<(String, String)> = Vec::new(); // (kind, pat)
+    for p in bash_list { combined.push(("bash".into(), p)); }
+    for p in dir_list { combined.push(("dir".into(), p)); }
+    combined.sort_by(|a,b| a.1.cmp(&b.1));
+    let width = (area.width.saturating_sub(4)).min(80);
+    let height = (16.min(combined.len() + 7) as u16).min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let rect = Rect { x, y, width, height };
+    let title = format!(" Allowlist (bash:{}, dir:{}) — Enter keep, d delete, c clear all, Esc close ", crate::bash_guard::allowlist_list().len(), crate::dir_guard::allowlist_list().len());
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ASHEN.moss))
+        .style(Style::default().bg(THEME.header_bg).fg(ASHEN.bone));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    if combined.is_empty() {
+        let para = Paragraph::new(vec![
+            Line::from(Span::styled("  No allowlisted patterns", Style::default().fg(ASHEN.deep_ash))),
+            Line::from(Span::styled("  Approve a bash/dir command with 'A' to add", Style::default().fg(ASHEN.charcoal))),
+        ]);
+        f.render_widget(para, inner);
+        return;
+    }
+    let visible_h = inner.height as usize;
+    let start = scroll.min(combined.len().saturating_sub(1));
+    let end = (start + visible_h).min(combined.len());
+    let items: Vec<Line> = combined[start..end].iter().enumerate().map(|(i, (kind, pat))| {
+        let idx = start + i;
+        let sel = idx == selected;
+        let style = if sel { Style::default().fg(ASHEN.bone).add_modifier(Modifier::BOLD).bg(ASHEN.stone) } else { Style::default().fg(ASHEN.smoke) };
+        let kind_style = if kind == "dir" { Style::default().fg(ASHEN.frost) } else { Style::default().fg(ASHEN.moss) };
+        Line::from(vec![
+            Span::styled(format!("  [{}] ", kind), kind_style),
+            Span::styled(pat.clone(), style),
+        ])
+    }).collect();
+    let para = Paragraph::new(items);
+    f.render_widget(para, inner);
+}
+
+
+/// Spawn the agent task, always sending a done signal on completion (including panics).
+fn spawn_agent(
+    prompt: String,
+    model: String,
+    tx: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
+    done_tx: broadcast::Sender<()>,
+) -> tokio::task::JoinHandle<()> {
+    spawn_agent_with_history(prompt, model, Vec::new(), tx, done_tx)
+}
+
+fn spawn_agent_with_history(
+    prompt: String,
+    model: String,
+    history: Vec<serde_json::Value>,
+    tx: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
+    done_tx: broadcast::Sender<()>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        use futures::FutureExt;
+        let result = std::panic::AssertUnwindSafe(async move {
+            let stream = agent::run_agent_with_history(prompt, model, 100, history);
+            use futures::StreamExt;
+            let mut s = Box::pin(stream);
+            while let Some(ev) = s.next().await {
+                let _ = tx.send(ev);
+            }
+        });
+        let _ = result.catch_unwind().await;
+        let _ = done_tx.send(());
+    })
+}
+
+fn history_from_messages(msgs: &[Msg]) -> Vec<serde_json::Value> {
+    msgs.iter().map(|m| {
+        // Preserve role mapping for LLM replay; tool msgs become user context
+        match m.role.as_str() {
+            "user" => serde_json::json!({"role": "user", "content": m.content}),
+            "assistant" => serde_json::json!({"role": "assistant", "content": m.content}),
+            "system" => serde_json::json!({"role": "system", "content": m.content}),
+            "tool" => serde_json::json!({"role": "user", "content": format!("[tool] {}", m.content)}),
+            _ => serde_json::json!({"role": "user", "content": format!("[{}] {}", m.role, m.content)}),
+        }
+    }).collect()
+}
+
+fn llm_history_for_spawn(session: &Option<crate::session::Session>, msgs: &[Msg]) -> Vec<serde_json::Value> {
+    if let Some(sess) = session {
+        if let Some(ref hist) = sess.llm_history {
+            if !hist.is_empty() { return hist.clone(); }
+        }
+    }
+    history_from_messages(msgs)
 }
 
 // ── App loop ───────────────────────────────────────────────────
 
 async fn app_loop(
     terminal: &mut ratatui::Terminal<CrosstermBackend<Stdout>>,
-    model: String,
+    opts: RunOpts,
 ) -> anyhow::Result<()> {
+    let model = opts.model.clone();
     let mut messages: Vec<Msg> = Vec::new();
+    // ── Session restore ──
+    let mut session = if opts.no_session {
+        None
+    } else if let Some(ref rid) = opts.resume_id {
+        // prefix match
+        let list = crate::session::Session::list();
+        let found = list.into_iter().find(|sess| sess.id.starts_with(rid));
+        match found {
+            Some(sess) => {
+                messages = sess.messages.iter().map(|m| Msg { role: m.role.clone(), content: m.content.clone() }).collect();
+                Some(sess)
+            }
+            None => {
+                // not found, start new but warn
+                let m = Msg { role: "system".into(), content: format!("[session {} not found, started new]", rid) };
+                messages.push(m);
+                Some(crate::session::Session::new(&model))
+            }
+        }
+    } else if opts.continue_session {
+        if let Some(sess) = crate::session::Session::latest() {
+            messages = sess.messages.iter().map(|m| Msg { role: m.role.clone(), content: m.content.clone() }).collect();
+            Some(sess)
+        } else {
+            Some(crate::session::Session::new(&model))
+        }
+    } else {
+        Some(crate::session::Session::new(&model))
+    };
+    // helper to persist
+    let persist = |msgs: &Vec<Msg>, sess: &mut Option<crate::session::Session>| {
+        if let Some(s) = sess {
+            s.model = model.clone();
+            s.cwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
+            s.messages = msgs.iter().map(|m| crate::session::SavedMsg { role: m.role.clone(), content: m.content.clone() }).collect();
+            let _ = s.save();
+            crate::session::Session::prune(50);
+        }
+    };
     let mut scroll: u16 = 0;
     let mut auto_scroll = true;
     let mut step_info = String::new();
@@ -718,10 +929,30 @@ async fn app_loop(
     // input history
     let mut history: Vec<String> = Vec::new();
     let mut hist_idx: Option<usize> = None;
-    let mut input_text = String::new();
+    let mut textarea = {
+        let mut ta = TextArea::default();
+        ta.set_style(Style::default().fg(ASHEN.bone).bg(THEME.input_bg));
+        ta.set_cursor_style(
+            Style::default()
+                .fg(ASHEN.bone)
+                .bg(ASHEN.ember)
+                .add_modifier(Modifier::REVERSED),
+        );
+        ta.set_cursor_line_style(Style::default().bg(THEME.input_bg));
+        ta.set_placeholder_text(
+            "  ▸  type a message…  (/help for commands, Enter send, Shift+Enter newline)",
+        );
+        ta.set_placeholder_style(Style::default().fg(ASHEN.charcoal).bg(THEME.input_bg));
+        ta.set_block(
+            Block::default()
+                .borders(Borders::NONE)
+                .style(Style::default().bg(THEME.input_bg)),
+        );
+        ta
+    };
 
     // autocomplete
-    let mut ac_matches: Vec<&str> = Vec::new();
+    let mut ac_matches: Vec<&'static str> = Vec::new();
     let mut ac_idx: usize = 0;
     let mut ac_scroll: usize = 0;
 
@@ -730,13 +961,29 @@ async fn app_loop(
     let mut agent_busy = false;
     let mut agent_handle: Option<tokio::task::JoinHandle<()>> = None;
     let mut spinner_tick: usize = 0;
-    let mut show_todos = false;
+    let (done_tx, _) = broadcast::channel::<()>(4);
+    let mut pending_approval: Option<crate::approval::ApprovalRequest> = None;
+    let mut show_sessions = false;
+    let mut sessions_scroll: usize = 0;
+    let mut sessions_selected: usize = 0;
+    let mut sessions_filter = String::new();
+    let mut show_allowlist = false;
+    let mut allowlist_selected: usize = 0;
+    let mut allowlist_scroll: usize = 0;
 
     loop {
+        // Poll for bash-guard approval requests from agent
+        if pending_approval.is_none() {
+            if let Some(req) = crate::approval::take_pending() {
+                pending_approval = Some(req);
+            }
+        }
         let term_size = terminal.size()?;
         let queue_rows = msg_queue.len().min(2) as u16;
-        let overhead = 5 + queue_rows; // header + sep + sep + queue + input + footer
-        // Content area: starts at row 2 (after header + sep), height is the rest
+        // Dynamic input height 1..5 (auto-grow like pi/jcode, clamped)
+        let input_height = (textarea.lines().len() as u16).clamp(1, 5);
+        let overhead = 4 + queue_rows + input_height; // header + sep + sep + queue + input + footer
+                                       // Content area: starts at row 2 (after header + sep), height is the rest
         let content_area = Rect {
             x: 0,
             y: 2,
@@ -749,13 +996,13 @@ async fn app_loop(
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(1), // header
-                    Constraint::Length(1), // separator
-                    Constraint::Min(1),   // content
-                    Constraint::Length(1), // separator
-                    Constraint::Length(queue_rows), // queue (0-2)
-                    Constraint::Length(1), // input
-                    Constraint::Length(1), // footer
+                    Constraint::Length(1),              // header
+                    Constraint::Length(1),              // separator
+                    Constraint::Min(1),                 // content
+                    Constraint::Length(1),              // separator
+                    Constraint::Length(queue_rows),     // queue (0-2)
+                    Constraint::Length(input_height),   // input (auto-grow 1..5)
+                    Constraint::Length(1),              // footer
                 ])
                 .split(Rect {
                     x: 0,
@@ -796,29 +1043,53 @@ async fn app_loop(
             // Queue
             draw_queue(f, chunks[4], &msg_queue);
 
-            // Input
-            draw_input(f, chunks[5], &input_text);
+            // Input (textarea renders with cursor)
+            draw_input(f, chunks[5], &mut textarea);
 
             // Autocomplete popup
             if !ac_matches.is_empty() {
                 draw_autocomplete(f, chunks[5], &ac_matches, ac_idx, ac_scroll);
             }
-
-            // Todo popup overlay
-            if show_todos {
-                draw_todos(f, f.area());
+            // Bash guard approval overlay (takes precedence)
+            if let Some(ref req) = pending_approval {
+                draw_approval(f, f.area(), req);
+            }
+            if show_sessions {
+                draw_sessions(f, f.area(), sessions_selected, sessions_scroll, &sessions_filter);
+            }
+            if show_allowlist {
+                draw_allowlist(f, f.area(), allowlist_selected, allowlist_scroll);
             }
 
             // Footer
-            draw_footer(f, chunks[6], &model, messages.len(), &cwd, agent_busy, spinner_tick);
+            draw_footer(
+                f,
+                chunks[6],
+                &model,
+                messages.len(),
+                &cwd,
+                agent_busy,
+                spinner_tick,
+            );
         })?;
 
         // Handle keyboard and mouse events
-        if event::poll(std::time::Duration::from_millis(50))? {
+        // 16ms ~60fps target for native feel (was 50ms)
+        if event::poll(std::time::Duration::from_millis(10))? {
             match event::read()? {
+                Event::Paste(data) => {
+                    crate::telemetry::record("paste");
+                    textarea.insert_str(data);
+                    let cur = textarea.lines().join(
+                        "
+",
+                    );
+                    ac_matches = autocomplete_matches(&cur);
+                    ac_idx = 0;
+                }
                 Event::Mouse(m) => {
-                    let in_content = m.row >= content_area.y
-                        && m.row < content_area.y + content_area.height;
+                    let in_content =
+                        m.row >= content_area.y && m.row < content_area.y + content_area.height;
                     if in_content {
                         match m.kind {
                             MouseEventKind::ScrollUp => {
@@ -837,215 +1108,595 @@ async fn app_loop(
                     }
                 }
                 Event::Key(k) => {
-                let mut submit_pending = false;
-                match k.code {
-                    KeyCode::Esc => {
-                        if show_todos {
-                            show_todos = false;
-                        } else if !ac_matches.is_empty() {
-                            ac_matches.clear();
-                            ac_idx = 0;
-                        } else if agent_busy {
-                            // Abort the running agent
-                            if let Some(handle) = agent_handle.take() {
-                                handle.abort();
+                    // Allowlist picker modal: hijack keys
+                    if show_allowlist {
+                        match k.code {
+                            KeyCode::Esc => {
+                                show_allowlist = false;
+                                allowlist_scroll = 0;
                             }
-                            agent_busy = false;
-                            step_info.clear();
-                            messages.push(Msg {
-                                role: "system".into(),
-                                content: "[interrupted]".into(),
-                            });
-                            // Drain queued messages: spawn the next one
-                            if !msg_queue.is_empty() {
-                                let next = msg_queue.remove(0);
-                                messages.push(Msg {
-                                    role: "user".into(),
-                                    content: next.clone(),
-                                });
-                                agent_busy = true;
-                                step_info = "...".into();
-                                let tx_clone = tx.clone();
-                                let model_clone = model.clone();
-                                agent_handle = Some(tokio::spawn(async move {
-                                    let stream = agent::run_agent(next, model_clone, 100);
-                                    use futures::StreamExt;
-                                    let mut s = Box::pin(stream);
-                                    while let Some(ev) = s.next().await {
-                                        let _ = tx_clone.send(ev);
-                                    }
-                                }));
+                            KeyCode::Enter => {
+                                show_allowlist = false;
                             }
-                        }
-                    }
-                    KeyCode::Char('d') if k.modifiers.contains(KeyModifiers::CONTROL) => break,
-                    KeyCode::Enter if k.modifiers.contains(KeyModifiers::CONTROL) => {
-                        // Ctrl+Enter: always submit
-                        ac_matches.clear();
-                        ac_idx = 0;
-                        if !input_text.trim().is_empty() {
-                            submit_pending = true;
-                        }
-                    }
-                    KeyCode::Enter if k.modifiers.contains(KeyModifiers::SHIFT) => {
-                        // Shift+Enter: always newline
-                        input_text.push('\n');
-                        ac_matches = autocomplete_matches(&input_text);
-                        ac_idx = 0;
-                    }
-                    KeyCode::Enter => {
-                        // If autocomplete is visible, complete first
-                        if !ac_matches.is_empty() {
-                            input_text = ac_matches[ac_idx].to_string();
-                            ac_matches.clear();
-                            ac_idx = 0;
-                        }
-                        // Enter inserts a newline when at the end of input
-                        if !input_text.ends_with('\n') && !input_text.is_empty() {
-                            input_text.push('\n');
-                            continue;
-                        }
-                        ac_matches.clear();
-                        ac_idx = 0;
-                        if !input_text.trim().is_empty() {
-                            submit_pending = true;
-                        }
-                    }
-                    KeyCode::Up => {
-                        if !ac_matches.is_empty() {
-                            ac_idx = if ac_idx == 0 { ac_matches.len() - 1 } else { ac_idx - 1 };
-                        } else if !history.is_empty() {
-                            let idx = hist_idx
-                                .map(|i| if i == 0 { 0 } else { i - 1 })
-                                .unwrap_or(history.len() - 1);
-                            hist_idx = Some(idx);
-                            input_text = history[idx].clone();
-                        }
-                    }
-                    KeyCode::Down => {
-                        if !ac_matches.is_empty() {
-                            ac_idx = (ac_idx + 1) % ac_matches.len();
-                        } else if let Some(idx) = hist_idx {
-                            if idx + 1 < history.len() {
-                                hist_idx = Some(idx + 1);
-                                input_text = history[idx + 1].clone();
-                            } else {
-                                hist_idx = None;
-                                input_text.clear();
-                            }
-                        }
-                    }
-                    KeyCode::Char(c) => {
-                        input_text.push(c);
-                        ac_matches = autocomplete_matches(&input_text);
-                        ac_idx = 0;
-                    }
-                    KeyCode::Backspace => {
-                        input_text.pop();
-                        ac_matches = autocomplete_matches(&input_text);
-                        ac_idx = 0;
-                    }
-                    KeyCode::Tab => {
-                        if !ac_matches.is_empty() {
-                            input_text = ac_matches[ac_idx].to_string();
-                            ac_matches.clear();
-                            ac_idx = 0;
-                        }
-                    }
-                    KeyCode::PageUp => {
-                        scroll = scroll.saturating_sub(content_height as u16);
-                        auto_scroll = false;
-                    }
-                    KeyCode::PageDown => {
-                        let max_scroll = total_lines.saturating_sub(content_height) as u16;
-                        scroll = (scroll + content_height as u16).min(max_scroll);
-                        if scroll >= max_scroll {
-                            auto_scroll = true;
-                        }
-                    }
-                    KeyCode::Home => {
-                        scroll = 0;
-                        auto_scroll = false;
-                    }
-                    KeyCode::End => {
-                        auto_scroll = true;
-                    }
-                    _ => {}
-                }
-                // Handle pending submit (Ctrl+Enter or Enter at end)
-                if submit_pending {
-                    let prompt = input_text.trim().to_string();
-                    if prompt.is_empty() {
-                        // skip
-                    } else if prompt.starts_with('/') {
-                        match prompt.as_str() {
-                            "/exit" | "/quit" => break,
-                            "/new" | "/clear" => {
-                                if let Some(handle) = agent_handle.take() {
-                                    handle.abort();
+                            KeyCode::Up => {
+                                if allowlist_selected > 0 {
+                                    allowlist_selected -= 1;
+                                    if allowlist_selected < allowlist_scroll { allowlist_scroll = allowlist_selected; }
                                 }
-                                while rx.try_recv().is_ok() {}
-                                messages.clear();
-                                scroll = 0;
-                                auto_scroll = true;
-                                step_info.clear();
-                                msg_queue.clear();
-                                agent_busy = false;
                             }
-                            "/help" => {
-                                messages.push(Msg {
-                                    role: "system".into(),
-                                    content: "/help /new /todo /model <name> /clear /exit  ·  Ctrl+Enter send · Enter newline · Shift+Enter newline · Up/Down history · PgUp/PgDn scroll".into(),
-                                });
+                            KeyCode::Down => {
+                                let bash_len = crate::bash_guard::allowlist_list().len();
+                                let dir_len = crate::dir_guard::allowlist_list().len();
+                                let len = bash_len + dir_len;
+                                if allowlist_selected + 1 < len {
+                                    allowlist_selected += 1;
+                                    if allowlist_selected >= allowlist_scroll + 10 { allowlist_scroll += 1; }
+                                }
                             }
-                            "/todo" => {
-                                show_todos = !show_todos;
+                            KeyCode::Char('d') | KeyCode::Delete => {
+                                // rebuild combined as in draw
+                                let bash_list = crate::bash_guard::allowlist_list();
+                                let dir_list = crate::dir_guard::allowlist_list();
+                                let mut combined: Vec<(String, String)> = Vec::new();
+                                for p in &bash_list { combined.push(("bash".into(), p.clone())); }
+                                for p in &dir_list { combined.push(("dir".into(), p.clone())); }
+                                combined.sort_by(|a,b| a.1.cmp(&b.1));
+                                if let Some((kind, pat)) = combined.get(allowlist_selected).cloned() {
+                                    if kind == "dir" { crate::dir_guard::allowlist_remove(&pat); } else { crate::bash_guard::allowlist_remove(&pat); }
+                                    let new_len = crate::bash_guard::allowlist_list().len() + crate::dir_guard::allowlist_list().len();
+                                    if allowlist_selected >= new_len && allowlist_selected > 0 { allowlist_selected -= 1; }
+                                }
                             }
-                            _ if prompt.starts_with("/model ") => {
-                                let m = prompt.strip_prefix("/model ").unwrap().trim();
-                                messages.push(Msg {
-                                    role: "system".into(),
-                                    content: format!("model: {} (restart to apply)", m),
-                                });
+                            KeyCode::Char('c') => {
+                                crate::bash_guard::allowlist_clear();
+                                crate::dir_guard::allowlist_clear();
+                                allowlist_selected = 0;
+                                allowlist_scroll = 0;
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+                    // Sessions picker modal: hijack keys
+                    if show_sessions {
+                        match k.code {
+                            KeyCode::Esc => {
+                                show_sessions = false;
+                                sessions_scroll = 0;
+                                sessions_filter.clear();
+                                sessions_selected = 0;
+                            }
+                            KeyCode::Enter => {
+                                // Apply filter to get same ordering as draw
+                                let all = crate::session::Session::list();
+                                let filtered: Vec<crate::session::Session> = if sessions_filter.is_empty() { all } else {
+                                    let lower = sessions_filter.to_lowercase();
+                                    all.into_iter().filter(|s| s.id.to_lowercase().contains(&lower) || s.cwd.to_lowercase().contains(&lower) || s.messages.iter().any(|m| m.content.to_lowercase().contains(&lower))).collect()
+                                };
+                                if let Some(sess) = filtered.get(sessions_selected).cloned() {
+                                    messages = sess.messages.iter().map(|m| Msg { role: m.role.clone(), content: m.content.clone() }).collect();
+                                    messages.push(Msg { role: "system".into(), content: format!("[resumed session {}]", sess.id) });
+                                    session = Some(sess);
+                                }
+                                show_sessions = false;
+                                sessions_filter.clear();
+                                sessions_selected = 0;
+                                sessions_scroll = 0;
+                            }
+                            KeyCode::Up => {
+                                if sessions_selected > 0 {
+                                    sessions_selected -= 1;
+                                    if sessions_selected < sessions_scroll { sessions_scroll = sessions_selected; }
+                                }
+                            }
+                            KeyCode::Down => {
+                                // Compute filtered len
+                                let all = crate::session::Session::list();
+                                let filtered_len = if sessions_filter.is_empty() { all.len() } else {
+                                    let lower = sessions_filter.to_lowercase();
+                                    all.iter().filter(|s| s.id.to_lowercase().contains(&lower) || s.cwd.to_lowercase().contains(&lower) || s.messages.iter().any(|m| m.content.to_lowercase().contains(&lower))).count()
+                                };
+                                if sessions_selected + 1 < filtered_len {
+                                    sessions_selected += 1;
+                                    let visible = 10;
+                                    if sessions_selected >= sessions_scroll + visible { sessions_scroll += 1; }
+                                }
+                            }
+                            KeyCode::Backspace => {
+                                sessions_filter.pop();
+                                sessions_selected = 0;
+                                sessions_scroll = 0;
+                            }
+                            KeyCode::Char(c) if !k.modifiers.contains(KeyModifiers::CONTROL) && !k.modifiers.contains(KeyModifiers::ALT) => {
+                                sessions_filter.push(c);
+                                sessions_selected = 0;
+                                sessions_scroll = 0;
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+                    // Guard approval modal: hijack all keys (covers bash + dir guard)
+                    if pending_approval.is_some() {
+                        let mut req = pending_approval.take().unwrap();
+                        let is_dir = req.reasons.iter().any(|r| r.contains("outside CWD"));
+                        match k.code {
+                            KeyCode::Char('a') if !k.modifiers.contains(KeyModifiers::CONTROL) => {
+                                if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
+                                crate::telemetry::record(if is_dir { "dir_guard_allow_once" } else { "bash_guard_allow_once" });
+                            }
+                            KeyCode::Char('A') => {
+                                if is_dir {
+                                    // Extract offending paths from reasons "outside CWD (path → resolved)"
+                                    for r in &req.reasons {
+                                        if let Some(s) = r.find('(') {
+                                            if let Some(e) = r.find(" →") {
+                                                let raw = r[s+1..e].trim();
+                                                if !raw.is_empty() { crate::dir_guard::allowlist_add(raw); }
+                                            }
+                                        }
+                                    }
+                                    // Also allowlist the raw cmd/path as fallback
+                                    // For file tools cmd is "read_file /path", extract last token
+                                    let fallback = if req.cmd.contains(' ') { req.cmd.split_whitespace().last().unwrap_or(&req.cmd).to_string() } else { req.cmd.clone() };
+                                    if !fallback.is_empty() { crate::dir_guard::allowlist_add(&fallback); }
+                                    // For bash, also allowlist the full command for exact match
+                                    if req.cmd.contains('/') || req.cmd.contains(' ') { crate::dir_guard::allowlist_add(&req.cmd); }
+                                } else {
+                                    crate::bash_guard::allowlist_add(&req.cmd);
+                                }
+                                if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
+                                crate::telemetry::record(if is_dir { "dir_guard_allow_always" } else { "bash_guard_allow_always" });
+                            }
+                            KeyCode::Char('d') | KeyCode::Char('D') => {
+                                if let Some(tx) = req.tx.take() { let _ = tx.send(false); }
+                                crate::telemetry::record("bash_guard_deny");
+                            }
+                            KeyCode::Enter => {
+                                if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
+                                crate::telemetry::record("bash_guard_allow_once");
+                            }
+                            KeyCode::Esc => {
+                                if let Some(tx) = req.tx.take() { let _ = tx.send(false); }
+                                crate::telemetry::record("bash_guard_deny");
                             }
                             _ => {
-                                messages.push(Msg {
-                                    role: "system".into(),
-                                    content: format!("unknown command: {}", prompt),
-                                });
+                                pending_approval = Some(req);
                             }
                         }
-                        input_text.clear();
-                        hist_idx = None;
-                    } else {
-                        // Send user message
-                        history.push(prompt.clone());
-                        hist_idx = None;
-                        step_info = "...".into();
-                        input_text.clear();
-                        auto_scroll = true;
-
-                        if agent_busy {
-                            msg_queue.push(prompt);
-                        } else {
-                            messages.push(Msg {
-                                role: "user".into(),
-                                content: prompt.clone(),
-                            });
-                            agent_busy = true;
-                            let tx_clone = tx.clone();
-                            let model_clone = model.clone();
-                            agent_handle = Some(tokio::spawn(async move {
-                                let stream = agent::run_agent(prompt, model_clone, 100);
-                                use futures::StreamExt;
-                                let mut s = Box::pin(stream);
-                                while let Some(ev) = s.next().await {
-                                    let _ = tx_clone.send(ev);
+                        continue;
+                    }
+                    let mut submit_pending = false;
+                    // Ctrl+ base clearing handled before textarea
+                    let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+                    let alt = k.modifiers.contains(KeyModifiers::ALT);
+                    let shift = k.modifiers.contains(KeyModifiers::SHIFT);
+                    match k.code {
+                        KeyCode::Esc => {
+                            if !ac_matches.is_empty() {
+                                ac_matches.clear();
+                                ac_idx = 0;
+                            } else if agent_busy {
+                                // Abort the running agent - keep braille/spinner alive if queue pending
+                                if let Some(handle) = agent_handle.take() {
+                                    crate::telemetry::record("interrupt");
+                                    handle.abort();
                                 }
-                            }));
+                                if !msg_queue.is_empty() {
+                                    // don't flicker busy off -> braille keeps ticking
+                                    messages.push(Msg {
+                                        role: "system".into(),
+                                        content: "[interrupted → next queued]".into(),
+                                    });
+                                    let next = msg_queue.remove(0);
+                                    let hist = llm_history_for_spawn(&session, &messages);
+                                    messages.push(Msg {
+                                        role: "user".into(),
+                                        content: next.clone(),
+                                    });
+                                    // agent_busy stays true
+                                    step_info = "...".into();
+                        agent_handle = Some(spawn_agent_with_history(
+                            next,
+                            model.clone(),
+                            hist,
+                            tx.clone(),
+                            done_tx.clone(),
+                        ));
+                                } else {
+                                    agent_busy = false;
+                                    step_info.clear();
+                                    messages.push(Msg {
+                                        role: "system".into(),
+                                        content: "[interrupted]".into(),
+                                    });
+                                }
+                            } else {
+                                // Esc on empty input clears textarea
+                                if textarea.is_empty() {
+                                    // no-op
+                                } else {
+                                    textarea.select_all();
+                                    textarea.cut();
+                                }
+                                ac_matches.clear();
+                                ac_idx = 0;
+                            }
+                        }
+                        KeyCode::Char('d') if ctrl => break,
+                        KeyCode::Char('c') if ctrl => {
+                            // Ctrl+C: clear current input (Emacs kill) — keep textarea undo
+                            if !textarea.is_empty() {
+                                textarea.select_all();
+                                textarea.cut();
+                            }
+                            ac_matches.clear();
+                            ac_idx = 0;
+                        }
+                        KeyCode::Char('u') if ctrl => {
+                            // Emacs Ctrl+U kill to start of line (override textarea undo)
+                            // delete from head using textarea API
+                            textarea.delete_line_by_head();
+                            crate::telemetry::record("kill_line");
+                            ac_matches = autocomplete_matches(&textarea.lines().join("\n"));
+                            ac_idx = 0;
+                        }
+                        KeyCode::Char('k') if ctrl => {
+                            textarea.delete_line_by_end();
+                            crate::telemetry::record("kill_line_end");
+                            ac_matches = autocomplete_matches(&textarea.lines().join("\n"));
+                            ac_idx = 0;
+                        }
+                        KeyCode::Char('z') if ctrl => {
+                            crate::telemetry::record("input_undo");
+                            textarea.undo();
+                            ac_matches = autocomplete_matches(&textarea.lines().join("\n"));
+                            ac_idx = 0;
+                        }
+                        KeyCode::Char('y') if ctrl => {
+                            textarea.paste();
+                            crate::telemetry::record("paste");
+                            ac_matches = autocomplete_matches(&textarea.lines().join("\n"));
+                            ac_idx = 0;
+                        }
+                        KeyCode::Enter if ctrl && !shift && !alt => {
+                            // Ctrl+Enter: always submit
+                            ac_matches.clear();
+                            ac_idx = 0;
+                            if !textarea.is_empty()
+                                && !textarea.lines().join("\n").trim().is_empty()
+                            {
+                                submit_pending = true;
+                            }
+                        }
+                        KeyCode::Enter if shift && !ctrl && !alt => {
+                            crate::telemetry::record("newline");
+                            let inp = crossterm_key_to_input(k);
+                            textarea.input(inp);
+                            ac_matches = autocomplete_matches(&textarea.lines().join("\n"));
+                            ac_idx = 0;
+                        }
+                        KeyCode::Enter => {
+                            // Enter: if autocomplete visible, accept it first
+                            if !ac_matches.is_empty() {
+                                let chosen = ac_matches[ac_idx].to_string();
+                                textarea.select_all();
+                                textarea.cut();
+                                textarea.insert_str(chosen);
+                                ac_matches.clear();
+                                ac_idx = 0;
+                            } else {
+                                // Normal Enter submits (single line). If multiline (contains newline), submit still
+                                let cur = textarea.lines().join("\n");
+                                if !cur.trim().is_empty() {
+                                    submit_pending = true;
+                                }
+                                ac_matches.clear();
+                                ac_idx = 0;
+                            }
+                        }
+                        KeyCode::Up => {
+                            if !ac_matches.is_empty() {
+                                ac_idx = if ac_idx == 0 {
+                                    ac_matches.len() - 1
+                                } else {
+                                    ac_idx - 1
+                                };
+                            } else if !history.is_empty() {
+                                crate::telemetry::record("prompt_recall");
+                                // Only hijack Up for history when cursor at top line (native fish-like)
+                                let r = textarea.cursor().0;
+                                if r == 0 {
+                                    let idx = hist_idx
+                                        .map(|i| if i == 0 { 0 } else { i - 1 })
+                                        .unwrap_or(history.len() - 1);
+                                    hist_idx = Some(idx);
+                                    let hist = history[idx].clone();
+                                    textarea.select_all();
+                                    textarea.cut();
+                                    textarea.insert_str(hist);
+                                    textarea.move_cursor(CursorMove::Bottom);
+                                    ac_matches.clear();
+                                } else {
+                                    let inp: TAInput = crossterm_key_to_input(k);
+                                    textarea.input(inp);
+                                }
+                            } else {
+                                let inp = crossterm_key_to_input(k);
+                                textarea.input(inp);
+                            }
+                        }
+                        KeyCode::Down => {
+                            // telemetry for history nav handled inside
+                            if !ac_matches.is_empty() {
+                                ac_idx = (ac_idx + 1) % ac_matches.len();
+                                crate::telemetry::record("prompt_jump_down");
+                            } else if let Some(idx) = hist_idx {
+                                if idx + 1 < history.len() {
+                                    hist_idx = Some(idx + 1);
+                                    let hist = history[idx + 1].clone();
+                                    textarea.select_all();
+                                    textarea.cut();
+                                    textarea.insert_str(hist);
+                                    textarea.move_cursor(CursorMove::Bottom);
+                                } else {
+                                    hist_idx = None;
+                                    textarea.select_all();
+                                    textarea.cut();
+                                }
+                            } else {
+                                let inp = crossterm_key_to_input(k);
+                                textarea.input(inp);
+                                // if textarea moved down internally, keep
+                            }
+                        }
+                        KeyCode::Tab => {
+                            if !ac_matches.is_empty() {
+                                let chosen = ac_matches[ac_idx].to_string();
+                                textarea.select_all();
+                                textarea.cut();
+                                textarea.insert_str(chosen);
+                                ac_matches.clear();
+                                ac_idx = 0;
+                            } else {
+                                // Tab inserts 2 spaces (or delegate)
+                                let inp: TAInput = crossterm_key_to_input(k);
+                                // prevent tab from inserting inside textarea as literal tab; insert spaces
+                                if textarea.lines().join("\n").starts_with('/') {
+                                    // in command mode, cycle autocomplete
+                                } else {
+                                    textarea.input(inp);
+                                }
+                            }
+                        }
+                        KeyCode::Backspace if alt => {
+                            // Alt+Backspace word delete (textarea already handles but ensure)
+                            textarea.delete_word();
+                            ac_matches = autocomplete_matches(&textarea.lines().join("\n"));
+                            ac_idx = 0;
+                        }
+                        KeyCode::Left if alt => {
+                            // Alt+Left word jump
+                            textarea.move_cursor(CursorMove::WordBack);
+                            crate::telemetry::record("word_back");
+                        }
+                        KeyCode::Right if alt => {
+                            textarea.move_cursor(CursorMove::WordForward);
+                            crate::telemetry::record("word_forward");
+                        }
+                        KeyCode::PageUp => {
+                            scroll = scroll.saturating_sub(content_height as u16);
+                            auto_scroll = false;
+                        }
+                        KeyCode::PageDown => {
+                            let max_scroll = total_lines.saturating_sub(content_height) as u16;
+                            scroll = (scroll + content_height as u16).min(max_scroll);
+                            if scroll >= max_scroll {
+                                auto_scroll = true;
+                            }
+                        }
+                        KeyCode::Home => {
+                            // Home in input: go to head; if with ctrl, scroll to top? Keep input head
+                            if ctrl {
+                                scroll = 0;
+                                auto_scroll = false;
+                            } else {
+                                textarea.move_cursor(CursorMove::Head);
+                            }
+                        }
+                        KeyCode::End => {
+                            if ctrl {
+                                auto_scroll = true;
+                            } else {
+                                textarea.move_cursor(CursorMove::End);
+                            }
+                        }
+                        _ => {
+                            // Delegate everything else to textarea (handles Char, Backspace, Delete, arrows, Ctrl+A/E/F/B etc)
+                            // Special: Ctrl+W already handled as delete_word via textarea mapping, but we ensure
+                            let inp: TAInput = crossterm_key_to_input(k);
+                            let modified = textarea.input(inp);
+                            if modified
+                                || matches!(
+                                    k.code,
+                                    KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End
+                                )
+                            {
+                                // update autocomplete on content change
+                                let cur = textarea.lines().join("\n");
+                                let new_matches = autocomplete_matches(&cur);
+                                if new_matches != ac_matches {
+                                    ac_matches = new_matches;
+                                    ac_idx = 0;
+                                    ac_scroll = 0;
+                                } else if !ac_matches.is_empty() {
+                                    // keep selection
+                                }
+                            } else {
+                                // Even if not modified, still recompute for typing
+                                let cur = textarea.lines().join("\n");
+                                ac_matches = autocomplete_matches(&cur);
+                                if ac_matches.is_empty() {
+                                    ac_idx = 0;
+                                }
+                            }
                         }
                     }
-                }
+                    // Handle bracketed-paste style: ac_matches index scroll sync
+                    if !ac_matches.is_empty() {
+                        // sync scroll offset to keep selected visible
+                        if ac_idx < ac_scroll {
+                            ac_scroll = ac_idx;
+                        } else if ac_idx >= ac_scroll + 5 {
+                            ac_scroll = ac_idx - 4;
+                        }
+                    }
+                    // Handle pending submit (Enter / Ctrl+Enter)
+                    if submit_pending {
+                        let raw = textarea.lines().join("\n");
+                        let prompt = raw.trim().to_string();
+                        if prompt.is_empty() {
+                            // skip
+                        } else if prompt.starts_with('/') {
+                            match prompt.as_str() {
+                                "/exit" | "/quit" => break,
+                                "/new" | "/clear" => {
+                                    if let Some(handle) = agent_handle.take() {
+                                        handle.abort();
+                                    }
+                                    while rx.try_recv().is_ok() {}
+                                    messages.clear();
+                                    scroll = 0;
+                                    auto_scroll = true;
+                                    step_info.clear();
+                                    msg_queue.clear();
+                                    agent_busy = false;
+                                    if !opts.no_session {
+                                        session = Some(crate::session::Session::new(&model));
+                                    }
+                                }
+                                "/help" => {
+                                    messages.push(Msg {
+                                        role: "system".into(),
+                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /memory stats|consolidate /model <name> /clear /exit  ·  Enter send · Shift+Enter newline · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll".into(),
+                                    });
+                                }
+                                "/sessions" => {
+                                    show_sessions = true;
+                                    sessions_selected = 0;
+                                    sessions_scroll = 0;
+                                    sessions_filter.clear();
+                                }
+                                "/allowlist" => {
+                                    show_allowlist = true;
+                                    allowlist_selected = 0;
+                                    allowlist_scroll = 0;
+                                }
+                                "/memory" => {
+                                    let stats = crate::memory::api_stats();
+                                    messages.push(Msg { role: "system".into(), content: stats });
+                                }
+                                "/memory stats" => {
+                                    let stats = crate::memory::api_stats();
+                                    messages.push(Msg { role: "system".into(), content: stats });
+                                }
+                                "/memory consolidate" => {
+                                    let out = crate::memory::api_consolidate();
+                                    messages.push(Msg { role: "system".into(), content: out });
+                                }
+                                _ if prompt.starts_with("/allowlist ") => {
+                                    let rest = prompt.strip_prefix("/allowlist ").unwrap().trim();
+                                    if rest == "clear" {
+                                        crate::bash_guard::allowlist_clear();
+                                        crate::dir_guard::allowlist_clear();
+                                        messages.push(Msg { role: "system".into(), content: "allowlists cleared (bash + dir)".into() });
+                                    } else if rest.starts_with("add ") {
+                                        let pat = rest.strip_prefix("add ").unwrap().trim();
+                                        // if pat looks like a path, add to dir allowlist, else bash
+                                        if pat.contains('/') || pat.starts_with('~') || pat.starts_with('.') {
+                                            crate::dir_guard::allowlist_add(pat);
+                                            messages.push(Msg { role: "system".into(), content: format!("dir-allowlisted: {}", pat) });
+                                        } else {
+                                            crate::bash_guard::allowlist_add(pat);
+                                            messages.push(Msg { role: "system".into(), content: format!("allowlisted: {}", pat) });
+                                        }
+                                    } else if rest.starts_with("rm ") || rest.starts_with("remove ") {
+                                        let pat = rest.split_once(' ').map(|(_, p)| p.trim()).unwrap_or(rest);
+                                        crate::bash_guard::allowlist_remove(pat);
+                                        crate::dir_guard::allowlist_remove(pat);
+                                        messages.push(Msg { role: "system".into(), content: format!("removed: {}", pat) });
+                                    } else {
+                                        // heuristics: path-like → dir
+                                        if rest.contains('/') || rest.starts_with('~') {
+                                            crate::dir_guard::allowlist_add(rest);
+                                            messages.push(Msg { role: "system".into(), content: format!("dir-allowlisted: {}", rest) });
+                                        } else {
+                                            crate::bash_guard::allowlist_add(rest);
+                                            messages.push(Msg { role: "system".into(), content: format!("allowlisted: {}", rest) });
+                                        }
+                                    }
+                                }
+                                _ if prompt.starts_with("/resume ") => {
+                                    let rid = prompt.strip_prefix("/resume ").unwrap().trim();
+                                    let list = crate::session::Session::list();
+                                    if let Some(sess) = list.into_iter().find(|sess| sess.id.starts_with(rid)) {
+                                        let sid = sess.id.clone();
+                                        messages = sess.messages.iter().map(|m| Msg { role: m.role.clone(), content: m.content.clone() }).collect();
+                                        messages.push(Msg { role: "system".into(), content: format!("[resumed session {}]", sid) });
+                                        session = Some(sess);
+                                    } else {
+                                        messages.push(Msg { role: "system".into(), content: format!("session {} not found", rid) });
+                                    }
+                                }
+                                _ if prompt.starts_with("/model ") => {
+                                    let m = prompt.strip_prefix("/model ").unwrap().trim();
+                                    messages.push(Msg {
+                                        role: "system".into(),
+                                        content: format!("model: {} (restart to apply)", m),
+                                    });
+                                }
+                                _ => {
+                                    messages.push(Msg {
+                                        role: "system".into(),
+                                        content: format!("unknown command: {}", prompt),
+                                    });
+                                }
+                            }
+                            textarea.select_all();
+                            textarea.cut();
+                            hist_idx = None;
+                            ac_matches.clear();
+                            ac_idx = 0;
+                        } else {
+                            // Send user message
+                            history.push(prompt.clone());
+                            hist_idx = None;
+                            step_info = "...".into();
+                            textarea.select_all();
+                            textarea.cut();
+                            auto_scroll = true;
+                            ac_matches.clear();
+                            ac_idx = 0;
+
+                            if agent_busy {
+                                msg_queue.push(prompt);
+                            } else {
+                                let hist = llm_history_for_spawn(&session, &messages);
+                                messages.push(Msg {
+                                    role: "user".into(),
+                                    content: prompt.clone(),
+                                });
+                                agent_busy = true;
+                                agent_handle = Some(spawn_agent_with_history(
+                                    prompt,
+                                    model.clone(),
+                                    hist,
+                                    tx.clone(),
+                                    done_tx.clone(),
+                                ));
+                            }
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -1105,7 +1756,11 @@ async fn app_loop(
                         ),
                     });
                 }
-                AgentEvent::ToolResult { name, result, id: _ } => {
+                AgentEvent::ToolResult {
+                    name,
+                    result,
+                    id: _,
+                } => {
                     let truncated: String = result.chars().take(2000).collect();
                     let display = if result.chars().count() > 2000 {
                         format!(
@@ -1129,30 +1784,45 @@ async fn app_loop(
                 AgentEvent::Step { n } => {
                     step_info = format!("step {}", n);
                 }
-                AgentEvent::Done { text } => {
-                    step_info = "done".into();
+                AgentEvent::Done { text, history } => {
                     let _ = text;
+                    // Persist llm_history for exact replay
+                    if let Some(sess) = session.as_mut() {
+                        sess.llm_history = Some(history.clone());
+                        let _ = sess.save();
+                    }
+                    // Observer: distill recent chunk into memories (async, non-blocking)
+                    if std::env::var("LEAN_OBSERVER_DISABLED").unwrap_or_default() != "1" {
+                        let chunk_pairs: Vec<(String, String)> = messages.iter().rev().take(12).rev().map(|m| (m.role.clone(), m.content.clone())).collect();
+                        let chunk = crate::observer::build_chunk_text(&chunk_pairs);
+                        let obs_model = model.clone();
+                        tokio::spawn(async move {
+                            crate::observer::observe_chunk(chunk, obs_model).await;
+                        });
+                    }
                     agent_handle.take();
 
-                    // Send next queued message if any
+                    // Keep braille/spinner alive continuously when queue has items:
+                    // don't flash "done" or clear agent_busy between sessions.
                     if !msg_queue.is_empty() {
                         let next = msg_queue.remove(0);
+                        let hist = llm_history_for_spawn(&session, &messages);
                         messages.push(Msg {
                             role: "user".into(),
                             content: next.clone(),
                         });
+                        // stay busy — braille spinner keeps ticking
                         step_info = "...".into();
-                        let tx_clone = tx.clone();
-                        let model_clone = model.clone();
-                        agent_handle = Some(tokio::spawn(async move {
-                            let stream = agent::run_agent(next, model_clone, 100);
-                            use futures::StreamExt;
-                            let mut s = Box::pin(stream);
-                            while let Some(ev) = s.next().await {
-                                let _ = tx_clone.send(ev);
-                            }
-                        }));
+                        // agent_busy stays true
+                        agent_handle = Some(spawn_agent_with_history(
+                            next,
+                            model.clone(),
+                            hist,
+                            tx.clone(),
+                            done_tx.clone(),
+                        ));
                     } else {
+                        step_info = "done".into();
                         agent_busy = false;
                     }
                 }
@@ -1160,6 +1830,40 @@ async fn app_loop(
             auto_scroll = true;
         }
 
+        // If agent is busy but no events arrived, check if the task died (panic/error)
+        if agent_busy && agent_handle.as_ref().map_or(false, |h| h.is_finished()) {
+            agent_handle.take();
+            // Drain stale done signals
+            let mut done_rx = done_tx.subscribe();
+            while done_rx.try_recv().is_ok() {}
+            // Reset busy state
+            if !msg_queue.is_empty() {
+                let next = msg_queue.remove(0);
+                let hist = llm_history_for_spawn(&session, &messages);
+                messages.push(Msg {
+                    role: "user".into(),
+                    content: next.clone(),
+                });
+                step_info = "...".into();
+                        agent_handle = Some(spawn_agent_with_history(
+                            next,
+                            model.clone(),
+                            hist,
+                            tx.clone(),
+                            done_tx.clone(),
+                        ));
+            } else {
+                agent_busy = false;
+                step_info = "error".into();
+                messages.push(Msg {
+                    role: "system".into(),
+                    content: "[agent crashed]".into(),
+                });
+            }
+        }
+
+        // Persist session (fire-and-forget, cheap json write)
+        persist(&messages, &mut session);
         // Advance spinner
         spinner_tick = spinner_tick.wrapping_add(1);
     }

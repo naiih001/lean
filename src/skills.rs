@@ -3,9 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use dirs::home_dir;
-use walkdir::WalkDir;
 
 const CACHE_TTL: Duration = Duration::from_secs(60);
 
@@ -109,7 +108,7 @@ async fn scan_dir(base: &Path) -> Vec<Skill> {
 
 pub async fn discover_skills() -> Vec<Skill> {
     {
-        let mut lock = cache_lock().lock().unwrap();
+        let lock = cache_lock().lock().unwrap();
         if let Some((cached, time)) = lock.as_ref() {
             if time.elapsed() < CACHE_TTL {
                 return cached.clone();

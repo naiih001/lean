@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+shlex = "1"
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
 futures = "0.3"
@@ -22,3 +23,5 @@ gray_matter = "0.3"
 anyhow = "1"
 async-stream = "0.3"
 base64 = "0.22"
+similar = { version = "2", features = ["text"] }
+wildmatch = "2"
