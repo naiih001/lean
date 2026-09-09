@@ -103,9 +103,16 @@ impl Msg {
                         }
                     };
                     while i < chars.len() {
-                        if chars[i] == '@'
+                        if (chars[i] == '@' || chars[i] == '$')
                             && (i == 0 || chars[i - 1].is_whitespace() || "(\"'`".contains(chars[i - 1]))
                         {
+                            let prefix_char = chars[i];
+                            // for $ require next char to be letter to avoid $5 etc.
+                            if prefix_char == '$' && i + 1 < chars.len() && !chars[i + 1].is_ascii_alphabetic() && chars[i+1] != '_' {
+                                buf.push(chars[i]);
+                                i += 1;
+                                continue;
+                            }
                             let mut j = i + 1;
                             while j < chars.len() && !chars[j].is_whitespace() {
                                 j += 1;
@@ -113,12 +120,12 @@ impl Msg {
                             if j > i + 1 {
                                 flush_buf(&mut spans, &mut buf);
                                 let m: String = chars[i..j].iter().collect();
-                                spans.push(Span::styled(
-                                    m,
-                                    Style::default()
-                                        .fg(ASHEN.ember)
-                                        .add_modifier(Modifier::BOLD),
-                                ));
+                                let style = if prefix_char == '$' {
+                                    Style::default().fg(ASHEN.moss).add_modifier(Modifier::BOLD)
+                                } else {
+                                    Style::default().fg(ASHEN.ember).add_modifier(Modifier::BOLD)
+                                };
+                                spans.push(Span::styled(m, style));
                                 i = j;
                                 continue;
                             }
@@ -551,7 +558,7 @@ fn draw_input(f: &mut Frame, area: Rect, textarea: &mut TextArea<'_>) {
     );
     textarea.set_cursor_line_style(Style::default().bg(THEME.input_bg));
     textarea.set_placeholder_text(
-        "  ▸  type a message…  (@file • /help • Enter send • Shift+Enter newline)",
+        "  ▸  type a message…  (@file $skill • /help • Enter send)",
     );
     textarea.set_placeholder_style(Style::default().fg(ASHEN.charcoal).bg(THEME.input_bg));
     // prompt gutter: we prepend via block title style instead of manual truncation
@@ -777,7 +784,157 @@ fn file_autocomplete_matches(prefix: &str) -> Vec<String> {
     starts
 }
 
+fn parse_skill_name(raw: &str) -> Option<String> {
+    if !raw.starts_with("---") {
+        return None;
+    }
+    let end = raw[3..].find("\n---").map(|i| i + 3)?;
+    let fm = &raw[3..end];
+    for line in fm.lines() {
+        if let Some((k, v)) = line.split_once(':') {
+            if k.trim() == "name" {
+                let val = v.trim().trim_matches('"').trim_matches('\'').trim().to_string();
+                if !val.is_empty() {
+                    return Some(val);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn list_skill_names_sync() -> Vec<String> {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+    let bases = vec![
+        cwd.join("skills"),
+        cwd.join(".lean").join("skills"),
+        home.join(".agents").join("skills"),
+    ];
+    let mut map: HashMap<String, String> = HashMap::new();
+    for base in &bases {
+        let is_local = base.starts_with(&cwd);
+        if let Ok(rd) = std::fs::read_dir(base) {
+            for entry in rd.filter_map(|e| e.ok()) {
+                let ft = match entry.file_type() { Ok(ft) => ft, Err(_) => continue };
+                if !ft.is_dir() { continue; }
+                let skill_path = entry.path().join("SKILL.md");
+                if !skill_path.exists() { continue; }
+                let raw = std::fs::read_to_string(&skill_path).unwrap_or_default();
+                let name = parse_skill_name(&raw).unwrap_or_else(|| entry.file_name().to_string_lossy().to_string());
+                if !map.contains_key(&name) || is_local {
+                    map.insert(name.clone(), name);
+                }
+            }
+        }
+    }
+    let mut v: Vec<String> = map.into_values().collect();
+    v.sort();
+    v
+}
+
+fn skill_autocomplete_matches(prefix: &str) -> Vec<String> {
+    let all = list_skill_names_sync();
+    if prefix.is_empty() {
+        return all.into_iter().take(20).collect();
+    }
+    let lower = prefix.to_lowercase();
+    let mut starts = Vec::new();
+    let mut contains = Vec::new();
+    for s in all {
+        let sl = s.to_lowercase();
+        if sl.starts_with(&lower) {
+            starts.push(s);
+        } else if sl.contains(&lower) {
+            contains.push(s);
+        }
+    }
+    starts.extend(contains);
+    starts.truncate(20);
+    starts
+}
+
+fn detect_skill_mention(textarea: &TextArea<'_>) -> Option<AtMention> {
+    let c = textarea.cursor();
+    let row = c.0;
+    let col = c.1;
+    let lines = textarea.lines();
+    if row >= lines.len() { return None; }
+    let line = &lines[row];
+    let chars: Vec<char> = line.chars().collect();
+    if col > chars.len() { return None; }
+    let mut at_col: Option<usize> = None;
+    for i in (0..col).rev() {
+        if chars[i] == '$' {
+            let prev_ok = if i == 0 { true } else { let pc = chars[i-1]; pc.is_whitespace() || "(\"'`".contains(pc) };
+            if prev_ok {
+                // require next char is alpha after $ if prefix empty? allow empty but check
+                at_col = Some(i);
+                break;
+            }
+        }
+    }
+    let at = at_col?;
+    let prefix_chars = &chars[at + 1..col];
+    if prefix_chars.iter().any(|c| c.is_whitespace()) { return None; }
+    // prefix for skills should be alphanumeric/_- only; reject if contains other punctuation like @ prefix contains /
+    // allow empty prefix to show all
+    let prefix: String = prefix_chars.iter().collect();
+    // filter out purely numeric or with symbols that can't be skill names
+    if !prefix.is_empty() && prefix.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '-' || c == '_' )) {
+        // still allow but we already filtered whitespace; keep it simple allow any but autocomplete will just not match
+    }
+    Some(AtMention { prefix, row, col, at_col: at })
+}
+
+fn find_skill_content(name: &str) -> Option<String> {
+    use std::path::PathBuf;
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+    let bases = vec![
+        cwd.join("skills"),
+        cwd.join(".lean").join("skills"),
+        home.join(".agents").join("skills"),
+    ];
+    // scan with priority local
+    let mut found: Option<PathBuf> = None;
+    let mut found_is_local = false;
+    for base in &bases {
+        let is_local = base.starts_with(&cwd);
+        if let Ok(rd) = std::fs::read_dir(base) {
+            for entry in rd.filter_map(|e| e.ok()) {
+                let ft = match entry.file_type() { Ok(ft) => ft, Err(_) => continue };
+                if !ft.is_dir() { continue; }
+                let skill_path = entry.path().join("SKILL.md");
+                if !skill_path.exists() { continue; }
+                let raw = std::fs::read_to_string(&skill_path).unwrap_or_default();
+                let sname = parse_skill_name(&raw).unwrap_or_else(|| entry.file_name().to_string_lossy().to_string());
+                if sname == name {
+                    if found.is_none() || (is_local && !found_is_local) {
+                        found = Some(skill_path);
+                        found_is_local = is_local;
+                    }
+                }
+            }
+        }
+        let direct = base.join(name).join("SKILL.md");
+        if direct.exists() {
+            if found.is_none() || (is_local && !found_is_local) {
+                found = Some(direct);
+                found_is_local = is_local;
+            }
+        }
+    }
+    let path = found?;
+    std::fs::read_to_string(path).ok()
+}
+
 fn current_completions(textarea: &TextArea<'_>) -> Vec<String> {
+    if let Some(m) = detect_skill_mention(textarea) {
+        return skill_autocomplete_matches(&m.prefix);
+    }
     if let Some(m) = detect_at_mention(textarea) {
         return file_autocomplete_matches(&m.prefix);
     }
@@ -786,12 +943,31 @@ fn current_completions(textarea: &TextArea<'_>) -> Vec<String> {
 }
 
 fn expand_at_mentions(prompt: &str) -> String {
-    // Find @<path> tokens that resolve to existing files and append their contents.
+    // Find @<path> tokens that resolve to existing files and $skill tokens that force skills, appending contents.
     let root = crate::dir_guard::project_root();
     let mut files: Vec<String> = Vec::new();
+    let mut skills: Vec<String> = Vec::new();
     let chars: Vec<char> = prompt.chars().collect();
     let mut i = 0;
     while i < chars.len() {
+        if chars[i] == '$' {
+            let prev_ok = if i == 0 { true } else { chars[i - 1].is_whitespace() || "(\"'`".contains(chars[i - 1]) };
+            let next_is_alpha = i + 1 < chars.len() && (chars[i + 1].is_ascii_alphabetic() || chars[i + 1] == '_');
+            if prev_ok && next_is_alpha {
+                let mut j = i + 1;
+                while j < chars.len() && !chars[j].is_whitespace() { j += 1; }
+                let mut raw: String = chars[i + 1..j].iter().collect();
+                while raw.ends_with(',') || raw.ends_with('.') || raw.ends_with(';') || raw.ends_with(':') || raw.ends_with('!') || raw.ends_with('?') || raw.ends_with(')') || raw.ends_with(']') || raw.ends_with('"') || raw.ends_with('\'') { raw.pop(); }
+                // skill names allowed chars: alnum - _
+                let cleaned: String = raw.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+                let skill_name = if !cleaned.is_empty() { cleaned } else { raw.clone() };
+                if !skill_name.is_empty() && !skills.contains(&skill_name) && find_skill_content(&skill_name).is_some() {
+                    skills.push(skill_name);
+                }
+                i = j;
+                continue;
+            }
+        }
         if chars[i] == '@' {
             let prev_ok = if i == 0 {
                 true
@@ -836,7 +1012,7 @@ fn expand_at_mentions(prompt: &str) -> String {
         }
         i += 1;
     }
-    if files.is_empty() {
+    if files.is_empty() && skills.is_empty() {
         return prompt.to_string();
     }
     let mut out = prompt.to_string();
@@ -848,7 +1024,6 @@ fn expand_at_mentions(prompt: &str) -> String {
             root.join(p)
         };
         let content = std::fs::read_to_string(&full).unwrap_or_else(|e| format!("[read error: {}]", e));
-        // truncate large files for LLM (8KB cap per file)
         let truncated = if content.len() > 8000 {
             format!("{}… [truncated {} chars]", &content[..8000], content.len() - 8000)
         } else {
@@ -856,6 +1031,12 @@ fn expand_at_mentions(prompt: &str) -> String {
         };
         let ext = full.extension().and_then(|e| e.to_str()).unwrap_or("");
         out.push_str(&format!("\n\n[File: {}]\n```{}\n{}```", rel, ext, truncated));
+    }
+    for skill_name in skills {
+        if let Some(content) = find_skill_content(&skill_name) {
+            let truncated = if content.len() > 12000 { format!("{}… [truncated {} chars]", &content[..12000], content.len() - 12000) } else { content };
+            out.push_str(&format!("\n\n[Forced skill: {} — follow its workflow explicitly]\n{}", skill_name, truncated));
+        }
     }
     out
 }
@@ -1197,7 +1378,7 @@ async fn app_loop(
         );
         ta.set_cursor_line_style(Style::default().bg(THEME.input_bg));
         ta.set_placeholder_text(
-            "  ▸  type a message…  (@file • /help • Enter send • Shift+Enter newline)",
+            "  ▸  type a message…  (@file $skill • /help • Enter send)",
         );
         ta.set_placeholder_style(Style::default().fg(ASHEN.charcoal).bg(THEME.input_bg));
         ta.set_block(
@@ -1652,7 +1833,27 @@ async fn app_loop(
                             // Enter: if autocomplete visible, accept it first
                             if !ac_matches.is_empty() {
                                 let chosen = ac_matches[ac_idx].clone();
-                                if let Some(m) = detect_at_mention(&textarea) {
+                                if let Some(m) = detect_skill_mention(&textarea) {
+                                    let mut lines = textarea.lines().to_vec();
+                                    if m.row < lines.len() {
+                                        let line = &lines[m.row];
+                                        let chars: Vec<char> = line.chars().collect();
+                                        let before: String = chars[..m.at_col + 1].iter().collect();
+                                        let after: String = chars[m.col..].iter().collect();
+                                        let new_line2 = format!("{}{}{}", before, chosen, after);
+                                        lines[m.row] = new_line2;
+                                        let new_text = lines.join("\n");
+                                        let new_col = m.at_col + 1 + chosen.chars().count();
+                                        textarea.select_all();
+                                        textarea.cut();
+                                        textarea.insert_str(new_text);
+                                        textarea.move_cursor(CursorMove::Jump(m.row as u16, new_col as u16));
+                                    } else {
+                                        textarea.select_all();
+                                        textarea.cut();
+                                        textarea.insert_str(chosen);
+                                    }
+                                } else if let Some(m) = detect_at_mention(&textarea) {
                                     // Replace @prefix with @chosen
                                     let mut lines = textarea.lines().to_vec();
                                     if m.row < lines.len() {
@@ -1660,7 +1861,6 @@ async fn app_loop(
                                         let chars: Vec<char> = line.chars().collect();
                                         let before: String = chars[..m.at_col + 1].iter().collect();
                                         let after: String = chars[m.col..].iter().collect();
-                                        // Actually format correctly
                                         let new_line2 = format!("{}{}{}", before, chosen, after);
                                         lines[m.row] = new_line2;
                                         let new_text = lines.join("\n");
@@ -1750,7 +1950,27 @@ async fn app_loop(
                         KeyCode::Tab => {
                             if !ac_matches.is_empty() {
                                 let chosen = ac_matches[ac_idx].clone();
-                                if let Some(m) = detect_at_mention(&textarea) {
+                                if let Some(m) = detect_skill_mention(&textarea) {
+                                    let mut lines = textarea.lines().to_vec();
+                                    if m.row < lines.len() {
+                                        let line = &lines[m.row];
+                                        let chars: Vec<char> = line.chars().collect();
+                                        let before: String = chars[..m.at_col + 1].iter().collect();
+                                        let after: String = chars[m.col..].iter().collect();
+                                        let new_line = format!("{}{}{}", before, chosen, after);
+                                        lines[m.row] = new_line;
+                                        let new_text = lines.join("\n");
+                                        let new_col = m.at_col + 1 + chosen.chars().count();
+                                        textarea.select_all();
+                                        textarea.cut();
+                                        textarea.insert_str(new_text);
+                                        textarea.move_cursor(CursorMove::Jump(m.row as u16, new_col as u16));
+                                    } else {
+                                        textarea.select_all();
+                                        textarea.cut();
+                                        textarea.insert_str(chosen);
+                                    }
+                                } else if let Some(m) = detect_at_mention(&textarea) {
                                     let mut lines = textarea.lines().to_vec();
                                     if m.row < lines.len() {
                                         let line = &lines[m.row];
