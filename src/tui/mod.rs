@@ -724,13 +724,20 @@ fn draw_approval(f: &mut Frame, area: Rect, req: &crate::approval::ApprovalReque
 }
 
 
-fn draw_sessions(f: &mut Frame, area: Rect, selected: usize, scroll: usize, filter: &str) {
+fn draw_sessions(f: &mut Frame, area: Rect, selected: usize, scroll: usize, filter: &str, show_all: bool, cwd: &str) {
     let all = crate::session::Session::list();
-    let filtered: Vec<crate::session::Session> = if filter.is_empty() {
+    // Per-directory filtering: default shows only sessions for current cwd, Tab toggles all
+    let cwd_norm = cwd.trim_end_matches('/');
+    let dir_filtered: Vec<crate::session::Session> = if show_all {
         all
     } else {
+        all.into_iter().filter(|s| s.cwd.trim_end_matches('/') == cwd_norm).collect()
+    };
+    let filtered: Vec<crate::session::Session> = if filter.is_empty() {
+        dir_filtered
+    } else {
         let lower = filter.to_lowercase();
-        all.into_iter().filter(|s| {
+        dir_filtered.into_iter().filter(|s| {
             s.id.to_lowercase().contains(&lower)
                 || s.cwd.to_lowercase().contains(&lower)
                 || s.messages.iter().any(|m| m.content.to_lowercase().contains(&lower))
@@ -742,7 +749,13 @@ fn draw_sessions(f: &mut Frame, area: Rect, selected: usize, scroll: usize, filt
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     let rect = Rect { x, y, width, height };
-    let title = if filter.is_empty() { " Sessions — Enter to resume, Esc close, type to filter ".to_string() } else { format!(" Sessions — filter: {} ", filter) };
+    let mode_label = if show_all { "all" } else { "this dir" };
+    let toggle_label = if show_all { "this dir" } else { "all" };
+    let title = if filter.is_empty() {
+        format!(" Sessions [{}] — Enter resume, Esc close, Tab:{} ", mode_label, toggle_label)
+    } else {
+        format!(" Sessions [{}] — filter: {} (Tab:{}) ", mode_label, filter, toggle_label)
+    };
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -751,7 +764,14 @@ fn draw_sessions(f: &mut Frame, area: Rect, selected: usize, scroll: usize, filt
     let inner = block.inner(rect);
     f.render_widget(block, rect);
     if sessions.is_empty() {
-        let para = Paragraph::new(Line::from(Span::styled(if filter.is_empty() { "  No sessions" } else { "  No match" }, Style::default().fg(ASHEN.deep_ash))));
+        let msg = if !filter.is_empty() {
+            "  No match"
+        } else if !show_all {
+            "  No sessions in this dir — Tab for all"
+        } else {
+            "  No sessions"
+        };
+        let para = Paragraph::new(Line::from(Span::styled(msg, Style::default().fg(ASHEN.deep_ash))));
         f.render_widget(para, inner);
         return;
     }
@@ -967,6 +987,7 @@ async fn app_loop(
     let mut sessions_scroll: usize = 0;
     let mut sessions_selected: usize = 0;
     let mut sessions_filter = String::new();
+    let mut sessions_show_all = false;
     let mut show_allowlist = false;
     let mut allowlist_selected: usize = 0;
     let mut allowlist_scroll: usize = 0;
@@ -1055,7 +1076,7 @@ async fn app_loop(
                 draw_approval(f, f.area(), req);
             }
             if show_sessions {
-                draw_sessions(f, f.area(), sessions_selected, sessions_scroll, &sessions_filter);
+                draw_sessions(f, f.area(), sessions_selected, sessions_scroll, &sessions_filter, sessions_show_all, &cwd);
             }
             if show_allowlist {
                 draw_allowlist(f, f.area(), allowlist_selected, allowlist_scroll);
@@ -1166,12 +1187,23 @@ async fn app_loop(
                                 sessions_filter.clear();
                                 sessions_selected = 0;
                             }
+                            KeyCode::Tab | KeyCode::BackTab => {
+                                sessions_show_all = !sessions_show_all;
+                                sessions_selected = 0;
+                                sessions_scroll = 0;
+                            }
                             KeyCode::Enter => {
-                                // Apply filter to get same ordering as draw
+                                // Apply same ordering as draw: dir filter + text filter
                                 let all = crate::session::Session::list();
-                                let filtered: Vec<crate::session::Session> = if sessions_filter.is_empty() { all } else {
+                                let cwd_norm = cwd.trim_end_matches('/');
+                                let dir_filtered: Vec<crate::session::Session> = if sessions_show_all {
+                                    all
+                                } else {
+                                    all.into_iter().filter(|s| s.cwd.trim_end_matches('/') == cwd_norm).collect()
+                                };
+                                let filtered: Vec<crate::session::Session> = if sessions_filter.is_empty() { dir_filtered } else {
                                     let lower = sessions_filter.to_lowercase();
-                                    all.into_iter().filter(|s| s.id.to_lowercase().contains(&lower) || s.cwd.to_lowercase().contains(&lower) || s.messages.iter().any(|m| m.content.to_lowercase().contains(&lower))).collect()
+                                    dir_filtered.into_iter().filter(|s| s.id.to_lowercase().contains(&lower) || s.cwd.to_lowercase().contains(&lower) || s.messages.iter().any(|m| m.content.to_lowercase().contains(&lower))).collect()
                                 };
                                 if let Some(sess) = filtered.get(sessions_selected).cloned() {
                                     messages = sess.messages.iter().map(|m| Msg { role: m.role.clone(), content: m.content.clone() }).collect();
@@ -1190,11 +1222,17 @@ async fn app_loop(
                                 }
                             }
                             KeyCode::Down => {
-                                // Compute filtered len
+                                // Compute filtered len with dir + text filters
                                 let all = crate::session::Session::list();
-                                let filtered_len = if sessions_filter.is_empty() { all.len() } else {
+                                let cwd_norm = cwd.trim_end_matches('/');
+                                let dir_filtered: Vec<crate::session::Session> = if sessions_show_all {
+                                    all
+                                } else {
+                                    all.into_iter().filter(|s| s.cwd.trim_end_matches('/') == cwd_norm).collect()
+                                };
+                                let filtered_len = if sessions_filter.is_empty() { dir_filtered.len() } else {
                                     let lower = sessions_filter.to_lowercase();
-                                    all.iter().filter(|s| s.id.to_lowercase().contains(&lower) || s.cwd.to_lowercase().contains(&lower) || s.messages.iter().any(|m| m.content.to_lowercase().contains(&lower))).count()
+                                    dir_filtered.iter().filter(|s| s.id.to_lowercase().contains(&lower) || s.cwd.to_lowercase().contains(&lower) || s.messages.iter().any(|m| m.content.to_lowercase().contains(&lower))).count()
                                 };
                                 if sessions_selected + 1 < filtered_len {
                                     sessions_selected += 1;
@@ -1586,6 +1624,7 @@ async fn app_loop(
                                     sessions_selected = 0;
                                     sessions_scroll = 0;
                                     sessions_filter.clear();
+                                    sessions_show_all = false;
                                 }
                                 "/allowlist" => {
                                     show_allowlist = true;
