@@ -86,10 +86,48 @@ impl Msg {
                     ),
                 ])];
                 for l in self.content.lines() {
-                    lines.push(Line::from(Span::styled(
-                        format!("     {}", l),
+                    // Highlight @file mentions in ember color
+                    let mut spans: Vec<Span<'static>> = vec![Span::styled(
+                        "     ".to_string(),
                         Style::default().fg(ASHEN.bone),
-                    )));
+                    )];
+                    let chars: Vec<char> = l.chars().collect();
+                    let mut i = 0;
+                    let mut buf = String::new();
+                    let flush_buf = |spans: &mut Vec<Span<'static>>, buf: &mut String| {
+                        if !buf.is_empty() {
+                            spans.push(Span::styled(
+                                std::mem::take(buf),
+                                Style::default().fg(ASHEN.bone),
+                            ));
+                        }
+                    };
+                    while i < chars.len() {
+                        if chars[i] == '@'
+                            && (i == 0 || chars[i - 1].is_whitespace() || "(\"'`".contains(chars[i - 1]))
+                        {
+                            let mut j = i + 1;
+                            while j < chars.len() && !chars[j].is_whitespace() {
+                                j += 1;
+                            }
+                            if j > i + 1 {
+                                flush_buf(&mut spans, &mut buf);
+                                let m: String = chars[i..j].iter().collect();
+                                spans.push(Span::styled(
+                                    m,
+                                    Style::default()
+                                        .fg(ASHEN.ember)
+                                        .add_modifier(Modifier::BOLD),
+                                ));
+                                i = j;
+                                continue;
+                            }
+                        }
+                        buf.push(chars[i]);
+                        i += 1;
+                    }
+                    flush_buf(&mut spans, &mut buf);
+                    lines.push(Line::from(spans));
                 }
                 lines
             }
@@ -513,7 +551,7 @@ fn draw_input(f: &mut Frame, area: Rect, textarea: &mut TextArea<'_>) {
     );
     textarea.set_cursor_line_style(Style::default().bg(THEME.input_bg));
     textarea.set_placeholder_text(
-        "  ▸  type a message…  (/help for commands, Enter send, Shift+Enter newline)",
+        "  ▸  type a message…  (@file • /help • Enter send • Shift+Enter newline)",
     );
     textarea.set_placeholder_style(Style::default().fg(ASHEN.charcoal).bg(THEME.input_bg));
     // prompt gutter: we prepend via block title style instead of manual truncation
@@ -607,27 +645,226 @@ fn draw_footer(
     f.render_widget(footer, area);
 }
 
-// ── Autocomplete ─────────────────────────────────────────────
+// ── Autocomplete + @-mentions ─────────────────────────────────
 
 const COMMANDS: &[&str] = &["/help", "/new", "/clear", "/exit", "/quit", "/model", "/sessions", "/resume", "/allowlist", "/allowlist clear", "/memory", "/memory stats", "/memory consolidate"];
 
 /// Filter commands matching the current input prefix.
-fn autocomplete_matches(input: &str) -> Vec<&'static str> {
+fn autocomplete_matches(input: &str) -> Vec<String> {
     if input.is_empty() || !input.starts_with('/') {
         return Vec::new();
     }
     COMMANDS
         .iter()
-        .copied()
         .filter(|cmd| cmd.starts_with(input))
+        .map(|s| s.to_string())
         .collect()
+}
+
+// ── @-file mentions ─────────────────────────────────────────
+#[derive(Debug, Clone)]
+struct AtMention {
+    prefix: String,
+    row: usize,
+    col: usize,
+    at_col: usize,
+}
+
+fn detect_at_mention(textarea: &TextArea<'_>) -> Option<AtMention> {
+    let c = textarea.cursor();
+    let row = c.0;
+    let col = c.1;
+    let lines = textarea.lines();
+    if row >= lines.len() {
+        return None;
+    }
+    let line = &lines[row];
+    let chars: Vec<char> = line.chars().collect();
+    if col > chars.len() {
+        return None;
+    }
+    // find last '@' before cursor with valid preceding boundary
+    let mut at_col: Option<usize> = None;
+    for i in (0..col).rev() {
+        if chars[i] == '@' {
+            let prev_ok = if i == 0 {
+                true
+            } else {
+                let pc = chars[i - 1];
+                pc.is_whitespace() || "(\"'`".contains(pc)
+            };
+            if prev_ok {
+                at_col = Some(i);
+                break;
+            }
+        }
+        // stop scanning if we cross whitespace that already had no @? Keep searching for earlier @
+    }
+    let at = at_col?;
+    let prefix_chars = &chars[at + 1..col];
+    if prefix_chars.iter().any(|c| c.is_whitespace()) {
+        return None;
+    }
+    let prefix: String = prefix_chars.iter().collect();
+    Some(AtMention {
+        prefix,
+        row,
+        col,
+        at_col: at,
+    })
+}
+
+fn collect_files() -> Vec<String> {
+    let root = crate::dir_guard::project_root();
+    let mut files = Vec::new();
+    let walker = walkdir::WalkDir::new(&root)
+        .follow_links(false)
+        .max_depth(8)
+        .into_iter()
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            if name == ".git" || name == "target" || name == "node_modules" || name == ".next" || name == "dist" || name == "build" {
+                return false;
+            }
+            // skip hidden except .env-ish
+            if name.starts_with('.') {
+                return false;
+            }
+            true
+        });
+    for entry in walker.filter_map(|e| e.ok()) {
+        if entry.file_type().is_file() {
+            if let Ok(rel) = entry.path().strip_prefix(&root) {
+                let s = rel.display().to_string();
+                if s.is_empty() {
+                    continue;
+                }
+                files.push(s);
+                if files.len() > 3000 {
+                    break;
+                }
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+fn file_autocomplete_matches(prefix: &str) -> Vec<String> {
+    let all = collect_files();
+    if prefix.is_empty() {
+        return all.into_iter().take(20).collect();
+    }
+    let lower = prefix.to_lowercase();
+    let mut starts: Vec<String> = Vec::new();
+    let mut contains: Vec<String> = Vec::new();
+    for f in all {
+        let fl = f.to_lowercase();
+        if fl.starts_with(&lower) {
+            starts.push(f);
+        } else if fl.contains(&lower) {
+            contains.push(f);
+        }
+        if starts.len() + contains.len() >= 20 {
+            // keep collecting starts priority, but cap
+            if starts.len() >= 20 {
+                break;
+            }
+        }
+    }
+    starts.extend(contains);
+    starts.truncate(20);
+    starts
+}
+
+fn current_completions(textarea: &TextArea<'_>) -> Vec<String> {
+    if let Some(m) = detect_at_mention(textarea) {
+        return file_autocomplete_matches(&m.prefix);
+    }
+    let cur = textarea.lines().join("\n");
+    autocomplete_matches(&cur)
+}
+
+fn expand_at_mentions(prompt: &str) -> String {
+    // Find @<path> tokens that resolve to existing files and append their contents.
+    let root = crate::dir_guard::project_root();
+    let mut files: Vec<String> = Vec::new();
+    let chars: Vec<char> = prompt.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '@' {
+            let prev_ok = if i == 0 {
+                true
+            } else {
+                chars[i - 1].is_whitespace() || "(\"'`".contains(chars[i - 1])
+            };
+            if prev_ok {
+                let mut j = i + 1;
+                while j < chars.len() && !chars[j].is_whitespace() {
+                    j += 1;
+                }
+                let mut raw: String = chars[i + 1..j].iter().collect();
+                // strip trailing punctuation that is unlikely part of path
+                while raw.ends_with(',')
+                    || raw.ends_with('.')
+                    || raw.ends_with(';')
+                    || raw.ends_with(':')
+                    || raw.ends_with('!')
+                    || raw.ends_with('?')
+                    || raw.ends_with(')')
+                    || raw.ends_with(']')
+                    || raw.ends_with('"')
+                    || raw.ends_with('\'')
+                {
+                    raw.pop();
+                }
+                if !raw.is_empty() && !files.contains(&raw) {
+                    // check existence relative to root (or absolute)
+                    let p = std::path::Path::new(&raw);
+                    let full = if p.is_absolute() {
+                        p.to_path_buf()
+                    } else {
+                        root.join(p)
+                    };
+                    if full.is_file() {
+                        files.push(raw);
+                    }
+                }
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    if files.is_empty() {
+        return prompt.to_string();
+    }
+    let mut out = prompt.to_string();
+    for rel in files {
+        let p = std::path::Path::new(&rel);
+        let full = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            root.join(p)
+        };
+        let content = std::fs::read_to_string(&full).unwrap_or_else(|e| format!("[read error: {}]", e));
+        // truncate large files for LLM (8KB cap per file)
+        let truncated = if content.len() > 8000 {
+            format!("{}… [truncated {} chars]", &content[..8000], content.len() - 8000)
+        } else {
+            content
+        };
+        let ext = full.extension().and_then(|e| e.to_str()).unwrap_or("");
+        out.push_str(&format!("\n\n[File: {}]\n```{}\n{}```", rel, ext, truncated));
+    }
+    out
 }
 
 /// Draw a scrollable autocomplete popup above the input area.
 fn draw_autocomplete(
     f: &mut Frame,
     input_area: Rect,
-    matches: &[&str],
+    matches: &[String],
     selected: usize,
     scroll_offset: usize,
 ) {
@@ -960,7 +1197,7 @@ async fn app_loop(
         );
         ta.set_cursor_line_style(Style::default().bg(THEME.input_bg));
         ta.set_placeholder_text(
-            "  ▸  type a message…  (/help for commands, Enter send, Shift+Enter newline)",
+            "  ▸  type a message…  (@file • /help • Enter send • Shift+Enter newline)",
         );
         ta.set_placeholder_style(Style::default().fg(ASHEN.charcoal).bg(THEME.input_bg));
         ta.set_block(
@@ -972,7 +1209,7 @@ async fn app_loop(
     };
 
     // autocomplete
-    let mut ac_matches: Vec<&'static str> = Vec::new();
+    let mut ac_matches: Vec<String> = Vec::new();
     let mut ac_idx: usize = 0;
     let mut ac_scroll: usize = 0;
 
@@ -1101,11 +1338,7 @@ async fn app_loop(
                 Event::Paste(data) => {
                     crate::telemetry::record("paste");
                     textarea.insert_str(data);
-                    let cur = textarea.lines().join(
-                        "
-",
-                    );
-                    ac_matches = autocomplete_matches(&cur);
+                    ac_matches = current_completions(&textarea);
                     ac_idx = 0;
                 }
                 Event::Mouse(m) => {
@@ -1327,6 +1560,7 @@ async fn app_loop(
                                         content: "[interrupted → next queued]".into(),
                                     });
                                     let next = msg_queue.remove(0);
+                                    let expanded_next = expand_at_mentions(&next);
                                     let hist = llm_history_for_spawn(&session, &messages);
                                     messages.push(Msg {
                                         role: "user".into(),
@@ -1335,7 +1569,7 @@ async fn app_loop(
                                     // agent_busy stays true
                                     step_info = "...".into();
                         agent_handle = Some(spawn_agent_with_history(
-                            next,
+                            expanded_next,
                             model.clone(),
                             hist,
                             tx.clone(),
@@ -1376,25 +1610,25 @@ async fn app_loop(
                             // delete from head using textarea API
                             textarea.delete_line_by_head();
                             crate::telemetry::record("kill_line");
-                            ac_matches = autocomplete_matches(&textarea.lines().join("\n"));
+                            ac_matches = current_completions(&textarea);
                             ac_idx = 0;
                         }
                         KeyCode::Char('k') if ctrl => {
                             textarea.delete_line_by_end();
                             crate::telemetry::record("kill_line_end");
-                            ac_matches = autocomplete_matches(&textarea.lines().join("\n"));
+                            ac_matches = current_completions(&textarea);
                             ac_idx = 0;
                         }
                         KeyCode::Char('z') if ctrl => {
                             crate::telemetry::record("input_undo");
                             textarea.undo();
-                            ac_matches = autocomplete_matches(&textarea.lines().join("\n"));
+                            ac_matches = current_completions(&textarea);
                             ac_idx = 0;
                         }
                         KeyCode::Char('y') if ctrl => {
                             textarea.paste();
                             crate::telemetry::record("paste");
-                            ac_matches = autocomplete_matches(&textarea.lines().join("\n"));
+                            ac_matches = current_completions(&textarea);
                             ac_idx = 0;
                         }
                         KeyCode::Enter if ctrl && !shift && !alt => {
@@ -1411,18 +1645,43 @@ async fn app_loop(
                             crate::telemetry::record("newline");
                             let inp = crossterm_key_to_input(k);
                             textarea.input(inp);
-                            ac_matches = autocomplete_matches(&textarea.lines().join("\n"));
+                            ac_matches = current_completions(&textarea);
                             ac_idx = 0;
                         }
                         KeyCode::Enter => {
                             // Enter: if autocomplete visible, accept it first
                             if !ac_matches.is_empty() {
-                                let chosen = ac_matches[ac_idx].to_string();
-                                textarea.select_all();
-                                textarea.cut();
-                                textarea.insert_str(chosen);
+                                let chosen = ac_matches[ac_idx].clone();
+                                if let Some(m) = detect_at_mention(&textarea) {
+                                    // Replace @prefix with @chosen
+                                    let mut lines = textarea.lines().to_vec();
+                                    if m.row < lines.len() {
+                                        let line = &lines[m.row];
+                                        let chars: Vec<char> = line.chars().collect();
+                                        let before: String = chars[..m.at_col + 1].iter().collect();
+                                        let after: String = chars[m.col..].iter().collect();
+                                        // Actually format correctly
+                                        let new_line2 = format!("{}{}{}", before, chosen, after);
+                                        lines[m.row] = new_line2;
+                                        let new_text = lines.join("\n");
+                                        let new_col = m.at_col + 1 + chosen.chars().count();
+                                        textarea.select_all();
+                                        textarea.cut();
+                                        textarea.insert_str(new_text);
+                                        textarea.move_cursor(CursorMove::Jump(m.row as u16, new_col as u16));
+                                    } else {
+                                        textarea.select_all();
+                                        textarea.cut();
+                                        textarea.insert_str(chosen);
+                                    }
+                                } else {
+                                    textarea.select_all();
+                                    textarea.cut();
+                                    textarea.insert_str(chosen);
+                                }
                                 ac_matches.clear();
                                 ac_idx = 0;
+                                ac_scroll = 0;
                             } else {
                                 // Normal Enter submits (single line). If multiline (contains newline), submit still
                                 let cur = textarea.lines().join("\n");
@@ -1490,12 +1749,35 @@ async fn app_loop(
                         }
                         KeyCode::Tab => {
                             if !ac_matches.is_empty() {
-                                let chosen = ac_matches[ac_idx].to_string();
-                                textarea.select_all();
-                                textarea.cut();
-                                textarea.insert_str(chosen);
+                                let chosen = ac_matches[ac_idx].clone();
+                                if let Some(m) = detect_at_mention(&textarea) {
+                                    let mut lines = textarea.lines().to_vec();
+                                    if m.row < lines.len() {
+                                        let line = &lines[m.row];
+                                        let chars: Vec<char> = line.chars().collect();
+                                        let before: String = chars[..m.at_col + 1].iter().collect();
+                                        let after: String = chars[m.col..].iter().collect();
+                                        let new_line = format!("{}{}{}", before, chosen, after);
+                                        lines[m.row] = new_line;
+                                        let new_text = lines.join("\n");
+                                        let new_col = m.at_col + 1 + chosen.chars().count();
+                                        textarea.select_all();
+                                        textarea.cut();
+                                        textarea.insert_str(new_text);
+                                        textarea.move_cursor(CursorMove::Jump(m.row as u16, new_col as u16));
+                                    } else {
+                                        textarea.select_all();
+                                        textarea.cut();
+                                        textarea.insert_str(chosen);
+                                    }
+                                } else {
+                                    textarea.select_all();
+                                    textarea.cut();
+                                    textarea.insert_str(chosen);
+                                }
                                 ac_matches.clear();
                                 ac_idx = 0;
+                                ac_scroll = 0;
                             } else {
                                 // Tab inserts 2 spaces (or delegate)
                                 let inp: TAInput = crossterm_key_to_input(k);
@@ -1510,7 +1792,7 @@ async fn app_loop(
                         KeyCode::Backspace if alt => {
                             // Alt+Backspace word delete (textarea already handles but ensure)
                             textarea.delete_word();
-                            ac_matches = autocomplete_matches(&textarea.lines().join("\n"));
+                            ac_matches = current_completions(&textarea);
                             ac_idx = 0;
                         }
                         KeyCode::Left if alt => {
@@ -1561,8 +1843,7 @@ async fn app_loop(
                                 )
                             {
                                 // update autocomplete on content change
-                                let cur = textarea.lines().join("\n");
-                                let new_matches = autocomplete_matches(&cur);
+                                let new_matches = current_completions(&textarea);
                                 if new_matches != ac_matches {
                                     ac_matches = new_matches;
                                     ac_idx = 0;
@@ -1573,7 +1854,7 @@ async fn app_loop(
                             } else {
                                 // Even if not modified, still recompute for typing
                                 let cur = textarea.lines().join("\n");
-                                ac_matches = autocomplete_matches(&cur);
+                                ac_matches = current_completions(&textarea);
                                 if ac_matches.is_empty() {
                                     ac_idx = 0;
                                 }
@@ -1592,7 +1873,10 @@ async fn app_loop(
                     // Handle pending submit (Enter / Ctrl+Enter)
                     if submit_pending {
                         let raw = textarea.lines().join("\n");
-                        let prompt = raw.trim().to_string();
+                        let prompt_raw = raw.trim().to_string();
+                        // Keep display as raw, but expand @files for LLM
+                        let prompt = prompt_raw.clone();
+                        let expanded = expand_at_mentions(&prompt_raw);
                         if prompt.is_empty() {
                             // skip
                         } else if prompt.starts_with('/') {
@@ -1616,7 +1900,7 @@ async fn app_loop(
                                 "/help" => {
                                     messages.push(Msg {
                                         role: "system".into(),
-                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /memory stats|consolidate /model <name> /clear /exit  ·  Enter send · Shift+Enter newline · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll".into(),
+                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /memory stats|consolidate /model <name> /clear /exit  ·  Enter send · Shift+Enter newline · @file to attach · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll".into(),
                                     });
                                 }
                                 "/sessions" => {
@@ -1718,7 +2002,7 @@ async fn app_loop(
                             ac_idx = 0;
 
                             if agent_busy {
-                                msg_queue.push(prompt);
+                                msg_queue.push(prompt.clone());
                             } else {
                                 let hist = llm_history_for_spawn(&session, &messages);
                                 messages.push(Msg {
@@ -1727,7 +2011,7 @@ async fn app_loop(
                                 });
                                 agent_busy = true;
                                 agent_handle = Some(spawn_agent_with_history(
-                                    prompt,
+                                    expanded.clone(),
                                     model.clone(),
                                     hist,
                                     tx.clone(),
@@ -1845,6 +2129,7 @@ async fn app_loop(
                     // don't flash "done" or clear agent_busy between sessions.
                     if !msg_queue.is_empty() {
                         let next = msg_queue.remove(0);
+                        let expanded_next = expand_at_mentions(&next);
                         let hist = llm_history_for_spawn(&session, &messages);
                         messages.push(Msg {
                             role: "user".into(),
@@ -1854,7 +2139,7 @@ async fn app_loop(
                         step_info = "...".into();
                         // agent_busy stays true
                         agent_handle = Some(spawn_agent_with_history(
-                            next,
+                            expanded_next,
                             model.clone(),
                             hist,
                             tx.clone(),
@@ -1878,6 +2163,7 @@ async fn app_loop(
             // Reset busy state
             if !msg_queue.is_empty() {
                 let next = msg_queue.remove(0);
+                let expanded_next = expand_at_mentions(&next);
                 let hist = llm_history_for_spawn(&session, &messages);
                 messages.push(Msg {
                     role: "user".into(),
@@ -1885,7 +2171,7 @@ async fn app_loop(
                 });
                 step_info = "...".into();
                         agent_handle = Some(spawn_agent_with_history(
-                            next,
+                            expanded_next,
                             model.clone(),
                             hist,
                             tx.clone(),
