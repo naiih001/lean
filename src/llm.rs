@@ -29,7 +29,7 @@ impl Client {
     }
 }
 
-pub fn tool_definitions() -> Vec<Value> {
+pub fn native_tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "type": "function",
@@ -211,6 +211,14 @@ pub fn tool_definitions() -> Vec<Value> {
             }
         }),
     ]
+}
+
+pub async fn tool_definitions() -> Vec<Value> {
+    let mut v = native_tool_definitions();
+    // Merge MCP tools if initialized; fast path if not
+    let mcp_tools = crate::mcp::mcp_tool_definitions().await;
+    v.extend(mcp_tools);
+    v
 }
 
 #[derive(Debug, Deserialize)]

@@ -119,6 +119,53 @@ See `skills/lean-config/SKILL.md` for self-configuration (model, keys, guards, s
 
 ---
 
+## MCP (Model Context Protocol) — Client
+
+`lean` is an MCP **client**. It discovers tools from external MCP servers and merges them into the LLM tool list as `server__tool` (namespaced). Every MCP call is gated by the same approval overlay (`HIGH`, `[a]/[A]/Esc`).
+
+**Config files (merged, project overrides global):**
+
+- `~/.lean/mcp.json` (global)
+- `.lean/mcp.json` (project)
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}" }
+    },
+    "remote-example": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${MCP_TOKEN}" }
+    }
+  }
+}
+```
+
+* `command`/`args`/`env` → stdio (spawn child via `TokioChildProcess`)
+* `url`/`headers` → Streamable HTTP (SSE internally, via `rmcp` `StreamableHttpClientTransport`); legacy HTTP+SSE is not needed — Streamable HTTP covers it
+* `${VAR}` / `$VAR` expanded from env (dotenvy already loaded)
+* Transports: `rmcp` `transport-child-process` + `transport-streamable-http-client-reqwest`
+* `Authorization: Bearer …` is split into `auth_header` automatically; other headers go to `custom_headers`
+
+**Lifecycle:** Eager connect at startup (15s timeout). Check status via TUI `/mcp` overlay: `connected`/`connecting`/`error` + tool count + reconnect (`Enter`/`r`).
+
+**Example:** copy `mcp.json.example`:
+
+```bash
+mkdir -p ~/.lean
+cp mcp.json.example ~/.lean/mcp.json
+# set token then
+cargo run -- --model mimo-v2.5-free
+# in TUI: /mcp  — should show github connected
+```
+
+**OAuth:** For remote HTTP servers, supply a bearer token via `headers.Authorization` (e.g. `Bearer ${MCP_TOKEN}`). Full OAuth flow is out of scope for v1 — bring your own token.
+
+---
+
 ## Development
 
 ```bash

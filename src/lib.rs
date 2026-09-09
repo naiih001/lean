@@ -8,3 +8,4 @@ pub mod dir_guard;
 pub mod approval;
 pub mod session;
 pub mod tools;
+pub mod mcp;

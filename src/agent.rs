@@ -63,9 +63,31 @@ pub async fn build_system_prompt() -> String {
     } else {
         format!("\n\n## Confinement\nYou are confined to CWD: `{}`. Any file or bash path outside this dir will be blocked until the user approves ([a]/[A]). Do not try to bypass with `../` or absolute paths unless the user asked to go outside.", cwd)
     };
+    // MCP catalog
+    let mcp_snap = crate::mcp::snapshot();
+    let mcp_note = if mcp_snap.is_empty() {
+        "\n\n## MCP\nNo MCP servers configured. To enable MCP, create ~/.lean/mcp.json or .lean/mcp.json (see mcp.json.example).".to_string()
+    } else {
+        let mut s = String::from("\n\n## MCP Servers (tools are namespaced server__tool, every call requires approval [a]/[A])\n");
+        for srv in &mcp_snap {
+            let status = srv.status.as_str();
+            s.push_str(&format!("- {} [{}] ({} tools)", srv.name, status, srv.tools.len()));
+            if !srv.tools.is_empty() {
+                let names: Vec<String> = srv.tools.iter().take(5).map(|t| t.name.clone()).collect();
+                s.push_str(&format!(": {}", names.join(", ")));
+                if srv.tools.len() > 5 { s.push_str(&format!(" +{} more", srv.tools.len()-5)); }
+            }
+            if let Some(err) = &srv.error_detail {
+                s.push_str(&format!(" — error: {}", err));
+            }
+            s.push('\n');
+        }
+        s.push_str("\nUse MCP tools like you use native tools. They are merged into the tool list as server__tool. Check /mcp for status.");
+        s
+    };
     format!(
-        "{}\n\n## Available Skills\nThese skills contain proven workflows for specific tasks. You MUST check if any skill matches your current task.\n{}\n\n**If a skill matches your task, call read_skill immediately. Then follow the skill's instructions.** You may call multiple read_skill in one step if needed.{}",
-        SYSTEM_PROMPT, catalog, dir_note
+        "{}\n\n## Available Skills\nThese skills contain proven workflows for specific tasks. You MUST check if any skill matches your current task.\n{}\n\n**If a skill matches your task, call read_skill immediately. Then follow the skill's instructions.** You may call multiple read_skill in one step if needed.{}{}",
+        SYSTEM_PROMPT, catalog, dir_note, mcp_note
     )
 }
 
@@ -316,10 +338,11 @@ pub fn run_agent_with_history(
             }
 
             // ── Build request ──
+            let tools = llm::tool_definitions().await;
             let body = json!({
                 "model": model,
                 "messages": messages,
-                "tools": llm::tool_definitions(),
+                "tools": tools,
                 "tool_choice": "auto",
                 "stream": true
             });

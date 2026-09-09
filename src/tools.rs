@@ -376,7 +376,40 @@ async fn guard_bash(cmd: &str) -> Option<String> {
     None
 }
 
+async fn guard_mcp(server: &str, tool: &str, args: &serde_json::Value) -> Option<String> {
+    // Every MCP tool call requires approval (HIGH)
+    let display = format!("{}__{} {}", server, tool, args);
+    let reasons = vec![format!("MCP tool {}.{} requires approval", server, tool)];
+    let approved = {
+        let fut = crate::approval::request(display.clone(), crate::bash_guard::Severity::High, reasons.clone());
+        match tokio::time::timeout(std::time::Duration::from_secs(300), fut).await {
+            Ok(v) => v,
+            Err(_) => false,
+        }
+    };
+    if !approved {
+        return Some(format!(
+            "[mcp-guard BLOCKED (HIGH): MCP tool requires approval]\n{}__{} {}",
+            server, tool, args
+        ));
+    }
+    None
+}
+
 pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
+    // MCP namespaced tools: server__tool
+    if name.contains("__") {
+        // Check if this is an MCP tool (if registry has it) or treat any __ as MCP
+        // For now, route any __ to MCP; if server not found, mcp::call_tool will error
+        if let Some((server, tool)) = name.split_once("__") {
+            if let Some(blocked) = guard_mcp(server, tool, &args).await {
+                return blocked;
+            }
+            return crate::mcp::call_tool(server, tool, args)
+                .await
+                .unwrap_or_else(|e| format!("Error: {}", e));
+        }
+    }
     let res = match name {
         "read_file" => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");

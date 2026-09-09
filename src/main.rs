@@ -10,6 +10,7 @@ mod approval;
 mod session;
 mod theme;
 mod tools;
+mod mcp;
 mod tui;
 
 use clap::Parser;
