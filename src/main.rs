@@ -1,6 +1,7 @@
 mod agent;
 mod llm;
 mod memory;
+mod models;
 mod observer;
 mod skills;
 mod telemetry;
@@ -17,8 +18,8 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(name = "lean", about = "lean — light coding assistant (Rust port)")]
 struct Args {
-    #[arg(long, default_value = "mimo-v2.5-free")]
-    model: String,
+    #[arg(long, help = "Model alias from ~/.lean/models.json (default alias from file)")]
+    model: Option<String>,
 
     #[arg(long, help = "Continue the most recent session")]
     r#continue: bool,
@@ -40,8 +41,11 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     let args = Args::parse();
+    // Resolve model alias via ~/.lean/models.json (creates template if missing)
+    let resolved = models::resolve(args.model.as_deref())?;
+    let model_alias = resolved.alias.clone();
     tui::run(tui::RunOpts {
-        model: args.model,
+        model: model_alias,
         continue_session: args.r#continue,
         resume_id: args.resume,
         no_session: args.no_session,

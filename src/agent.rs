@@ -234,7 +234,17 @@ pub fn run_agent_with_history(
     history: Vec<Value>,
 ) -> impl Stream<Item = AgentEvent> {
     async_stream::stream! {
-        let client = Client::from_env();
+        // Resolve alias via ~/.lean/models.json → real model id + provider
+        let resolved = match crate::models::resolve(Some(&model)) {
+            Ok(r) => r,
+            Err(e) => {
+                yield AgentEvent::Text { delta: format!("\n[model resolve error: {}]", e) };
+                yield AgentEvent::Done { text: String::new(), history: Vec::new() };
+                return;
+            }
+        };
+        let model_id = resolved.model.clone();
+        let client = Client::from_resolved(&resolved);
         let system = build_system_prompt().await;
         let mut messages: Vec<Value> = vec![
             json!({"role": "system", "content": system}),
@@ -317,7 +327,7 @@ pub fn run_agent_with_history(
 
             // ── Build request ──
             let body = json!({
-                "model": model,
+                "model": model_id,
                 "messages": messages,
                 "tools": llm::tool_definitions(),
                 "tool_choice": "auto",
