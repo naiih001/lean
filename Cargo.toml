@@ -1,6 +1,6 @@
 [package]
 name = "lean"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Light, fast autonomous coding assistant — single native binary, TUI-first"
 repository = "https://github.com/naiih001/lean"

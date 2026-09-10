@@ -65,7 +65,7 @@ Works with any OpenAI-compatible API.
 ```bash
 curl -fsSL https://raw.githubusercontent.com/naiih001/lean/main/install.sh | bash
 # pin to a version:
-LEAN_VERSION=v0.3.0 curl -fsSL https://raw.githubusercontent.com/naiih001/lean/main/install.sh | bash
+LEAN_VERSION=v0.4.0 curl -fsSL https://raw.githubusercontent.com/naiih001/lean/main/install.sh | bash
 ```
 
 **Windows (PowerShell):**
@@ -73,7 +73,7 @@ LEAN_VERSION=v0.3.0 curl -fsSL https://raw.githubusercontent.com/naiih001/lean/m
 ```powershell
 irm https://raw.githubusercontent.com/naiih001/lean/main/install.ps1 | iex
 # pin to a version:
-$env:LEAN_VERSION="v0.3.0"; irm https://raw.githubusercontent.com/naiih001/lean/main/install.ps1 | iex
+$env:LEAN_VERSION="v0.4.0"; irm https://raw.githubusercontent.com/naiih001/lean/main/install.ps1 | iex
 ```
 
 ### Prebuilt binaries
@@ -374,7 +374,7 @@ For general bugs, use the issue tracker.
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for release notes. `v0.3.0` adds input auto-wrap, `Shift+Enter` newline, `Shift+Tab` auto-accept (`/auto-accept` + `AUTO` badge), and a markdown parser fix.
+See [CHANGELOG.md](CHANGELOG.md) for release notes. `v0.4.0` adds dual-stack `/v1/responses` support, interactive `ask_user` wizard, and prompt/behavior overhaul — `v0.3.0` added input auto-wrap, `Shift+Enter` newline, `Shift+Tab` auto-accept (`/auto-accept` + `AUTO` badge), and a markdown parser fix.
 
 ---
 

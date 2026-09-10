@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-10
+
 ### Added
 
 - **Dual-stack `/v1/responses` support** — per-model `api` field in `~/.lean/models.json` (`"chat_completions"` default / `"responses"`). New `ApiMode` enum, `responses_url()`, tool definition converter, `chat_messages → instructions+input` translation, and streaming `ResponsesEvent` SSE parser. Agent branch `POST /v1/responses` with same `AgentEvent` UX, history translation, and focus/autorecall via `instructions`. TUI footer now shows `(chat)` / `(responses)` and `/model` lists/picks with api tag. Backwards compatible: existing configs default to chat completions.
@@ -108,8 +110,9 @@ Initial release. Light, fast autonomous coding assistant — single native binar
 - Tools: `read_file` (2000 lines/50 KB cap), `write_file`, `edit_file`, `bash` (50 KB tail), `web_search` (Exa → DuckDuckGo), memory tools
 - Config: CLI flags > env vars > `.env` > defaults; `OPENCODE_*`/`OPENAI_*`/`EXA_*` via `dotenvy`
 
-[Unreleased]: https://github.com/naet/lean/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/naet/lean/compare/v0.2.1...v0.3.0
-[0.2.1]: https://github.com/naet/lean/compare/v0.2.0...v0.2.1
-[0.2.0]: https://github.com/naet/lean/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/naet/lean/releases/tag/v0.1.0
+[Unreleased]: https://github.com/naiih001/lean/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/naiih001/lean/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/naiih001/lean/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/naiih001/lean/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/naiih001/lean/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/naiih001/lean/releases/tag/v0.1.0
