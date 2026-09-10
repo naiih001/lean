@@ -24,7 +24,8 @@ You are confined to the working directory shown in the footer. Paths outside it 
 ## Tool guidance\n\
 - Read before edit. Make precise edits with unique oldText.\n\
 - If you need a file, call read_file immediately — don't just say you will.\n\
-- When done, give a short summary and state you are done. If unsure what to do next, re-read the goal and continue.\n";
+- When done, give a short summary and state you are done. If unsure what to do next, re-read the goal and continue.\n\
+- Don't thank yourself — only respond to the user. Never generate a user `thanks` or `you're welcome` as if you were the user.\n";
 
 const TOTAL_BUDGET: usize = 4000;
 const SKILL_MAX_COUNT: usize = 8;
@@ -204,12 +205,40 @@ impl PlanTracker {
     }
     fn record_text(&mut self, text: &str) {
         let trimmed = text.trim();
-        if !trimmed.is_empty() {
-            let summary = if let Some(period) = trimmed.find('.') {
-                if period < 200 { trimmed[..period+1].to_string() } else { trimmed.chars().take(200).collect() }
-            } else { trimmed.chars().take(200).collect() };
-            self.steps_done.push(summary);
+        if trimmed.is_empty() {
+            return;
         }
+        let summary = if let Some(period) = trimmed.find('.') {
+            if period < 200 { trimmed[..period+1].to_string() } else { trimmed.chars().take(200).collect() }
+        } else { trimmed.chars().take(200).collect() };
+        // Dedup: Jaccard >0.75 vs last 2 entries, like consolidate_memory
+        if !self.steps_done.is_empty() {
+            let new_tokens: std::collections::HashSet<String> = summary
+                .to_lowercase()
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect();
+            for prev in self.steps_done.iter().rev().take(2) {
+                let prev_tokens: std::collections::HashSet<String> = prev
+                    .to_lowercase()
+                    .split_whitespace()
+                    .map(|s| s.to_string())
+                    .collect();
+                let inter = new_tokens.intersection(&prev_tokens).count() as f32;
+                let union = new_tokens.union(&prev_tokens).count() as f32;
+                if union > 0.0 && inter / union > 0.75 {
+                    return;
+                }
+                // Also hard block thank-you echo
+                let lower = summary.to_lowercase();
+                if (lower.contains("thank you") || lower.contains("thanks") || lower.contains("you're welcome"))
+                    && (prev.to_lowercase().contains("thank") || prev.to_lowercase().contains("welcome"))
+                {
+                    return;
+                }
+            }
+        }
+        self.steps_done.push(summary);
     }
 }
 
