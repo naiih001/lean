@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-10
+
+Release-engineering lifecycle — cross-platform public GitHub Releases.
+
+### Added
+
+- **Cross-platform GitHub Releases** — `.github/workflows/release.yml` (tag `v*.*.*` trigger) matrix builds `x86_64-unknown-linux-gnu` (ubuntu), `x86_64-apple-darwin` (macos), `x86_64-pc-windows-msvc` (windows) via `dtolnay/rust-toolchain@stable` + `Swatinem/rust-cache`; packages `lean-linux-x86_64.tar.gz` / `lean-macos-x86_64.tar.gz` / `lean-windows-x86_64.zip` + `.sha256` and publishes via `softprops/action-gh-release@v2` with install snippet. Linux job installs `libssl-dev`/`pkg-config`; smoke `--help` on all three.
+- **One-liner installers** — `install.sh` (bash, linux/macos, detects `uname -s`/`uname -m`, resolves `LEAN_VERSION` via GitHub API + redirect fallback, verifies `.sha256`, extracts to `~/.local/bin` / `$LEAN_INSTALL_DIR`) and `install.ps1` (PowerShell, Windows, `Expand-Archive` + `Get-FileHash` verify, installs to `$USERPROFILE\.lean\bin`). Both support `LEAN_VERSION=vX.Y.Z` pin.
+- **RELEASING.md** — release ritual (`Cargo.toml` bump → `CHANGELOG.md` → `git tag v* && git push --tags` → watch Actions → verify installers), workflow details, preflight checklist, troubleshooting.
+- **.dockerignore** — excludes `.env`/`.lean`/`.hermes`/`target`/`dist` from artifacts.
+- **.github/README.md** — workflow scaffold.
+
+### Changed
+
+- **Cargo.toml metadata** — adds `description`, `repository`, `homepage`, `readme`, `license`, `keywords`, `categories`, `rust-version = "1.78"`, `exclude` for release hygiene.
+- **README install** — replaces minimal `cargo build` block with quick-install (`curl | bash` / `irm | iex`), prebuilt binaries table (linux/macos/windows + sha256), and prerequisites (`libssl3`/`ca-certificates` on Linux, Node 20+ only for MCP stdio).
+- **README MCP** — clarifies MCP is opt-in: no servers by default, `~/.lean/mcp.json` to enable, stdio requires Node 20+ & `npx`, HTTP needs no extra deps (also in Prerequisites section).
+
+### Fixed
+
+- **Fresh-install UX** — `src/models.rs` `template_config()` locked to OpenAI (`gpt-4o → https://api.openai.com/v1`, `api_key_env = OPENAI_API_KEY`) with `template_is_openai_default` test guard; `resolve_api_key_env` now fails fast with `No API key found for 'OPENAI_API_KEY' — set OPENAI_API_KEY …` instead of silent `sk-test` → opaque 401. Existing `~/.lean/models.json` owners with `OPENCODE_API_KEY` unaffected (`dotenvy` loads `.env` before resolve). Adds `resolve_fails_without_key` test.
+
 ## [0.2.0] - 2026-09-09
 
 Aggregates all changes since `0.1.0` (origin/main) — 8 commits + 1 uncommitted patch. This is a minor release: new features, no breaking changes.
@@ -52,6 +74,7 @@ Initial release. Light, fast autonomous coding assistant — single native binar
 - Tools: `read_file` (2000 lines/50 KB cap), `write_file`, `edit_file`, `bash` (50 KB tail), `web_search` (Exa → DuckDuckGo), memory tools
 - Config: CLI flags > env vars > `.env` > defaults; `OPENCODE_*`/`OPENAI_*`/`EXA_*` via `dotenvy`
 
-[Unreleased]: https://github.com/naet/lean/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/naet/lean/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/naet/lean/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/naet/lean/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/naet/lean/releases/tag/v0.1.0
