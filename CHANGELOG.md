@@ -7,14 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-10
+
 ### Added
 
 - **Input auto-wrap** — the prompt box hard-wraps at the right edge, inserting real newlines (word boundary preferred, exact column for long tokens) and growing up to 6 rows. Pasted text is wrapped the same way.
 - **`Shift+Enter` newline** — the TUI now pushes the kitty keyboard protocol (`DISAMBIGUATE_ESCAPE_CODES`), so `Shift+Enter` is reported distinctly and inserts a newline; unsupported terminals ignore the sequence.
+- **Shift+Tab auto-accept mode (`/auto-accept`)** — `7b96de5` — session-only full bypass for bash/dir/MCP guards toggled via `Shift+Tab` (`BackTab` or `Tab+SHIFT`) or `/auto-accept [on|off]`. While ON, approval queue is drained and suppressed — tools run silently with no allowlist writes. Footer shows `AUTO` badge (ember/bold), placeholder and `/help` updated, sessions picker no longer hijacks `Shift+Tab`. Affects `src/approval.rs`, `src/tools.rs`, `src/tui/mod.rs`.
+- **README docs — Contents / FAQ / Troubleshooting / Contributing / Security / Changelog** — adds `## Contents` TOC, `## FAQ` (API, model switching, Shift+Enter, privacy, sessions, @/$ mentions), `## Troubleshooting` matrix, `## Contributing`, `## Security`, and `## Changelog` sections; adds asset placeholders for `assets/demo.gif` / `assets/arch.svg`.
 
 ### Changed
 
-- **Input placeholder / README** — document `Enter` send, `Shift+Enter` newline, `Ctrl+C` clear.
+- **Input placeholder / README** — document `Enter` send, `Shift+Enter` newline, `Shift+Tab` auto-accept, `Ctrl+C` clear.
+- **README install pins** — bump `LEAN_VERSION=v0.2.1` → `v0.3.0` in quick-install examples.
+
+### Fixed
+
+- **Prevent infinite loop in markdown inline parser for unmatched special chars** — `9bb34a9` — `src/tui/markdown.rs` now terminates correctly on unmatched `*`, `` ` ``, `[` with bracket/link guards. Adds 6 regression tests.
 
 ## [0.2.1] - 2026-09-10
 
@@ -83,7 +92,8 @@ Initial release. Light, fast autonomous coding assistant — single native binar
 - Tools: `read_file` (2000 lines/50 KB cap), `write_file`, `edit_file`, `bash` (50 KB tail), `web_search` (Exa → DuckDuckGo), memory tools
 - Config: CLI flags > env vars > `.env` > defaults; `OPENCODE_*`/`OPENAI_*`/`EXA_*` via `dotenvy`
 
-[Unreleased]: https://github.com/naet/lean/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/naet/lean/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/naet/lean/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/naet/lean/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/naet/lean/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/naet/lean/releases/tag/v0.1.0

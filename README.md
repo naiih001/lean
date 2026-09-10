@@ -11,6 +11,36 @@ Light, fast autonomous coding assistant — single native binary, TUI-first.
 
 Works with any OpenAI-compatible API.
 
+<!-- Assets placeholders — uncomment and replace when ready
+<p align="center">
+  <img src="assets/demo.gif" alt="lean TUI demo" width="780" />
+</p>
+<p align="center">
+  <img src="assets/arch.svg" alt="lean architecture: TUI → agent → tools/MCP/LLM" width="780" />
+</p>
+-->
+
+## Contents
+
+- [Features](#features)
+- [Installation](#installation)
+  - [Quick install](#quick-install-recommended)
+  - [Prebuilt binaries](#prebuilt-binaries)
+  - [Build from source](#build-from-source)
+  - [Prerequisites](#prerequisites)
+- [Usage](#usage)
+- [Configuration](#configuration)
+- [Tools](#tools)
+- [Skills](#skills)
+- [MCP (Model Context Protocol)](#mcp-model-context-protocol)
+- [Development](#development)
+- [FAQ](#faq)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [Security](#security)
+- [Changelog](#changelog)
+- [License](#license)
+
 ---
 
 ## Features
@@ -35,7 +65,7 @@ Works with any OpenAI-compatible API.
 ```bash
 curl -fsSL https://raw.githubusercontent.com/naiih001/lean/main/install.sh | bash
 # pin to a version:
-LEAN_VERSION=v0.2.1 curl -fsSL https://raw.githubusercontent.com/naiih001/lean/main/install.sh | bash
+LEAN_VERSION=v0.3.0 curl -fsSL https://raw.githubusercontent.com/naiih001/lean/main/install.sh | bash
 ```
 
 **Windows (PowerShell):**
@@ -43,7 +73,7 @@ LEAN_VERSION=v0.2.1 curl -fsSL https://raw.githubusercontent.com/naiih001/lean/m
 ```powershell
 irm https://raw.githubusercontent.com/naiih001/lean/main/install.ps1 | iex
 # pin to a version:
-$env:LEAN_VERSION="v0.2.1"; irm https://raw.githubusercontent.com/naiih001/lean/main/install.ps1 | iex
+$env:LEAN_VERSION="v0.3.0"; irm https://raw.githubusercontent.com/naiih001/lean/main/install.ps1 | iex
 ```
 
 ### Prebuilt binaries
@@ -243,6 +273,74 @@ src/
   memory.rs      # Memory store
   skills.rs      # Skill discovery
 ```
+
+---
+
+## FAQ
+
+**Which API does `lean` use?**
+Any OpenAI-compatible endpoint. Configure via `OPENAI_API_KEY` / `OPENAI_BASE_URL` (or `OPENCODE_*` alias) and model aliases in `~/.lean/models.json`. Fresh installs default to `gpt-4o` at `https://api.openai.com/v1`.
+
+**How do I switch models?**
+`lean --model <alias>` for one run, or `/model <alias>` inside the TUI (Tab completes aliases). Edit `~/.lean/models.json` to add providers — `alias → { model, base_url, api_key_env }`.
+
+**Why is `Shift+Enter` not inserting a newline?**
+`Shift+Enter` uses the kitty keyboard protocol (`DISAMBIGUATE_ESCAPE_CODES`). Unsupported terminals ignore the sequence and send plain `Enter`. Try a modern terminal (Ghostty, Kitty, WezTerm, recent Alacritty) or paste multiline text — input auto-wraps pasted content the same way.
+
+**Does `lean` send my code to the LLM?**
+Only the tool outputs `lean` generates in-session (file snippets via `read_file`, bash output, etc.) plus your prompts. There is no background telemetry. Sessions stay local in `~/.lean/sessions/`.
+
+**How are sessions scoped?**
+Per working directory, persisted as `~/.lean/sessions/*.json` (pruned to 50 messages). Use `lean --continue` or `lean --resume <id>` to restore; `lean --no-session` for ephemeral runs.
+
+**What are `@file` and `$skill` mentions?**
+`@` autocompletes project files and expands contents inline on submit. `$` forces a skill (`SKILL.md`) into context. Both complete with `Tab`/`Enter`.
+
+## Troubleshooting
+
+| Symptom | Cause / Fix |
+|---------|-------------|
+| `No API key found for 'OPENAI_API_KEY'` on startup | Set `OPENAI_API_KEY` (or `OPENCODE_API_KEY`) in env or `.env`. For custom providers, ensure `~/.lean/models.json` `api_key_env` points to the right var. |
+| `unknown model alias '…'` | Check `~/.lean/models.json` — `default` must exist in `models`. List aliases with `/model` + Space. Validate JSON with `jq empty ~/.lean/models.json`. |
+| `401 / 403` from API | Key is invalid or base URL mismatched. Confirm `OPENAI_BASE_URL` has `/v1` suffix and matches provider. |
+| Linux build/run: `libssl` / `ca-certificates` errors | `sudo apt-get install libssl-dev pkg-config` (build) and `libssl3 ca-certificates` (run). Release binaries are linked against `libssl3`. |
+| MCP stdio server fails to start | Requires Node 20+ and `npx` on `PATH`. HTTP MCP (`url`) needs no Node. Check `/mcp` overlay for `error` state and tool counts; verify `${VAR}` env expansion. |
+| `bash` always asks for approval | Expected — `bash` and MCP tools are approval-gated (`[a]`/`[A]`/`Esc`). Add glob patterns to `~/.lean/allowlist.json` to allowlist safe commands. |
+| File edits outside project blocked | `dir_guard` confines to CWD. Use `[a]` to approve once or `[A]` to allowlist, or run with `lean --dir-guard-disabled`. |
+| Empty or missing sessions | Sessions are per-CWD and pruned to 50 messages. Check `~/.lean/sessions/` and current directory. |
+
+Still stuck? Open an issue with `lean --help` output, OS, terminal, and the error message.
+
+---
+
+## Contributing
+
+Contributions welcome. For small fixes, open a PR directly. For larger changes, please open an issue first to discuss.
+
+```bash
+cargo check
+cargo build --release
+cargo test
+bash -n install.sh   # syntax check
+```
+
+- Follow existing Rust style (`cargo fmt` where applicable); keep `lean` lean — single binary, no extra runtime deps.
+- Update `CHANGELOG.md` under `## [Unreleased]` for user-facing changes.
+- See [RELEASING.md](RELEASING.md) for the release ritual and cross-platform artifact matrix.
+
+## Security
+
+`lean` is MIT-licensed and provided as-is. If you find a security-relevant bug (e.g., guard bypass, path traversal, credential leak):
+
+- Do not open a public issue with exploit details.
+- Open a private security advisory on GitHub or email the maintainers via the repository profile.
+- Session files, allowlists, and `~/.lean/` data stay local — do not paste secrets into issues. Redact API keys and tokens.
+
+For general bugs, use the issue tracker.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes. Unreleased changes on `main` include input auto-wrap and `Shift+Enter` newline support (documented above).
 
 ---
 
