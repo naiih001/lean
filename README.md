@@ -31,6 +31,31 @@ Works with any OpenAI-compatible API.
 
 - Node.js 20+ and `npx` — only if you use MCP servers with `"command": "npx"` (e.g. `@modelcontextprotocol/server-github`). HTTP MCP (`"url": "https://..."`) needs no extra install.
 
+### Quick install (recommended)
+
+**Linux / macOS:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/naiih001/lean/main/install.sh | bash
+# pin version: LEAN_VERSION=v0.2.0 curl -fsSL https://raw.githubusercontent.com/naiih001/lean/main/install.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/naiih001/lean/main/install.ps1 | iex
+```
+
+### Prebuilt binaries
+
+| Platform | Asset | Notes |
+|---|---|---|
+| Linux x86_64 | `lean-linux-x86_64.tar.gz` | Requires `libssl3` + `ca-certificates` |
+| macOS x86_64 | `lean-macos-x86_64.tar.gz` | Apple Silicon via Rosetta (arm64 via build from source) |
+| Windows x86_64 | `lean-windows-x86_64.zip` | No extra deps |
+
+Download from the [Releases](https://github.com/naiih001/lean/releases) page. Each asset has a `.sha256` checksum.
+
 ### Build from source
 
 ```bash
@@ -38,19 +63,12 @@ cargo build --release
 ./target/release/lean --help
 ```
 
+Prerequisites: Rust stable 1.78+, (Linux) `libssl-dev` / `libssl3`, (MCP stdio) Node 20+ & `npx`.
+
 ### Development
 
 ```bash
 cargo run -- --help
-```
-
-### Pre-built binary
-
-Download the binary for your platform from the Releases page:
-
-```bash
-chmod +x lean
-./lean --help
 ```
 
 ---
