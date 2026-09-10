@@ -1,0 +1,124 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.3.0)"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: lean-linux-x86_64
+            archive: lean-linux-x86_64.tar.gz
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: lean-macos-x86_64
+            archive: lean-macos-x86_64.tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: lean-windows-x86_64
+            archive: lean-windows-x86_64.zip
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install deps (linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+
+      - name: Build release
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Smoke check
+        shell: bash
+        run: |
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            ./target/${{ matrix.target }}/release/lean.exe --help | head -20
+          else
+            ./target/${{ matrix.target }}/release/lean --help | head -20
+          fi
+
+      - name: Package (unix)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/lean dist/lean
+          cp README.md LICENSE dist/
+          tar -czf dist/${{ matrix.archive }} -C dist lean README.md LICENSE
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum dist/${{ matrix.archive }} | tee dist/${{ matrix.archive }}.sha256
+          else
+            shasum -a 256 dist/${{ matrix.archive }} | tee dist/${{ matrix.archive }}.sha256
+          fi
+          ls -lh dist/
+
+      - name: Package (windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/lean.exe dist/
+          cp README.md LICENSE dist/
+          cd dist && powershell -Command "Compress-Archive -Path lean.exe,README.md,LICENSE -DestinationPath ${{ matrix.archive }}"
+          sha256sum dist/${{ matrix.archive }} | tee dist/${{ matrix.archive }}.sha256 || shasum -a 256 dist/${{ matrix.archive }} | tee dist/${{ matrix.archive }}.sha256
+          ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh dist && cat dist/*.sha256 || true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/naiih001/lean/main/install.sh | bash
+            # or pin: LEAN_VERSION=v0.2.0 curl -fsSL ... | bash
+            ```
+
+            Windows (PowerShell):
+            ```powershell
+            irm https://raw.githubusercontent.com/naiih001/lean/main/install.ps1 | iex
+            ```
+
+            See `install.sh` / `install.ps1` for options and checksum verification.
+            Binaries require: Linux `libssl3` + `ca-certificates`, macOS/Windows no extra deps (MCP stdio needs Node 20+ if used).
