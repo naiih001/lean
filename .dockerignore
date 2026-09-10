@@ -1,0 +1,12 @@
+.env
+.lean
+.hermes
+target
+.git
+node_modules
+dist
+out
+coverage
+*.log
+.idea
+.DS_Store
