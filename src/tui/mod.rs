@@ -28,6 +28,7 @@ pub async fn run(opts: RunOpts) -> anyhow::Result<()> {
     crate::bash_guard::set_disabled(opts.bash_guard_disabled);
     crate::dir_guard::set_disabled(opts.dir_guard_disabled);
     crate::dir_guard::init(None);
+    crate::question::set_interactive(true);
     let _model = opts.model.clone();
 
     crossterm::terminal::enable_raw_mode()?;
@@ -1455,6 +1456,114 @@ fn draw_approval(f: &mut Frame, area: Rect, req: &crate::approval::ApprovalReque
     f.render_widget(para, inner);
 }
 
+fn draw_question(
+    f: &mut Frame,
+    area: Rect,
+    req: &crate::question::AskRequest,
+    wizard: &crate::question::Wizard,
+) {
+    let _ = req;
+    let width = (area.width.saturating_sub(6)).min(84);
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let wrap_cols = width.saturating_sub(6) as usize;
+
+    let mut body: Vec<Line> = Vec::new();
+    if let Some(q) = wizard.current() {
+        if let Some(h) = &q.header {
+            body.push(Line::from(Span::styled(
+                format!("  {}", h),
+                Style::default().fg(ASHEN.frost).add_modifier(Modifier::BOLD),
+            )));
+        }
+        for l in hard_wrap_str(&q.question, wrap_cols).lines() {
+            body.push(Line::from(Span::styled(format!("  {}", l), Style::default().fg(ASHEN.bone))));
+        }
+        body.push(Line::from(""));
+        if q.multi_select {
+            body.push(Line::from(Span::styled(
+                "  select all that apply",
+                Style::default().fg(ASHEN.deep_ash).add_modifier(Modifier::ITALIC),
+            )));
+        }
+        for (i, opt) in q.options.iter().enumerate() {
+            let current = wizard.opt_idx() == i;
+            let cursor = if current { "›" } else { " " };
+            let marker = if q.multi_select {
+                if wizard.is_toggled(i) { "[x]" } else { "[ ]" }
+            } else if current {
+                "◉"
+            } else {
+                "○"
+            };
+            let style = if current {
+                Style::default().fg(ASHEN.bone).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(ASHEN.smoke)
+            };
+            body.push(Line::from(vec![
+                Span::styled(format!("  {} {} ", cursor, marker), Style::default().fg(ASHEN.frost)),
+                Span::styled(opt.label.clone(), style),
+            ]));
+            if let Some(desc) = &opt.description {
+                for l in hard_wrap_str(desc, wrap_cols.saturating_sub(6)).lines() {
+                    body.push(Line::from(Span::styled(
+                        format!("       {}", l),
+                        Style::default().fg(ASHEN.deep_ash),
+                    )));
+                }
+            }
+        }
+        let other_current = wizard.on_other();
+        let cursor = if other_current { "›" } else { " " };
+        let other_text = wizard.other_text();
+        let marker = if q.multi_select {
+            if other_text.trim().is_empty() { "[ ]" } else { "[x]" }
+        } else if other_current {
+            "◉"
+        } else {
+            "○"
+        };
+        let shown = if other_current {
+            format!("{}▏", other_text)
+        } else if other_text.is_empty() {
+            "Other…".to_string()
+        } else {
+            other_text.to_string()
+        };
+        let style = if other_current {
+            Style::default().fg(ASHEN.bone).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(ASHEN.smoke)
+        };
+        body.push(Line::from(vec![
+            Span::styled(format!("  {} {} ", cursor, marker), Style::default().fg(ASHEN.frost)),
+            Span::styled(shown, style),
+        ]));
+    }
+    body.push(Line::from(""));
+    body.push(Line::from(Span::styled(
+        "  ↑/↓ choose · Space toggle · Enter confirm · ← back · Esc skip",
+        Style::default().fg(ASHEN.charcoal),
+    )));
+
+    let height = ((body.len() as u16) + 2)
+        .min(area.height.saturating_sub(4))
+        .max(5);
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let rect = Rect { x, y, width, height };
+
+    let title = format!(" Question [{}/{}] ", wizard.idx() + 1, wizard.total().max(1));
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ASHEN.frost))
+        .style(Style::default().bg(THEME.header_bg).fg(ASHEN.bone));
+    let inner = block.inner(rect);
+    f.render_widget(Clear, rect);
+    f.render_widget(block, rect);
+    f.render_widget(Paragraph::new(body), inner);
+}
+
 
 fn draw_sessions(f: &mut Frame, area: Rect, selected: usize, scroll: usize, filter: &str, show_all: bool, cwd: &str) {
     let all = crate::session::Session::list();
@@ -1811,6 +1920,8 @@ async fn app_loop(
     let mut spinner_tick: usize = 0;
     let (done_tx, _) = broadcast::channel::<()>(4);
     let mut pending_approval: Option<crate::approval::ApprovalRequest> = None;
+    let mut pending_question: Option<crate::question::AskRequest> = None;
+    let mut question_wizard: Option<crate::question::Wizard> = None;
     let mut show_sessions = false;
     let mut sessions_scroll: usize = 0;
     let mut sessions_selected: usize = 0;
@@ -1833,6 +1944,14 @@ async fn app_loop(
         if !crate::approval::is_auto_accept() && pending_approval.is_none() {
             if let Some(req) = crate::approval::take_pending() {
                 pending_approval = Some(req);
+                dirty = true;
+            }
+        }
+        // Poll for question requests — never suppressed, even in auto-accept
+        if pending_question.is_none() {
+            if let Some(req) = crate::question::take_pending() {
+                question_wizard = Some(crate::question::Wizard::new(req.questions.clone()));
+                pending_question = Some(req);
                 dirty = true;
             }
         }
@@ -1913,6 +2032,11 @@ async fn app_loop(
                 if !crate::approval::is_auto_accept() {
                     if let Some(ref req) = pending_approval {
                         draw_approval(f, f.area(), req);
+                    }
+                }
+                if let Some(ref req) = pending_question {
+                    if let Some(ref wizard) = question_wizard {
+                        draw_question(f, f.area(), req, wizard);
                     }
                 }
                 if show_sessions {
@@ -2192,6 +2316,41 @@ async fn app_loop(
                             }
                             _ => {}
                         }
+                        continue;
+                    }
+                    // Question modal: hijack all keys while the agent waits for an answer
+                    if let (Some(mut req), Some(mut wizard)) =
+                        (pending_question.take(), question_wizard.take())
+                    {
+                        let q_ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+                        let q_alt = k.modifiers.contains(KeyModifiers::ALT);
+                        let outcome = match k.code {
+                            KeyCode::Up => { wizard.move_up(); crate::question::WizardOutcome::Continue }
+                            KeyCode::Down => { wizard.move_down(); crate::question::WizardOutcome::Continue }
+                            KeyCode::BackTab | KeyCode::Left => wizard.back(),
+                            KeyCode::Backspace => { wizard.backspace(); crate::question::WizardOutcome::Continue }
+                            KeyCode::Char(' ') if !q_ctrl && !q_alt => { wizard.toggle(); crate::question::WizardOutcome::Continue }
+                            KeyCode::Char('c') if q_ctrl => wizard.cancel(),
+                            KeyCode::Char(c) if !q_ctrl && !q_alt => { wizard.push_char(c); crate::question::WizardOutcome::Continue }
+                            KeyCode::Enter => wizard.confirm(),
+                            KeyCode::Esc => wizard.cancel(),
+                            _ => crate::question::WizardOutcome::Continue,
+                        };
+                        match outcome {
+                            crate::question::WizardOutcome::Continue => {
+                                pending_question = Some(req);
+                                question_wizard = Some(wizard);
+                            }
+                            crate::question::WizardOutcome::Submit => {
+                                if let Some(tx) = req.tx.take() { let _ = tx.send(wizard.answers()); }
+                                crate::telemetry::record("ask_user_answered");
+                            }
+                            crate::question::WizardOutcome::Cancel => {
+                                if let Some(tx) = req.tx.take() { let _ = tx.send(Vec::new()); }
+                                crate::telemetry::record("ask_user_skipped");
+                            }
+                        }
+                        dirty = true;
                         continue;
                     }
                     // Guard approval modal: hijack all keys (covers bash + dir + mcp guard)
@@ -2929,7 +3088,11 @@ async fn app_loop(
                     let _ = text;
                 }
                 AgentEvent::ToolStart { name, args, id } => {
-                    let args_str = serde_json::to_string(&args).unwrap_or_default();
+                    let args_str = if name == "ask_user" {
+                        " waiting for your answer…".to_string()
+                    } else {
+                        serde_json::to_string(&args).unwrap_or_default()
+                    };
                     messages.push(Msg::new_tool_start(name, args_str, id));
                 }
                 AgentEvent::ToolResult {

@@ -228,6 +228,47 @@ pub fn native_tool_definitions() -> Vec<Value> {
                 }
             }
         }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "ask_user",
+                "description": "Ask the user one or more clarifying questions with concrete options. Use when a request is genuinely ambiguous (unclear target, scope, or preference) and you cannot discover the answer yourself. The UI asks one question at a time; every question also offers an 'Other…' free-text row. Prefer this over guessing.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "questions": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 4,
+                            "description": "Questions to ask, in order",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "header": {"type": "string", "description": "Short label, <= 24 chars"},
+                                    "question": {"type": "string", "description": "The question to ask"},
+                                    "multi_select": {"type": "boolean", "default": false, "description": "Allow multiple options to be selected"},
+                                    "options": {
+                                        "type": "array",
+                                        "minItems": 2,
+                                        "maxItems": 6,
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "label": {"type": "string", "description": "Option label, <= 60 chars"},
+                                                "description": {"type": "string", "description": "Optional one-line explanation"}
+                                            },
+                                            "required": ["label"]
+                                        }
+                                    }
+                                },
+                                "required": ["question", "options"]
+                            }
+                        }
+                    },
+                    "required": ["questions"]
+                }
+            }
+        }),
     ]
 }
 

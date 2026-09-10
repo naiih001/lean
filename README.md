@@ -215,6 +215,7 @@ lean --dir-guard-disabled      # disable directory confinement guard
 | `edit_file` | Targeted text replacement via unique `oldText` matching |
 | `bash` | Execute shell commands (approval-gated) |
 | `web_search` | Web search via Exa with DuckDuckGo fallback |
+| `ask_user` | Ask clarifying questions with options via an interactive modal (single- or multi-select, always with an "Other…" free-text row) |
 | `read_skill` | Load a `SKILL.md` by name |
 | `remember` / `search_memory` / `recall_memory` / `list_memories` / `forget_memory` / `consolidate_memory` / `memory_stats` | Persistent memory management |
 

@@ -8,6 +8,7 @@ mod telemetry;
 mod bash_guard;
 mod dir_guard;
 mod approval;
+mod question;
 mod session;
 mod theme;
 mod tools;

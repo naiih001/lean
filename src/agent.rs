@@ -18,6 +18,9 @@ Continue while steps remain. Stop when the goal is met and verified. If a tool f
 - Read before edit; use a unique oldText for precise edits.\n\
 - If you need a file, call read_file now instead of saying you will.\n\
 - Only respond as the assistant. Never write a user \"thanks\" or \"you're welcome\" on the user's behalf.\n\n\
+## Asking the user\n\
+- If a request is genuinely ambiguous (unclear target, scope, or preference) and you can't discover the answer from the repo, call ask_user with concrete options instead of guessing.\n\
+- Don't ask when you can find the answer yourself.\n\n\
 ## Skills and memory\n\
 - Skills are markdown workflows listed below. If one matches the task, call read_skill and follow it.\n\
 - Search memory only when prior context helps (multi-turn, user preference, project fact). Call remember when you learn something worth keeping.\n";

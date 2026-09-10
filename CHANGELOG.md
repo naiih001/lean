@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Dual-stack `/v1/responses` support** — per-model `api` field in `~/.lean/models.json` (`"chat_completions"` default / `"responses"`). New `ApiMode` enum, `responses_url()`, tool definition converter, `chat_messages → instructions+input` translation, and streaming `ResponsesEvent` SSE parser. Agent branch `POST /v1/responses` with same `AgentEvent` UX, history translation, and focus/autorecall via `instructions`. TUI footer now shows `(chat)` / `(responses)` and `/model` lists/picks with api tag. Backwards compatible: existing configs default to chat completions.
+- **Interactive question UI (`ask_user`)** — new `src/question.rs` plus a TUI modal wizard: the agent can ask up to 4 clarifying questions (2–6 options each, per-question single- or multi-select, always with an "Other…" free-text row). Questions are shown one at a time (`↑/↓` choose, `Space` toggle, `Enter` confirm, `←` back, `Esc` skip); answers are returned to the model as the tool result, and skipping tells it to proceed with best judgment. Reuses the approval queue/`oneshot` pattern, runs even while `Shift+Tab` auto-accept is ON, and never hangs when no TUI is attached. Adds the `ask_user` tool definition, prompt guidance to ask instead of guessing, README row, and unit tests.
 
 ### Changed
 

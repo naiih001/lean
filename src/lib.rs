@@ -8,6 +8,7 @@ pub mod telemetry;
 pub mod bash_guard;
 pub mod dir_guard;
 pub mod approval;
+pub mod question;
 pub mod session;
 pub mod tools;
 pub mod mcp;

@@ -459,6 +459,14 @@ pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
             let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
             web_search(q).await
         }
+        "ask_user" => {
+            let questions = crate::question::parse_questions(&args);
+            if questions.is_empty() {
+                Err("ask_user requires at least one question with options".to_string())
+            } else {
+                Ok(crate::question::ask(questions).await)
+            }
+        }
         "read_skill" => {
             let n = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
             match crate::skills::load_skill(n).await {
