@@ -667,3 +667,31 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
         yield AgentEvent::Done { text: final_text, history: messages.clone() };
     }
 }
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::*;
+    const BASE_BUDGET: usize = 2500;
+    const TOTAL_BUDGET: usize = 4000;
+
+    #[test]
+    fn system_prompt_within_base_budget() {
+        assert!(
+            SYSTEM_PROMPT.len() <= BASE_BUDGET,
+            "SYSTEM_PROMPT len {} > {}",
+            SYSTEM_PROMPT.len(),
+            BASE_BUDGET
+        );
+    }
+
+    #[tokio::test]
+    async fn built_prompt_within_total_budget() {
+        let built = build_system_prompt().await;
+        assert!(
+            built.len() <= TOTAL_BUDGET,
+            "built prompt len {} > {}",
+            built.len(),
+            TOTAL_BUDGET
+        );
+    }
+}
