@@ -27,7 +27,7 @@ Read these with `read_file`. Never assume — always read before editing.
 | **Memory** | `~/.lean/memory.json` | `JSON array<MemoryEntry>` | Persistent memories (`src/memory.rs`, max 500, dedup) |
 | **Sessions** | `~/.lean/sessions/*.json` | `JSON Session` | Per-model/CWD chat history + `llm_history` (pruned to 50, `src/session.rs`) |
 | **Project root** | `std::env::current_dir()` at `tui::run` + `dir_guard::init()` | — | CWD shown in footer; hard wall for `analyze_path`/`analyze_bash` |
-| **Prompt budget** | `src/agent.rs` `SYSTEM_PROMPT` ≤2500, `build_system_prompt()` ≤4000 | `struct` budgets + truncation | Keeps prompt lean; skill catalog truncated to 8 × 120 chars, full body via `read_skill` |
+| **Prompt budget** | `src/agent.rs` `SYSTEM_PROMPT` ≤2500, `build_system_prompt()` ≤4000 | `struct` budgets + truncation | Keeps prompt lean; skill catalog truncated to 8 × 120 chars, full body via `read_skill`. Assembly is priority-ordered (base never cut → skills → confinement → MCP); `PlanTracker` owns conversational/completion routing and injected `[Focus]` context is pruned each step. Guards live in `agent::prompt_tests` / `agent::behavior_tests` |
 | **Telemetry** | `dirs::config_dir()/lean` or `~/.config/lean` | — | `src/telemetry.rs` (optional) |
 
 **Precedence (highest first):** CLI flag > env var > `.env` file > hardcoded default.

@@ -4,113 +4,168 @@ use futures::Stream;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
-pub const SYSTEM_PROMPT: &str = "You are lean — a light, capable coding assistant that lives in the terminal.\n\n\
-You help with code, files, shell, and research. You are direct, concise, and verify your work.\n\n\
-## How to decide what to do\n\
-- If the user greets or makes small talk (\"hi\", \"thanks\", \"how are you\") with no request → answer warmly in 1-2 sentences and stop. No tools, no follow-up.\n\
-- If the user asks to do something (write, edit, read, build, fix, run, search, explain with action) → enter task mode.\n\n\
-## In task mode\n\
-Work autonomously step by step until done. Don't stop early and don't ask the user to do it themselves.\n\
-1. Understand: read relevant files before editing.\n\
-2. Plan lightly: one sentence goal + 2-4 concrete steps.\n\
-3. Act: use tools (read_file, edit_file, write_file, bash, web_search). Prefer the smallest change that solves the problem.\n\
-4. Verify: run build/test/lint relevant to the change; don't assume success.\n\
-If a tool fails, read the error and try a different approach. Don't repeat a tool call that already succeeded.\n\n\
+pub const SYSTEM_PROMPT: &str = "You are lean, a coding assistant in the terminal. Be direct, concise, and verify your work.\n\n\
+## When to act\n\
+- Greeting or small talk with no request (\"hi\", \"thanks\", \"how are you\") → reply warmly in 1-2 sentences and stop. No tools, no follow-up.\n\
+- Otherwise → task mode.\n\n\
+## Task mode\n\
+1. Understand: read the relevant files before editing.\n\
+2. Act: use tools (read_file, edit_file, write_file, bash, web_search). Make the smallest change that solves the problem.\n\
+3. Verify: run the build, tests, or lint that covers the change; don't assume success.\n\
+4. Summarize: state what changed and end with \"All done.\"\n\
+Continue while steps remain. Stop when the goal is met and verified. If a tool fails, read the error and adjust; don't repeat a call that already succeeded.\n\n\
+## Tools\n\
+- Read before edit; use a unique oldText for precise edits.\n\
+- If you need a file, call read_file now instead of saying you will.\n\
+- Only respond as the assistant. Never write a user \"thanks\" or \"you're welcome\" on the user's behalf.\n\n\
 ## Skills and memory\n\
-- Skills are markdown workflows listed below. If a skill matches the task, call read_skill and follow it.\n\
-- Memory stores prior facts/preferences. Only search memory when prior context would help (multi-turn, user preference, project fact). If you learn something worth keeping, call remember.\n\n\
-## Scope\n\
-You are confined to the working directory shown in the footer. Paths outside it need user approval.\n\n\
-## Tool guidance\n\
-- Read before edit. Make precise edits with unique oldText.\n\
-- If you need a file, call read_file immediately — don't just say you will.\n\
-- When done, give a short summary and state you are done. If unsure what to do next, re-read the goal and continue.\n\
-- Don't thank yourself — only respond to the user. Never generate a user `thanks` or `you're welcome` as if you were the user.\n";
+- Skills are markdown workflows listed below. If one matches the task, call read_skill and follow it.\n\
+- Search memory only when prior context helps (multi-turn, user preference, project fact). Call remember when you learn something worth keeping.\n";
 
 const TOTAL_BUDGET: usize = 4000;
 const SKILL_MAX_COUNT: usize = 8;
 const SKILL_LINE_MAX: usize = 120;
 
+/// Truncate to at most `max` characters, never splitting a UTF-8 boundary.
 fn truncate_str(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    if s.chars().count() <= max {
         return s.to_string();
+    }
+    if max == 0 {
+        return String::new();
     }
     let mut t: String = s.chars().take(max - 1).collect();
     t.push('…');
     t
 }
 
+/// Truncate to at most `max` characters without appending a marker.
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    s.chars().take(max).collect()
+}
+
+/// Truncate so the result stays within `max_bytes`, honoring UTF-8 boundaries.
+fn truncate_to_bytes(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let budget = max_bytes.saturating_sub(3);
+    let mut out = String::new();
+    for ch in s.chars() {
+        if out.len() + ch.len_utf8() > budget {
+            break;
+        }
+        out.push(ch);
+    }
+    out.push('…');
+    out
+}
+
+/// Render the skill catalog as `- name: description` lines, capped at `max_lines`.
+fn render_skill_catalog(raw_catalog: &str, max_lines: usize) -> String {
+    if raw_catalog.starts_with("No skills") {
+        return truncate_str(raw_catalog, 300);
+    }
+    let lines: Vec<&str> = raw_catalog.lines().collect();
+    let take = max_lines.min(lines.len());
+    let mut out: Vec<String> = Vec::with_capacity(take + 1);
+    for line in lines.iter().take(take) {
+        // line is "- name: desc (path: ...)" — keep "- name: desc", drop the path
+        let short = match line.find(" (path:") {
+            Some(idx) => &line[..idx],
+            None => line,
+        };
+        out.push(truncate_str(short, SKILL_LINE_MAX));
+    }
+    if lines.len() > take {
+        out.push(format!("... +{} more (use read_skill to see)", lines.len() - take));
+    }
+    out.join("\n")
+}
+
+fn skills_section(catalog: &str) -> String {
+    format!(
+        "\n\n## Available Skills\n{}\n\nIf a skill matches the task, call read_skill to load its full guide.",
+        catalog
+    )
+}
+
+fn confinement_section() -> Option<String> {
+    if crate::dir_guard::is_disabled() {
+        return None;
+    }
+    let cwd = crate::dir_guard::project_root().display().to_string();
+    Some(truncate_str(
+        &format!("\n\n## Confinement\nYou are confined to CWD: `{}`. Paths outside need approval.", cwd),
+        300,
+    ))
+}
+
+fn mcp_section() -> String {
+    let mcp_snap = crate::mcp::snapshot();
+    if mcp_snap.is_empty() {
+        return "\n\n## MCP\nNo MCP servers configured.".to_string();
+    }
+    let mut s = String::from("\n\n## MCP Servers (server__tool, needs approval)\n");
+    for srv in &mcp_snap {
+        s.push_str(&format!("- {} [{}] ({} tools)", srv.name, srv.status.as_str(), srv.tools.len()));
+        if !srv.tools.is_empty() {
+            let names: Vec<String> = srv.tools.iter().take(5).map(|t| t.name.clone()).collect();
+            s.push_str(&format!(": {}", names.join(", ")));
+            if srv.tools.len() > 5 {
+                s.push_str(&format!(" +{} more", srv.tools.len() - 5));
+            }
+        }
+        if let Some(err) = &srv.error_detail {
+            s.push_str(&format!(" — {}", truncate_str(err, 80)));
+        }
+        s.push('\n');
+    }
+    truncate_str(&s, 400)
+}
+
+/// Assemble the full system prompt within `TOTAL_BUDGET`.
+///
+/// Priority order: the base `SYSTEM_PROMPT` is never truncated, the confinement
+/// guard is kept when enabled, the skill catalog is shrunk line by line, and the
+/// MCP section is dropped first when the budget is exceeded.
 pub async fn build_system_prompt() -> String {
     let raw_catalog = skills::get_skill_catalog().await;
-    // Diet: keep names+one-line, max 8, each line truncated to 120 chars
-    let catalog = {
-        let lines: Vec<&str> = raw_catalog.lines().collect();
-        // If catalog is the "No skills" message, keep as is truncated
-        if raw_catalog.starts_with("No skills") {
-            truncate_str(&raw_catalog, 300)
-        } else {
-            let mut out: Vec<String> = Vec::new();
-            for line in lines.iter().take(SKILL_MAX_COUNT) {
-                // line is "- name: desc (path: ...)" — keep "- name: desc" part, truncate
-                let short = if let Some(path_idx) = line.find(" (path:") {
-                    &line[..path_idx]
-                } else {
-                    line
-                };
-                out.push(truncate_str(short, SKILL_LINE_MAX));
-            }
-            if lines.len() > SKILL_MAX_COUNT {
-                out.push(format!("... +{} more (use read_skill to see)", lines.len() - SKILL_MAX_COUNT));
-            }
-            out.join("\n")
+    let confinement = confinement_section();
+
+    let assemble = |catalog: &str| {
+        let mut prompt = format!("{}{}", SYSTEM_PROMPT, skills_section(catalog));
+        if let Some(note) = &confinement {
+            prompt.push_str(note);
         }
+        prompt
     };
-    let cwd = crate::dir_guard::project_root().display().to_string();
-    let dir_note = if crate::dir_guard::is_disabled() {
-        String::new()
-    } else {
-        truncate_str(&format!("\n\n## Confinement\nYou are confined to CWD: `{}`. Paths outside need approval.", cwd), 300)
-    };
-    let mcp_snap = crate::mcp::snapshot();
-    let mcp_note = if mcp_snap.is_empty() {
-        "\n\n## MCP\nNo MCP servers configured.".to_string()
-    } else {
-        let mut s = String::from("\n\n## MCP Servers (server__tool, needs approval)\n");
-        for srv in &mcp_snap {
-            let status = srv.status.as_str();
-            s.push_str(&format!("- {} [{}] ({} tools)", srv.name, status, srv.tools.len()));
-            if !srv.tools.is_empty() {
-                let names: Vec<String> = srv.tools.iter().take(5).map(|t| t.name.clone()).collect();
-                s.push_str(&format!(": {}", names.join(", ")));
-                if srv.tools.len() > 5 { s.push_str(&format!(" +{} more", srv.tools.len()-5)); }
-            }
-            if let Some(err) = &srv.error_detail {
-                s.push_str(&format!(" — {}", truncate_str(err, 80)));
-            }
-            s.push('\n');
-        }
-        truncate_str(&s, 400)
-    };
-    let mut prompt = format!(
-        "{}\n\n## Available Skills\n{}\n\nIf a skill matches the task, call read_skill to load its full guide.{}{}",
-        SYSTEM_PROMPT, catalog, dir_note, mcp_note
-    );
-    // Enforce total budget — truncate catalog/notes first, keep SYSTEM_PROMPT intact
-    if prompt.len() > TOTAL_BUDGET {
-        let excess = prompt.len() - TOTAL_BUDGET;
-        // try trimming catalog first
-        if catalog.len() > excess + 100 {
-            let trimmed_catalog = truncate_str(&catalog, catalog.len() - excess - 50);
-            prompt = format!(
-                "{}\n\n## Available Skills\n{}\n\nIf a skill matches the task, call read_skill to load its full guide.{}{}",
-                SYSTEM_PROMPT, trimmed_catalog, dir_note, mcp_note
-            );
-        }
-        if prompt.len() > TOTAL_BUDGET {
-            prompt = truncate_str(&prompt, TOTAL_BUDGET);
+
+    let prompt = assemble(&render_skill_catalog(&raw_catalog, SKILL_MAX_COUNT));
+    if prompt.len() <= TOTAL_BUDGET {
+        let with_mcp = format!("{}{}", prompt, mcp_section());
+        if with_mcp.len() <= TOTAL_BUDGET {
+            return with_mcp;
         }
     }
-    prompt
+
+    // Over budget: shrink the skill catalog a line at a time, dropping MCP first.
+    for lines in (1..SKILL_MAX_COUNT).rev() {
+        let candidate = assemble(&render_skill_catalog(&raw_catalog, lines));
+        if candidate.len() <= TOTAL_BUDGET {
+            return candidate;
+        }
+    }
+
+    // Last resort: base prompt plus confinement, bounded by bytes.
+    let mut minimal = String::from(SYSTEM_PROMPT);
+    if let Some(note) = &confinement {
+        minimal.push_str(note);
+    }
+    truncate_to_bytes(&minimal, TOTAL_BUDGET)
 }
 
 const MAX_TOOL_OUTPUT_FOR_LLM: usize = 2000;
@@ -154,36 +209,54 @@ struct PlanTracker {
 
 const MAX_NOCALL_STREAK: usize = 3;
 
+const PENDING_MARKERS: [&str; 7] = ["next step", "still need", "remaining", "todo", "then i", "i'll now", "let me"];
+const COMPLETE_SIGNALS: [&str; 10] = [
+    "here's what i did",
+    "here is what i did",
+    "summary:",
+    "in summary",
+    "that completes",
+    "all done",
+    "task complete",
+    "i've finished",
+    "i have finished",
+    "done.",
+];
+
 impl PlanTracker {
     fn new(goal: &str) -> Self {
         Self { goal: goal.to_string(), steps_done: Vec::new(), last_tools: Vec::new(), nocall_streak: 0 }
     }
-    fn looks_complete(text: &str) -> bool {
+
+    /// True only when the reply carries a terminal signal and nothing is still pending.
+    fn looks_complete(&self, text: &str) -> bool {
         let lower = text.to_lowercase();
-        let signals = ["here's what i did","here is what i did","summary:","in summary","that completes","all done","task complete","i've finished","i have finished"];
-        let matches = signals.iter().filter(|s| lower.contains(*s)).count();
-        matches >= 2 || (matches >= 1 && text.len() >= 100)
+        if PENDING_MARKERS.iter().any(|m| lower.contains(m)) {
+            return false;
+        }
+        COMPLETE_SIGNALS.iter().any(|s| lower.contains(s))
     }
+
     fn is_conversational_goal(&self) -> bool {
         let g = self.goal.trim().to_lowercase();
         let stripped = g.trim_matches(|c: char| c == '!' || c == '.' || c == ',' || c == '?' || c == '\'' || c == '"').trim();
         let conversational_exact = ["hi","hello","hey","hi there","hello there","hey there","thanks","thank you","thanks!","thank you!","yo","sup","howdy","hola","how are you","how are you?","hey!","hello!","hi!"];
         if conversational_exact.contains(&stripped) { return true; }
-        if stripped.len() < 30 {
-            let has_task_verb = ["write","create","fix","build","edit","read","search","make","add","update","implement","explain","help with","can you","could you","please"].iter().any(|v| stripped.contains(v));
-            if !has_task_verb {
-                let greet_prefixes = ["hi ","hello ","hey ","thanks ","thank you "];
-                if greet_prefixes.iter().any(|p| stripped.starts_with(p)) { return true; }
-                if stripped.split_whitespace().count() <= 3 && !has_task_verb {
-                    if ["hi","hello","hey"].iter().any(|w| stripped.contains(w)) { return true; }
-                }
-            }
+        if stripped.len() >= 30 { return false; }
+        // A task verb anywhere means this is real work, even behind a "thanks," opener.
+        let has_task_verb = ["write","create","fix","build","edit","read","search","make","add","update","implement","explain","help with","can you","could you","please","run","test","refactor","remove","delete"].iter().any(|v| stripped.contains(v));
+        if has_task_verb { return false; }
+        let greet_prefixes = ["hi ","hello ","hey ","thanks ","thank you "];
+        if greet_prefixes.iter().any(|p| stripped.starts_with(p)) { return true; }
+        if stripped.split_whitespace().count() <= 3 {
+            if ["hi","hello","hey"].iter().any(|w| stripped.contains(w)) { return true; }
         }
         false
     }
+
     fn focus_context(&self, step: usize) -> String {
         if self.is_conversational_goal() {
-            return format!("[Focus — conversational]\nGoal: \"{}\" — this is small talk, answer warmly in 1-2 sentences and stop. No tools needed.\nStep: {}.", self.goal, step);
+            return format!("[Focus — conversational]\nGoal: \"{}\" — this is small talk. Reply warmly in 1-2 sentences and stop. No tools needed.\nStep: {}.", self.goal, step);
         }
         let mut out = String::from("[Focus]\n");
         out.push_str(&format!("Goal: {}\n", self.goal));
@@ -192,12 +265,13 @@ impl PlanTracker {
             for (i, s) in self.steps_done.iter().enumerate() { out.push_str(&format!("  {}. {}\n", i+1, s)); }
         } else { out.push_str("Progress: starting\n"); }
         if !self.last_tools.is_empty() { out.push_str(&format!("Recent tools: {}\n", self.last_tools.join(", "))); }
-        out.push_str(&format!("Step {}. Use this to stay on track. If done, summarize and stop. Otherwise, take the next step. Don't repeat completed actions.\n", step));
+        if self.nocall_streak > 0 {
+            out.push_str(&format!("No tool call yet (attempt {}/{}): call a tool now, or if the work is done, summarize and end with \"All done.\"\n", self.nocall_streak, MAX_NOCALL_STREAK));
+        }
+        out.push_str(&format!("Step {}. Stay on track: take the next concrete step and don't repeat completed actions. If the goal is met and verified, summarize and end with \"All done.\"\n", step));
         out
     }
-    fn continue_prompt(&self) -> String {
-        format!("[Continue]\nYou haven't used tools yet. Goal still open:\n{}\nIf you can make progress with a tool, do so. If already done, summarize and say 'All done.'", self.goal)
-    }
+
     fn record_tools(&mut self, tool_names: &[String]) {
         self.nocall_streak = 0;
         self.last_tools = tool_names.to_vec();
@@ -242,6 +316,37 @@ impl PlanTracker {
     }
 }
 
+#[derive(PartialEq)]
+enum ContextKind {
+    Focus,
+    Continue,
+}
+
+fn classify_context_message(value: &Value) -> Option<ContextKind> {
+    if value.get("role").and_then(|r| r.as_str()) != Some("system") {
+        return None;
+    }
+    let content = value.get("content").and_then(|c| c.as_str())?;
+    if content.starts_with("[Focus") || content.starts_with("[FOCUS") {
+        Some(ContextKind::Focus)
+    } else if content.starts_with("[Continue") || content.starts_with("[CONTINUATION") {
+        Some(ContextKind::Continue)
+    } else {
+        None
+    }
+}
+
+/// Drop injected focus/continue context so it cannot accumulate across steps.
+/// Resumed sessions may still carry older `[Continue]` messages, so both kinds
+/// are removed and the caller re-injects a fresh focus message each turn.
+fn prune_context_messages(messages: &[Value]) -> Vec<Value> {
+    messages
+        .iter()
+        .filter(|m| classify_context_message(m).is_none())
+        .cloned()
+        .collect()
+}
+
 pub fn run_agent(user_prompt: String, model: String, max_steps: usize) -> impl Stream<Item = AgentEvent> {
     run_agent_with_history(user_prompt, model, max_steps, Vec::new())
 }
@@ -266,7 +371,7 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
             let hist_slice = if history.len() > 20 { &history[history.len()-20..] } else { &history[..] };
             for v in hist_slice {
                 let mut val = v.clone();
-                if let Some(content) = val.get("content") { if let Some(s) = content.as_str() { if s.len() > 3000 { val["content"] = json!(format!("{}… [truncated]", &s[..3000])); } } }
+                if let Some(content) = val.get("content") { if let Some(s) = content.as_str() { if s.chars().count() > 3000 { val["content"] = json!(format!("{}… [truncated]", truncate_chars(s, 3000))); } } }
                 messages.push(val);
             }
             messages.push(json!({"role": "user", "content": &user_prompt}));
@@ -287,11 +392,10 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
                     }
                 }
                 let focus = tracker.focus_context(step + 1);
-                let (mut instructions, input) = llm::chat_messages_to_responses_input(&messages, &system);
-                // Append current focus to instructions. We rebuild instructions from scratch each turn,
-                // so prior focus (only in previous instructions string, not in messages) does not accumulate.
-                // Continue prompts are system messages in `messages` and will be folded into instructions via translation;
-                // at most 2 will accumulate before MAX_NOCALL_STREAK stops the loop, which fits the 4000 budget.
+                // Re-inject focus each turn from a history with stale injected context removed,
+                // so instructions stay bounded instead of accumulating across steps.
+                let pruned = prune_context_messages(&messages);
+                let (mut instructions, input) = llm::chat_messages_to_responses_input(&pruned, &system);
                 instructions = format!("{}\n\n{}", instructions, focus);
                 // Build tools for responses
                 let tools = llm::responses_tool_definitions().await;
@@ -509,15 +613,13 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
                         break;
                     }
                     tracker.nocall_streak += 1;
-                    let complete = PlanTracker::looks_complete(&accum_text);
+                    let complete = tracker.looks_complete(&accum_text);
                     if complete || tracker.nocall_streak >= MAX_NOCALL_STREAK {
                         if !accum_text.is_empty() { messages.push(json!({"role": "assistant", "content": accum_text})); }
                         yield AgentEvent::Done { text: final_text.clone(), history: messages.clone() };
                         break;
                     }
                     if !accum_text.is_empty() { messages.push(json!({"role": "assistant", "content": accum_text})); }
-                    let continue_msg = json!({"role": "system", "content": tracker.continue_prompt()});
-                    messages.push(continue_msg);
                     continue;
                 }
                 // Tool calls present — sort by id for deterministic order
@@ -561,7 +663,7 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
         let hist_slice = if history.len() > 20 { &history[history.len()-20..] } else { &history[..] };
         for v in hist_slice {
             let mut val = v.clone();
-            if let Some(content) = val.get("content") { if let Some(s) = content.as_str() { if s.len() > 3000 { val["content"] = json!(format!("{}… [truncated]", &s[..3000])); } } }
+            if let Some(content) = val.get("content") { if let Some(s) = content.as_str() { if s.chars().count() > 3000 { val["content"] = json!(format!("{}… [truncated]", truncate_chars(s, 3000))); } } }
             messages.push(val);
         }
         messages.push(json!({"role": "user", "content": &user_prompt}));
@@ -580,17 +682,11 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
                     }
                 }
             }
+            // Drop any stale focus/continue context, then re-inject a fresh focus
+            // message right after the system prompt so it never accumulates.
+            messages = prune_context_messages(&messages);
             let focus_msg = json!({"role": "system", "content": tracker.focus_context(step + 1)});
-            let mut removed_old = false;
-            for i in (2..messages.len()).rev() {
-                if messages[i].get("role").and_then(|r| r.as_str()) == Some("system")
-                    && messages[i].get("content").and_then(|c| c.as_str()).map(|c| {
-                        c.starts_with("[Focus") || c.starts_with("[FOCUS") || c.starts_with("[Continue") || c.starts_with("[CONTINUATION")
-                    }).unwrap_or(false)
-                { messages.remove(i); removed_old = true; break; }
-            }
-            let insert_at = if removed_old { 2 } else { 2 };
-            if insert_at < messages.len() { messages.insert(insert_at, focus_msg); } else { messages.push(focus_msg); }
+            if messages.len() > 1 { messages.insert(1, focus_msg); } else { messages.push(focus_msg); }
             let tools = llm::tool_definitions().await;
             let body = json!({"model": model_id, "messages": messages, "tools": tools, "tool_choice": "auto", "stream": true});
             let resp = match client.http.post(client.chat_url()).header("Authorization", format!("Bearer {}", client.api_key)).header("Content-Type", "application/json").json(&body).send().await {
@@ -663,14 +759,12 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
                     break;
                 }
                 tracker.nocall_streak += 1;
-                let complete = PlanTracker::looks_complete(&accum_text);
+                let complete = tracker.looks_complete(&accum_text);
                 if complete || tracker.nocall_streak >= MAX_NOCALL_STREAK {
                     yield AgentEvent::Done { text: final_text.clone(), history: messages.clone() };
                     break;
                 }
                 if !accum_text.is_empty() { messages.push(json!({"role": "assistant", "content": accum_text})); }
-                let continue_msg = json!({"role": "system", "content": tracker.continue_prompt()});
-                messages.push(continue_msg);
                 continue;
             }
             let mut ordered: Vec<(usize, ToolAccum)> = tool_acc.into_iter().collect();
@@ -745,5 +839,98 @@ mod prompt_tests {
             built.len(),
             TOTAL_BUDGET
         );
+    }
+
+    #[tokio::test]
+    async fn built_prompt_keeps_base_prompt_intact() {
+        let built = build_system_prompt().await;
+        assert!(built.starts_with(SYSTEM_PROMPT), "base prompt was altered or truncated");
+    }
+
+    #[test]
+    fn truncate_helpers_are_utf8_safe() {
+        let s = "héllo wörld 😀 ending";
+        let truncated = truncate_str(s, 5);
+        assert_eq!(truncated.chars().count(), 5);
+        assert!(truncated.ends_with('…'));
+
+        let chars = truncate_chars(s, 5);
+        assert_eq!(chars.chars().count(), 5);
+
+        assert_eq!(truncate_str(s, 1000), s);
+        assert!(truncate_str(s, 0).is_empty());
+        assert!(truncate_to_bytes(s, 10).len() <= 10);
+    }
+}
+
+#[cfg(test)]
+mod behavior_tests {
+    use super::*;
+
+    #[test]
+    fn conversational_goals_detected() {
+        for goal in ["hi", "hello", "hey", "thanks", "thank you", "how are you?", "Hi!", "Hey there"] {
+            assert!(
+                PlanTracker::new(goal).is_conversational_goal(),
+                "{goal:?} should be conversational"
+            );
+        }
+    }
+
+    #[test]
+    fn task_goals_are_not_conversational() {
+        for goal in [
+            "read README.md",
+            "build a simple UI",
+            "thanks, now fix the login bug",
+            "please read README.md",
+            "run the tests",
+        ] {
+            assert!(
+                !PlanTracker::new(goal).is_conversational_goal(),
+                "{goal:?} should be a task"
+            );
+        }
+    }
+
+    #[test]
+    fn completion_requires_terminal_signal() {
+        let tracker = PlanTracker::new("read README.md");
+        assert!(tracker.looks_complete("All done."));
+        assert!(tracker.looks_complete("Here's what I did: I read the file."));
+        assert!(!tracker.looks_complete("Let me look at the code."));
+        assert!(!tracker.looks_complete("Summary: I'll now edit the file."));
+        assert!(!tracker.looks_complete("Next step: update the parser."));
+    }
+
+    #[test]
+    fn focus_context_carries_goal_and_step() {
+        let tracker = PlanTracker::new("fix the parser");
+        let focus = tracker.focus_context(2);
+        assert!(focus.contains("fix the parser"));
+        assert!(focus.contains("Step 2"));
+    }
+
+    #[test]
+    fn focus_context_flags_repeated_no_tool_steps() {
+        let mut tracker = PlanTracker::new("fix the parser");
+        tracker.nocall_streak = 1;
+        let focus = tracker.focus_context(2);
+        assert!(focus.contains(&format!("attempt 1/{}", MAX_NOCALL_STREAK)));
+    }
+
+    #[test]
+    fn prune_context_messages_drops_injected_context_only() {
+        let messages = vec![
+            json!({"role": "system", "content": SYSTEM_PROMPT}),
+            json!({"role": "system", "content": "[Focus]\nGoal: x"}),
+            json!({"role": "system", "content": "[Continue] attempt 1/3"}),
+            json!({"role": "system", "content": "Recalled memories: ..."}),
+            json!({"role": "user", "content": "hi"}),
+        ];
+        let pruned = prune_context_messages(&messages);
+        assert_eq!(pruned.len(), 3);
+        assert!(pruned[1]["content"].as_str().unwrap().starts_with("Recalled memories"));
+        assert_eq!(pruned[2]["content"], "hi");
     }
 }

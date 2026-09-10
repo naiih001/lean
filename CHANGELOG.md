@@ -11,6 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Dual-stack `/v1/responses` support** — per-model `api` field in `~/.lean/models.json` (`"chat_completions"` default / `"responses"`). New `ApiMode` enum, `responses_url()`, tool definition converter, `chat_messages → instructions+input` translation, and streaming `ResponsesEvent` SSE parser. Agent branch `POST /v1/responses` with same `AgentEvent` UX, history translation, and focus/autorecall via `instructions`. TUI footer now shows `(chat)` / `(responses)` and `/model` lists/picks with api tag. Backwards compatible: existing configs default to chat completions.
 
+### Changed
+
+- **Agent prompt & behavior pass** — `src/agent.rs` — `SYSTEM_PROMPT` rewritten in a calmer Claude/Codex style (identity, when to act, task loop, tools, skills/memory), dropping ALL-CAPS phrasing and the duplicate `## Scope` section (confinement is appended once by `build_system_prompt`). `build_system_prompt()` now assembles in priority order — base prompt (never truncated) → skills catalog → confinement → MCP — shrinking the catalog a line at a time and dropping MCP first when over the unchanged 2500/4000 budget. Focus/continue nudges are re-injected fresh each step instead of accumulating as `[Continue]` system messages, and `continue_prompt()` was folded into `focus_context()`.
+
+### Fixed
+
+- **Conversational vs task routing** — `src/agent.rs` — `"thanks, now fix the login bug"` was misread as small talk because the greeting-prefix branch bypassed the task-verb guard; a task verb now wins, so only genuine one-liners short-circuit to chat mode.
+- **Premature completion** — `src/agent.rs` — `looks_complete` now requires a terminal signal (`all done`, `in summary`, …) and bails on pending-work markers (`next step`, `i'll now`, `let me`, …), so a mid-task `"Summary: I'll now edit the file."` no longer ends the turn.
+- **Injected context leak** — `src/agent.rs` — the chat branch removed only one stale `[Focus]`/`[Continue]` message per step (its `removed_old` branch was dead code). All injected context is now pruned before the fresh focus message is re-injected, and responses-mode instructions are built from the pruned history.
+- **UTF-8 truncation** — `src/agent.rs` — prompt and history truncation now count characters and never slice mid-codepoint, so multibyte paths, errors, or skill text can no longer panic.
+
 ## [0.3.0] - 2026-09-10
 
 ### Added
