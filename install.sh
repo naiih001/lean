@@ -106,6 +106,8 @@ if command -v curl >/dev/null 2>&1; then
   # optional sha256
   if curl -fsSL "$SHA_URL" -o "$TMPDIR/$ASSET.sha256" 2>/dev/null; then
     echo "→ verifying sha256"
+    # sha files from <=v0.2.1 contain 'dist/' prefix; normalize for verification
+    sed -i 's|dist/||g' "$TMPDIR/$ASSET.sha256" 2>/dev/null || true
     if command -v sha256sum >/dev/null 2>&1; then
       (cd "$TMPDIR" && sha256sum -c "$ASSET.sha256" 2>&1 | head -1)
     elif command -v shasum >/dev/null 2>&1; then
