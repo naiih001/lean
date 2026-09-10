@@ -1,6 +1,24 @@
 use std::collections::VecDeque;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex, OnceLock,
+};
 use tokio::sync::oneshot;
+
+static AUTO_ACCEPT: AtomicBool = AtomicBool::new(false);
+
+pub fn is_auto_accept() -> bool {
+    AUTO_ACCEPT.load(Ordering::Relaxed)
+}
+
+pub fn set_auto_accept(v: bool) {
+    AUTO_ACCEPT.store(v, Ordering::Relaxed);
+}
+
+pub fn toggle_auto_accept() -> bool {
+    let prev = AUTO_ACCEPT.fetch_xor(true, Ordering::Relaxed);
+    !prev
+}
 
 #[derive(Debug)]
 pub struct ApprovalRequest {
@@ -20,6 +38,10 @@ fn pending_lock() -> &'static Mutex<VecDeque<ApprovalRequest>> {
 /// Returns true if approved, false if denied.
 /// If no TUI is running (pending not consumed within 200ms), falls back to blocking behavior handled by caller.
 pub async fn request(cmd: String, severity: crate::bash_guard::Severity, reasons: Vec<String>) -> bool {
+    // Session auto-accept bypass — no queue, no prompt, silent
+    if is_auto_accept() {
+        return true;
+    }
     // If bash guard disabled, auto-approve
     if crate::bash_guard::is_disabled() {
         return true;

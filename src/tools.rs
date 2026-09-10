@@ -290,6 +290,9 @@ pub async fn web_search(query: &str) -> Result<String, String> {
 }
 
 async fn guard_path(path: &str, tool: &str) -> Option<String> {
+    if crate::approval::is_auto_accept() {
+        return None;
+    }
     // returns Some(block_message) if denied, None if allowed
     let risk = crate::dir_guard::analyze_path(path)?;
     let reason_str = risk.reasons.join("; ");
@@ -312,6 +315,9 @@ async fn guard_path(path: &str, tool: &str) -> Option<String> {
 }
 
 async fn guard_bash(cmd: &str) -> Option<String> {
+    if crate::approval::is_auto_accept() {
+        return None;
+    }
     // Check both guards and merge; dir-guard is HIGH severity hard wall
     // Returns Some(string) if the caller should return that string directly (blocked OR approved-medium annotated output).
     // Returns None if allowed to proceed to normal run_bash.
@@ -377,6 +383,9 @@ async fn guard_bash(cmd: &str) -> Option<String> {
 }
 
 async fn guard_mcp(server: &str, tool: &str, args: &serde_json::Value) -> Option<String> {
+    if crate::approval::is_auto_accept() {
+        return None;
+    }
     // Every MCP tool call requires approval (HIGH)
     let display = format!("{}__{} {}", server, tool, args);
     let reasons = vec![format!("MCP tool {}.{} requires approval", server, tool)];

@@ -808,7 +808,7 @@ fn draw_input(f: &mut Frame, area: Rect, textarea: &mut TextArea<'_>) {
     );
     textarea.set_cursor_line_style(Style::default().bg(THEME.input_bg));
     textarea.set_placeholder_text(
-        "  ▸  type a message…  (/help • Enter send • Shift+Enter newline)",
+        "  ▸  type a message…  (/help • Enter send • Shift+Enter newline • Shift+Tab auto-accept)",
     );
     textarea.set_placeholder_style(Style::default().fg(ASHEN.charcoal).bg(THEME.input_bg));
     // prompt gutter: we prepend via block title style instead of manual truncation
@@ -850,6 +850,11 @@ fn draw_footer(
         "\u{280b}", "\u{2819}", "\u{2813}", "\u{2827}", "\u{2836}", "\u{2834}", "\u{2826}",
         "\u{282e}",
     ];
+    let auto_badge = if crate::approval::is_auto_accept() {
+        format!(" AUTO ")
+    } else {
+        String::new()
+    };
     let spinner_char = if agent_busy {
         format!("{} ", spinner[spinner_tick % spinner.len()])
     } else {
@@ -874,7 +879,7 @@ fn draw_footer(
     };
     let center = format!(" {} ", short_cwd);
 
-    let used = spinner_char.len() + 1 + model.len() + 2 + center.len() + right.len();
+    let used = spinner_char.len() + auto_badge.len() + 1 + model.len() + 2 + center.len() + right.len();
     let gap = if used < width { width - used } else { 0 };
     let gap_left = gap / 2;
     let gap_right = gap - gap_left;
@@ -883,6 +888,15 @@ fn draw_footer(
         format!(" {} ", model),
         Style::default().fg(ASHEN.smoke).bg(THEME.page_bg),
     )];
+    if !auto_badge.is_empty() {
+        spans.push(Span::styled(
+            auto_badge.clone(),
+            Style::default()
+                .fg(ASHEN.bone)
+                .bg(ASHEN.ember)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     if !spinner_char.is_empty() {
         spans.insert(
             0,
@@ -918,7 +932,7 @@ fn draw_footer(
 
 // ── Autocomplete + @-mentions ─────────────────────────────────
 
-const COMMANDS: &[&str] = &["/help", "/new", "/clear", "/exit", "/quit", "/model", "/sessions", "/resume", "/allowlist", "/allowlist clear", "/mcp", "/memory", "/memory stats", "/memory consolidate"];
+const COMMANDS: &[&str] = &["/help", "/new", "/clear", "/exit", "/quit", "/model", "/sessions", "/resume", "/allowlist", "/allowlist clear", "/mcp", "/memory", "/memory stats", "/memory consolidate", "/auto-accept"];
 
 /// Filter commands matching the current input prefix.
 /// Also completes model aliases after `/model `.
@@ -1761,7 +1775,7 @@ async fn app_loop(
         );
         ta.set_cursor_line_style(Style::default().bg(THEME.input_bg));
         ta.set_placeholder_text(
-            "  ▸  type a message…  (/help • Enter send • Shift+Enter newline)",
+            "  ▸  type a message…  (/help • Enter send • Shift+Enter newline • Shift+Tab auto-accept)",
         );
         ta.set_placeholder_style(Style::default().fg(ASHEN.charcoal).bg(THEME.input_bg));
         ta.set_block(
@@ -1802,8 +1816,8 @@ async fn app_loop(
     let mut dirty = true;
 
     loop {
-        // Poll for bash-guard approval requests from agent
-        if pending_approval.is_none() {
+        // Poll for approval requests — suppressed while auto-accept is ON
+        if !crate::approval::is_auto_accept() && pending_approval.is_none() {
             if let Some(req) = crate::approval::take_pending() {
                 pending_approval = Some(req);
                 dirty = true;
@@ -1882,9 +1896,11 @@ async fn app_loop(
                 if !ac_matches.is_empty() {
                     draw_autocomplete(f, chunks[5], &ac_matches, ac_idx, ac_scroll);
                 }
-                // Bash guard approval overlay (takes precedence)
-                if let Some(ref req) = pending_approval {
-                    draw_approval(f, f.area(), req);
+                // Bash guard approval overlay (suppressed while auto-accept ON)
+                if !crate::approval::is_auto_accept() {
+                    if let Some(ref req) = pending_approval {
+                        draw_approval(f, f.area(), req);
+                    }
                 }
                 if show_sessions {
                     draw_sessions(f, f.area(), sessions_selected, sessions_scroll, &sessions_filter, sessions_show_all, &cwd);
@@ -1946,6 +1962,44 @@ async fn app_loop(
                     }
                 }
                 Event::Key(k) => {
+                    // Global auto-accept toggle — must be before any modal hijack
+                    let is_shift_tab = k.code == KeyCode::BackTab
+                        || (k.code == KeyCode::Tab && k.modifiers.contains(KeyModifiers::SHIFT));
+                    if is_shift_tab {
+                        let now_on = crate::approval::toggle_auto_accept();
+                        if now_on {
+                            if let Some(mut req) = pending_approval.take() {
+                                if let Some(tx) = req.tx.take() {
+                                    let _ = tx.send(true);
+                                }
+                            }
+                            while let Some(mut req) = crate::approval::take_pending() {
+                                if let Some(tx) = req.tx.take() {
+                                    let _ = tx.send(true);
+                                }
+                            }
+                            messages.push(Msg {
+                                role: "system".into(),
+                                content: "[auto-accept ON — all guards bypassed, Shift+Tab to disable]".into(),
+                                tool_id: None,
+                                tool_name: None,
+                                tool_args: None,
+                                elapsed_ms: None,
+                            });
+                            crate::telemetry::record("auto_accept_on");
+                        } else {
+                            messages.push(Msg {
+                                role: "system".into(),
+                                content: "[auto-accept OFF]".into(),
+                                tool_id: None,
+                                tool_name: None,
+                                tool_args: None,
+                                elapsed_ms: None,
+                            });
+                            crate::telemetry::record("auto_accept_off");
+                        }
+                        continue;
+                    }
                     // Allowlist picker modal: hijack keys
                     if show_allowlist {
                         match k.code {
@@ -2004,7 +2058,7 @@ async fn app_loop(
                                 sessions_filter.clear();
                                 sessions_selected = 0;
                             }
-                            KeyCode::Tab | KeyCode::BackTab => {
+                            KeyCode::Tab => {
                                 sessions_show_all = !sessions_show_all;
                                 sessions_selected = 0;
                                 sessions_scroll = 0;
@@ -2592,7 +2646,7 @@ async fn app_loop(
                                 "/help" => {
                                     messages.push(Msg {
                                         role: "system".into(),
-                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /mcp /memory stats|consolidate /model <name> /clear /exit  ·  Enter send · Shift+Enter newline · @file $skill · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /mcp /memory stats|consolidate /model <name> /clear /exit /auto-accept  ·  Enter send · Shift+Enter newline · Shift+Tab auto-accept · @file $skill · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                 }
                                 "/mcp" => {
                                     show_mcp = true;
@@ -2622,6 +2676,54 @@ async fn app_loop(
                                 "/memory consolidate" => {
                                     let out = crate::memory::api_consolidate();
                                     messages.push(Msg { role: "system".into(), content: out, tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                }
+                                "/auto-accept" => {
+                                    let now_on = crate::approval::toggle_auto_accept();
+                                    if now_on {
+                                        if let Some(mut req) = pending_approval.take() {
+                                            if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
+                                        }
+                                        while let Some(mut req) = crate::approval::take_pending() {
+                                            if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
+                                        }
+                                        messages.push(Msg { role: "system".into(), content: "[auto-accept ON — all guards bypassed, Shift+Tab to disable]".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        crate::telemetry::record("auto_accept_on");
+                                    } else {
+                                        messages.push(Msg { role: "system".into(), content: "[auto-accept OFF]".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        crate::telemetry::record("auto_accept_off");
+                                    }
+                                }
+                                _ if prompt.starts_with("/auto-accept ") => {
+                                    let rest = prompt.strip_prefix("/auto-accept ").unwrap().trim().to_lowercase();
+                                    let target_on = match rest.as_str() {
+                                        "on" | "enable" | "enabled" => Some(true),
+                                        "off" | "disable" | "disabled" => Some(false),
+                                        _ => None,
+                                    };
+                                    if let Some(want_on) = target_on {
+                                        let cur = crate::approval::is_auto_accept();
+                                        if want_on != cur {
+                                            let now_on = crate::approval::toggle_auto_accept();
+                                            if now_on {
+                                                if let Some(mut req) = pending_approval.take() {
+                                                    if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
+                                                }
+                                                while let Some(mut req) = crate::approval::take_pending() {
+                                                    if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
+                                                }
+                                                messages.push(Msg { role: "system".into(), content: "[auto-accept ON — all guards bypassed, Shift+Tab to disable]".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                                crate::telemetry::record("auto_accept_on");
+                                            } else {
+                                                messages.push(Msg { role: "system".into(), content: "[auto-accept OFF]".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                                crate::telemetry::record("auto_accept_off");
+                                            }
+                                        } else {
+                                            let state = if cur { "ON" } else { "OFF" };
+                                            messages.push(Msg { role: "system".into(), content: format!("[auto-accept already {}]", state), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        }
+                                    } else {
+                                        messages.push(Msg { role: "system".into(), content: "usage: /auto-accept [on|off]".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                    }
                                 }
                                 _ if prompt.starts_with("/allowlist ") => {
                                     let rest = prompt.strip_prefix("/allowlist ").unwrap().trim();
