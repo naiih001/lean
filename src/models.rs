@@ -161,6 +161,21 @@ pub fn resolve(alias_opt: Option<&str>) -> Result<ResolvedModel> {
 }
 
 fn resolve_api_key_env(entry: &ModelEntry, _alias: Option<&str>) -> Result<String> {
+    // If entry points to a specific env var, try it first; on empty, fall back to generic
+    // but fail fast with actionable message if no key is found (fresh-install UX).
+    let try_fallback = |env_name: Option<&String>| -> Result<String> {
+        let fallback = default_env_api_key();
+        if fallback == "sk-test" || fallback.trim().is_empty() {
+            let hint_name = env_name.map(|s| s.as_str()).unwrap_or("OPENAI_API_KEY");
+            bail!(
+                "No API key found for '{}' — set {} (or OPENCODE_API_KEY) or add `api_key` to {}",
+                hint_name,
+                hint_name,
+                models_path().display()
+            );
+        }
+        Ok(fallback)
+    };
     if let Some(env_name) = &entry.api_key_env {
         if !env_name.trim().is_empty() {
             if let Ok(v) = std::env::var(env_name) {
@@ -168,11 +183,10 @@ fn resolve_api_key_env(entry: &ModelEntry, _alias: Option<&str>) -> Result<Strin
                     return Ok(v);
                 }
             }
-            // env var not set or empty → fall back to generic env
-            return Ok(default_env_api_key());
+            return try_fallback(Some(env_name));
         }
     }
-    Ok(default_env_api_key())
+    try_fallback(None)
 }
 
 /// List available aliases sorted.
@@ -214,5 +228,26 @@ mod tests {
         assert!(!cfg.models.values().any(|e| e.base_url.as_deref().unwrap_or("").contains("127.0.0.1")));
         let e = &cfg.models["gpt-4o"];
         assert_eq!(e.base_url.as_deref(), Some("https://api.openai.com/v1"));
+    }
+
+    #[test]
+    fn resolve_fails_without_key() {
+        // Isolate env: save and clear both keys, use a temp home via models_path that still points to real path
+        // We test resolve_api_key_env directly to avoid touching ~/.lean/models.json
+        let orig_openai = std::env::var("OPENAI_API_KEY").ok();
+        let orig_opencode = std::env::var("OPENCODE_API_KEY").ok();
+        std::env::remove_var("OPENAI_API_KEY");
+        std::env::remove_var("OPENCODE_API_KEY");
+        let entry = ModelEntry {
+            model: "gpt-4o".into(),
+            base_url: Some("https://api.openai.com/v1".into()),
+            api_key: None,
+            api_key_env: Some("OPENAI_API_KEY".into()),
+        };
+        let err = resolve_api_key_env(&entry, None).unwrap_err();
+        assert!(err.to_string().contains("OPENAI_API_KEY"));
+        // restore
+        if let Some(v) = orig_openai { std::env::set_var("OPENAI_API_KEY", v); }
+        if let Some(v) = orig_opencode { std::env::set_var("OPENCODE_API_KEY", v); }
     }
 }
