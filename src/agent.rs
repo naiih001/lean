@@ -181,21 +181,20 @@ impl PlanTracker {
     }
     fn focus_context(&self, step: usize) -> String {
         if self.is_conversational_goal() {
-            return format!("[FOCUS CONTEXT — conversational turn]\nGoal: \"{}\" — this is smalltalk/greeting, NOT a task. Respond warmly in 1-2 sentences and STOP. Do NOT call tools, do NOT search memory, do NOT list steps.\nCurrent step: {}. No focus tracking needed.", self.goal, step);
+            return format!("[Focus — conversational]\nGoal: \"{}\" — this is small talk, answer warmly in 1-2 sentences and stop. No tools needed.\nStep: {}.", self.goal, step);
         }
-        let mut out = String::from("[FOCUS CONTEXT -- READ THIS BEFORE RESPONDING]\n");
+        let mut out = String::from("[Focus]\n");
         out.push_str(&format!("Goal: {}\n", self.goal));
         if !self.steps_done.is_empty() {
-            out.push_str(&format!("Progress so far ({} items):\n", self.steps_done.len()));
+            out.push_str(&format!("Progress ({}):\n", self.steps_done.len()));
             for (i, s) in self.steps_done.iter().enumerate() { out.push_str(&format!("  {}. {}\n", i+1, s)); }
-        } else { out.push_str("Progress so far: starting\n"); }
-        if !self.last_tools.is_empty() { out.push_str(&format!("Last tool calls: {}\n", self.last_tools.join(", "))); }
-        out.push_str(&format!("Current step: {}. If your plan is complete, summarize what you did and stop.\n", step));
-        out.push_str("Do NOT repeat actions already listed in progress. Stay focused on the goal.");
+        } else { out.push_str("Progress: starting\n"); }
+        if !self.last_tools.is_empty() { out.push_str(&format!("Recent tools: {}\n", self.last_tools.join(", "))); }
+        out.push_str(&format!("Step {}. Use this to stay on track. If done, summarize and stop. Otherwise, take the next step. Don't repeat completed actions.\n", step));
         out
     }
     fn continue_prompt(&self) -> String {
-        format!("[CONTINUATION REQUIRED]\nYou stopped without using tools. The goal has NOT been achieved yet:\n{}\nKeep working. Use your tools to make progress. Do NOT stop until the task is fully complete. If you need to verify your work, use bash to run tests or checks. If you already finished, provide a final summary and explicitly state 'All done.'", self.goal)
+        format!("[Continue]\nYou haven't used tools yet. Goal still open:\n{}\nIf you can make progress with a tool, do so. If already done, summarize and say 'All done.'", self.goal)
     }
     fn record_tools(&mut self, tool_names: &[String]) {
         self.nocall_streak = 0;
@@ -245,27 +244,25 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
             let mut tracker = PlanTracker::new(&user_prompt);
             for step in 0..max_steps {
                 yield AgentEvent::Step { n: step + 1 };
-                if step > 0 {
+                if step > 0 && !tracker.is_conversational_goal() {
                     let context: String = messages.iter().rev().take(4).filter_map(|m| m.get("content").and_then(|c| c.as_str())).collect::<Vec<&str>>().join(" ");
-                    if let Some(memory_note) = crate::memory::autorecall(&context) {
-                        let recall_msg = json!({"role": "system", "content": memory_note});
-                        if messages.len() > 1 && messages[1].get("role").and_then(|r| r.as_str()) == Some("system") && messages[1].get("content").and_then(|c| c.as_str()).map(|c| c.starts_with("Recalled memories")).unwrap_or(false) { messages[1] = recall_msg; } else { messages.insert(1, recall_msg); }
+                    if context.trim().len() > 20 {
+                        if let Some(memory_note) = crate::memory::autorecall(&context) {
+                            // Budget guard: skip if would push instructions near limit
+                            if memory_note.len() + 500 < 3800 {
+                                let recall_msg = json!({"role": "system", "content": memory_note});
+                                if messages.len() > 1 && messages[1].get("role").and_then(|r| r.as_str()) == Some("system") && messages[1].get("content").and_then(|c| c.as_str()).map(|c| c.starts_with("Recalled memories")).unwrap_or(false) { messages[1] = recall_msg; } else { messages.insert(1, recall_msg); }
+                            }
+                        }
                     }
                 }
-                // Build instructions+input from current messages (system prompt already separate)
-                // Focus context is appended to instructions each turn
                 let focus = tracker.focus_context(step + 1);
-                // Base instructions is system (build_system_prompt) plus any system messages in history; chat_messages_to_responses_input will merge them
                 let (mut instructions, input) = llm::chat_messages_to_responses_input(&messages, &system);
-                // Append focus to instructions (remove any previous focus by truncating? easiest: just append; next iteration will rebuild from scratch stripping old focus)
-                // To avoid accumulating, we rebuild instructions each time from fresh system + messages that may already contain focus as system message. We inserted focus as system message below for chat compatibility, but for responses we keep it in instructions only.
-                // We inserted focus as system message into messages last iteration via continue_prompt; need to ensure it maps correctly. For responses, continue_prompt system message will become part of instructions on next iteration via chat_messages_to_responses_input, which is good. But we also want focus each step. So we merge focus into instructions directly.
-                // Remove any prior [FOCUS CONTEXT system message from messages to avoid duplication; responses instructions will include current focus anyway.
-                // First, strip any existing focus system messages from messages before translation (we already have input computed, but instructions was computed with them). Instead recompute clean instructions by filtering focus marker.
-                // Simpler: compute instructions without focus, then append current focus.
-                // Filter focus from instructions by removing marker sections (if system messages contained focus, they were already joined). Since we appended focus only to instructions string last time via this path, not to messages, the next iteration's messages won't contain old focus. So just append current focus to instructions.
+                // Append current focus to instructions. We rebuild instructions from scratch each turn,
+                // so prior focus (only in previous instructions string, not in messages) does not accumulate.
+                // Continue prompts are system messages in `messages` and will be folded into instructions via translation;
+                // at most 2 will accumulate before MAX_NOCALL_STREAK stops the loop, which fits the 4000 budget.
                 instructions = format!("{}\n\n{}", instructions, focus);
-                // For continuation prompts, the messages vector may contain a [CONTINUATION REQUIRED] system message inserted at end of last step (when no tool). That message is already in messages and will be translated: for responses, a system message becomes part of instructions, so it will appear as instructions addition too. That's okay.
                 // Build tools for responses
                 let tools = llm::responses_tool_definitions().await;
                 let body = llm::build_responses_request_body(&model_id, &instructions, &input, &tools);
@@ -542,18 +539,25 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
         let mut tracker = PlanTracker::new(&user_prompt);
         for step in 0..max_steps {
             yield AgentEvent::Step { n: step + 1 };
-            if step > 0 {
+            if step > 0 && !tracker.is_conversational_goal() {
                 let context: String = messages.iter().rev().take(4).filter_map(|m| m.get("content").and_then(|c| c.as_str())).collect::<Vec<&str>>().join(" ");
-                if let Some(memory_note) = crate::memory::autorecall(&context) {
-                    let recall_msg = json!({"role": "system", "content": memory_note});
-                    if messages.len() > 1 && messages[1].get("role").and_then(|r| r.as_str()) == Some("system") && messages[1].get("content").and_then(|c| c.as_str()).map(|c| c.starts_with("Recalled memories")).unwrap_or(false) { messages[1] = recall_msg; } else { messages.insert(1, recall_msg); }
+                if context.trim().len() > 20 {
+                    if let Some(memory_note) = crate::memory::autorecall(&context) {
+                        if memory_note.len() + 500 < 3800 {
+                            let recall_msg = json!({"role": "system", "content": memory_note});
+                            if messages.len() > 1 && messages[1].get("role").and_then(|r| r.as_str()) == Some("system") && messages[1].get("content").and_then(|c| c.as_str()).map(|c| c.starts_with("Recalled memories")).unwrap_or(false) { messages[1] = recall_msg; } else { messages.insert(1, recall_msg); }
+                        }
+                    }
                 }
             }
             let focus_msg = json!({"role": "system", "content": tracker.focus_context(step + 1)});
-            let marker = "[FOCUS CONTEXT";
             let mut removed_old = false;
             for i in (2..messages.len()).rev() {
-                if messages[i].get("role").and_then(|r| r.as_str()) == Some("system") && messages[i].get("content").and_then(|c| c.as_str()).map(|c| c.starts_with(marker)).unwrap_or(false) { messages.remove(i); removed_old = true; break; }
+                if messages[i].get("role").and_then(|r| r.as_str()) == Some("system")
+                    && messages[i].get("content").and_then(|c| c.as_str()).map(|c| {
+                        c.starts_with("[Focus") || c.starts_with("[FOCUS") || c.starts_with("[Continue") || c.starts_with("[CONTINUATION")
+                    }).unwrap_or(false)
+                { messages.remove(i); removed_old = true; break; }
             }
             let insert_at = if removed_old { 2 } else { 2 };
             if insert_at < messages.len() { messages.insert(insert_at, focus_msg); } else { messages.push(focus_msg); }
