@@ -27,6 +27,10 @@ Works with any OpenAI-compatible API.
 
 - Rust toolchain (stable)
 
+#### Optional (MCP stdio only)
+
+- Node.js 20+ and `npx` — only if you use MCP servers with `"command": "npx"` (e.g. `@modelcontextprotocol/server-github`). HTTP MCP (`"url": "https://..."`) needs no extra install.
+
 ### Build from source
 
 ```bash
@@ -146,6 +150,8 @@ Skills are discovered with a 60-second cache and loaded via `read_skill`.
 ---
 
 ## MCP (Model Context Protocol)
+
+> **MCP is opt-in.** No servers run by default. Create `~/.lean/mcp.json` to enable; stdio servers require Node 20+ and `npx`, HTTP servers need no extra deps.
 
 `lean` acts as an MCP client, discovering tools from external MCP servers and exposing them as namespaced tools (`server__tool`). All MCP tool calls are gated by the approval overlay.
 
