@@ -48,7 +48,7 @@ Works with any OpenAI-compatible API.
 - **Single binary** — no runtime dependencies, fast startup
 - **TUI** — chat history, tool trace, and streaming output with multiline input, history navigation, and slash commands
 - **Agent loop** — SSE streaming, tool-call routing, and up to 100 steps per turn with memory and skills integration
-- **Guards** — bash allowlist with glob matching and working-directory confinement, both with approval UI
+- **Guards** — bash allowlist with glob matching and working-directory confinement, both with approval UI — `Shift+Tab` / `/auto-accept` enables session-only `AUTO` bypass (silent, full bypass for bash/dir/MCP)
 - **Sessions** — per-directory persisted sessions with resume support
 - **Memory** — persistent memory with search, recall, and automatic deduplication
 - **Skills** — extensible `SKILL.md` system for custom capabilities
@@ -133,11 +133,11 @@ lean --no-session            # run without persistence
 | Area | Description |
 |------|-------------|
 | **Chat** | Conversation history, tool calls with results, and streaming output |
-| **Input** | Auto-wrapping multiline editing (`Enter` send, `Shift+Enter` newline, `Ctrl+C` clear), history with `↑`/`↓`, slash commands, `Esc` to quit |
+| **Input** | Auto-wrapping multiline editing (`Enter` send, `Shift+Enter` newline, `Shift+Tab` auto-accept, `Ctrl+C` clear), history with `↑`/`↓`, slash commands, `Esc` to quit |
 | **Overlays** | Approval prompts, session picker, and allowlist editor |
 | **Footer** | Current model, working directory, and token usage |
 
-**Slash commands:** `/help` `/model` `/clear` `/exit` `/mcp`
+**Slash commands:** `/help` `/new` `/clear` `/exit` `/model` `/sessions` `/resume` `/allowlist` `/mcp` `/memory` `/auto-accept` — `Shift+Tab` toggles session-only auto-accept (`AUTO` badge)
 
 Sessions are persisted to `~/.lean/sessions/*.json`.
 
@@ -296,6 +296,9 @@ Per working directory, persisted as `~/.lean/sessions/*.json` (pruned to 50 mess
 **What are `@file` and `$skill` mentions?**
 `@` autocompletes project files and expands contents inline on submit. `$` forces a skill (`SKILL.md`) into context. Both complete with `Tab`/`Enter`.
 
+**How do I disable approval prompts?**
+Press `Shift+Tab` (or `/auto-accept on`) to enable session-only `AUTO` (footer badge) — all guards bypassed silently until `Shift+Tab` again or session ends. Use `/auto-accept off` to re-enable.
+
 ## Troubleshooting
 
 | Symptom | Cause / Fix |
@@ -305,7 +308,7 @@ Per working directory, persisted as `~/.lean/sessions/*.json` (pruned to 50 mess
 | `401 / 403` from API | Key is invalid or base URL mismatched. Confirm `OPENAI_BASE_URL` has `/v1` suffix and matches provider. |
 | Linux build/run: `libssl` / `ca-certificates` errors | `sudo apt-get install libssl-dev pkg-config` (build) and `libssl3 ca-certificates` (run). Release binaries are linked against `libssl3`. |
 | MCP stdio server fails to start | Requires Node 20+ and `npx` on `PATH`. HTTP MCP (`url`) needs no Node. Check `/mcp` overlay for `error` state and tool counts; verify `${VAR}` env expansion. |
-| `bash` always asks for approval | Expected — `bash` and MCP tools are approval-gated (`[a]`/`[A]`/`Esc`). Add glob patterns to `~/.lean/allowlist.json` to allowlist safe commands. |
+| `bash` always asks for approval | Expected — `bash` and MCP tools are approval-gated (`[a]`/`[A]`/`Esc`). Add glob patterns to `~/.lean/allowlist.json` to allowlist safe commands, or press `Shift+Tab` / `/auto-accept` for session-only bypass (`AUTO` badge). |
 | File edits outside project blocked | `dir_guard` confines to CWD. Use `[a]` to approve once or `[A]` to allowlist, or run with `lean --dir-guard-disabled`. |
 | Empty or missing sessions | Sessions are per-CWD and pruned to 50 messages. Check `~/.lean/sessions/` and current directory. |
 
@@ -340,7 +343,7 @@ For general bugs, use the issue tracker.
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for release notes. Unreleased changes on `main` include input auto-wrap and `Shift+Enter` newline support (documented above).
+See [CHANGELOG.md](CHANGELOG.md) for release notes. `v0.3.0` adds input auto-wrap, `Shift+Enter` newline, `Shift+Tab` auto-accept (`/auto-accept` + `AUTO` badge), and a markdown parser fix.
 
 ---
 
