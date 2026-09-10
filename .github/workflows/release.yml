@@ -80,8 +80,14 @@ jobs:
           mkdir -p dist
           cp target/${{ matrix.target }}/release/lean.exe dist/
           cp README.md LICENSE dist/
-          cd dist && powershell -Command "Compress-Archive -Path lean.exe,README.md,LICENSE -DestinationPath ${{ matrix.archive }}"
-          sha256sum dist/${{ matrix.archive }} | tee dist/${{ matrix.archive }}.sha256 || shasum -a 256 dist/${{ matrix.archive }} | tee dist/${{ matrix.archive }}.sha256
+          powershell -Command "Compress-Archive -Path dist/lean.exe,dist/README.md,dist/LICENSE -DestinationPath dist/${{ matrix.archive }} -Force"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum dist/${{ matrix.archive }} | tee dist/${{ matrix.archive }}.sha256
+          elif command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 dist/${{ matrix.archive }} | tee dist/${{ matrix.archive }}.sha256
+          else
+            certutil -hashfile "dist/${{ matrix.archive }}" SHA256 | tee dist/${{ matrix.archive }}.sha256
+          fi
           ls -lh dist/
 
       - uses: actions/upload-artifact@v4
