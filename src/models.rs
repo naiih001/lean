@@ -3,6 +3,22 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Which OpenAI-compatible wire format to use.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiMode {
+    #[serde(alias = "chat", alias = "chat_completions", alias = "completions")]
+    ChatCompletions,
+    #[serde(alias = "responses")]
+    Responses,
+}
+
+impl Default for ApiMode {
+    fn default() -> Self {
+        Self::ChatCompletions
+    }
+}
+
 /// Entry for a single model alias.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelEntry {
@@ -17,6 +33,16 @@ pub struct ModelEntry {
     /// Env var name that holds the API key (e.g. "OPENAI_API_KEY").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_env: Option<String>,
+    /// Wire format: "chat_completions" (default) or "responses".
+    /// Aliases: "chat"/"completions" -> chat, "responses" -> responses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<ApiMode>,
+}
+
+impl ModelEntry {
+    pub fn api_mode(&self) -> ApiMode {
+        self.api.clone().unwrap_or_default()
+    }
 }
 
 /// Top-level config stored at ~/.lean/models.json
@@ -34,6 +60,7 @@ pub struct ResolvedModel {
     pub model: String,
     pub base_url: String,
     pub api_key: String,
+    pub api_mode: ApiMode,
 }
 
 fn models_path() -> PathBuf {
@@ -64,6 +91,7 @@ fn template_config() -> ModelsConfig {
             base_url: Some("https://api.openai.com/v1".to_string()),
             api_key: None,
             api_key_env: Some("OPENAI_API_KEY".to_string()),
+            api: None,
         },
     );
     ModelsConfig {
@@ -152,11 +180,13 @@ pub fn resolve(alias_opt: Option<&str>) -> Result<ResolvedModel> {
         resolve_api_key_env(entry, None)?
     };
 
+    let api_mode = entry.api_mode();
     Ok(ResolvedModel {
         alias: alias_trimmed.to_string(),
         model: entry.model.clone(),
         base_url,
         api_key,
+        api_mode,
     })
 }
 
@@ -243,11 +273,35 @@ mod tests {
             base_url: Some("https://api.openai.com/v1".into()),
             api_key: None,
             api_key_env: Some("OPENAI_API_KEY".into()),
+            api: None,
         };
         let err = resolve_api_key_env(&entry, None).unwrap_err();
         assert!(err.to_string().contains("OPENAI_API_KEY"));
         // restore
         if let Some(v) = orig_openai { std::env::set_var("OPENAI_API_KEY", v); }
         if let Some(v) = orig_opencode { std::env::set_var("OPENCODE_API_KEY", v); }
+    }
+
+    #[test]
+    fn model_entry_defaults_to_chat() {
+        let raw = r#"{"model":"gpt-4o","base_url":"https://api.openai.com/v1"}"#;
+        let e: ModelEntry = serde_json::from_str(raw).unwrap();
+        assert_eq!(e.api_mode(), ApiMode::ChatCompletions);
+    }
+
+    #[test]
+    fn model_entry_parses_responses_alias() {
+        let raw = r#"{"model":"gpt-5","api":"responses"}"#;
+        let e: ModelEntry = serde_json::from_str(raw).unwrap();
+        assert_eq!(e.api_mode(), ApiMode::Responses);
+    }
+
+    #[test]
+    fn model_entry_parses_chat_aliases() {
+        for alias in ["chat", "chat_completions", "completions"] {
+            let raw = format!(r#"{{"model":"gpt-4o","api":"{}"}}"#, alias);
+            let e: ModelEntry = serde_json::from_str(&raw).unwrap();
+            assert_eq!(e.api_mode(), ApiMode::ChatCompletions, "alias {}", alias);
+        }
     }
 }
