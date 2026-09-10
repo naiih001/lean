@@ -87,6 +87,11 @@ fn render_inline(text: &str, base: Style) -> Vec<Span<'static>> {
         if i > start {
             let text: String = chars[start..i].iter().collect();
             spans.push(Span::styled(text, base));
+        } else {
+            // Unmatched special char (e.g. a lone '[' or '`'). Emit it as
+            // literal text and advance so the loop can never spin forever.
+            spans.push(Span::styled(chars[i].to_string(), base));
+            i += 1;
         }
     }
 
@@ -401,6 +406,41 @@ mod tests {
         let spans = render_inline("use `foo` here", Style::default());
         assert_eq!(spans.len(), 3);
         assert_eq!(spans[1].content, " foo ");
+    }
+
+    #[test]
+    fn test_unmatched_bracket_terminates() {
+        // A lone '[' with no valid link must not loop forever.
+        let spans = render_inline("hello [unmatched", Style::default());
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "hello [unmatched");
+    }
+
+    #[test]
+    fn test_bracketed_error_message_terminates() {
+        let spans = render_inline("[LLM HTTP error: boom]", Style::default());
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "[LLM HTTP error: boom]");
+    }
+
+    #[test]
+    fn test_unmatched_star_and_backtick_terminate() {
+        let a = render_inline("2 * 3", Style::default());
+        let at: String = a.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(at, "2 * 3");
+
+        let b = render_inline("a `b", Style::default());
+        let bt: String = b.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(bt, "a `b");
+    }
+
+    #[test]
+    fn test_valid_link_still_renders() {
+        let spans = render_inline("[text](https://x.test)", Style::default());
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].content, "text");
+        assert!(spans[0].style.add_modifier.contains(Modifier::UNDERLINED));
+        assert_eq!(spans[1].content, " (https://x.test)");
     }
 
     #[test]

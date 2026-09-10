@@ -1798,11 +1798,15 @@ async fn app_loop(
     // Eager MCP init (background)
     tokio::spawn(async move { crate::mcp::init().await; });
 
+    // Redraw only when something changed; the spinner forces redraws while busy.
+    let mut dirty = true;
+
     loop {
         // Poll for bash-guard approval requests from agent
         if pending_approval.is_none() {
             if let Some(req) = crate::approval::take_pending() {
                 pending_approval = Some(req);
+                dirty = true;
             }
         }
         let term_size = terminal.size()?;
@@ -1849,64 +1853,70 @@ async fn app_loop(
             scroll = total_lines.saturating_sub(content_height) as u16;
         }
 
-        // Single render pass with correct scroll
-        terminal.draw(|f| {
-            let bg_block = Block::default().style(Style::default().bg(THEME.page_bg));
-            f.render_widget(bg_block, f.area());
+        // Single render pass with correct scroll (only when state changed)
+        if dirty {
+            terminal.draw(|f| {
+                let bg_block = Block::default().style(Style::default().bg(THEME.page_bg));
+                f.render_widget(bg_block, f.area());
 
-            // Header
-            draw_header(f, chunks[0], &model, &step_info);
+                // Header
+                draw_header(f, chunks[0], &model, &step_info);
 
-            // Separator
-            draw_separator(f, chunks[1]);
+                // Separator
+                draw_separator(f, chunks[1]);
 
-            // Content — use pre-wrapped lines
-            let para = Paragraph::new(wrapped_content.clone()).scroll((scroll, 0));
-            f.render_widget(para, chunks[2]);
+                // Content — use pre-wrapped lines
+                let para = Paragraph::new(wrapped_content.clone()).scroll((scroll, 0));
+                f.render_widget(para, chunks[2]);
 
-            // Separator
-            draw_separator(f, chunks[3]);
+                // Separator
+                draw_separator(f, chunks[3]);
 
-            // Queue
-            draw_queue(f, chunks[4], &msg_queue);
+                // Queue
+                draw_queue(f, chunks[4], &msg_queue);
 
-            // Input (textarea renders with cursor)
-            draw_input(f, chunks[5], &mut textarea);
+                // Input (textarea renders with cursor)
+                draw_input(f, chunks[5], &mut textarea);
 
-            // Autocomplete popup
-            if !ac_matches.is_empty() {
-                draw_autocomplete(f, chunks[5], &ac_matches, ac_idx, ac_scroll);
-            }
-            // Bash guard approval overlay (takes precedence)
-            if let Some(ref req) = pending_approval {
-                draw_approval(f, f.area(), req);
-            }
-            if show_sessions {
-                draw_sessions(f, f.area(), sessions_selected, sessions_scroll, &sessions_filter, sessions_show_all, &cwd);
-            }
-            if show_allowlist {
-                draw_allowlist(f, f.area(), allowlist_selected, allowlist_scroll);
-            }
-            if show_mcp {
-                draw_mcp(f, f.area(), mcp_selected, mcp_scroll);
-            }
+                // Autocomplete popup
+                if !ac_matches.is_empty() {
+                    draw_autocomplete(f, chunks[5], &ac_matches, ac_idx, ac_scroll);
+                }
+                // Bash guard approval overlay (takes precedence)
+                if let Some(ref req) = pending_approval {
+                    draw_approval(f, f.area(), req);
+                }
+                if show_sessions {
+                    draw_sessions(f, f.area(), sessions_selected, sessions_scroll, &sessions_filter, sessions_show_all, &cwd);
+                }
+                if show_allowlist {
+                    draw_allowlist(f, f.area(), allowlist_selected, allowlist_scroll);
+                }
+                if show_mcp {
+                    draw_mcp(f, f.area(), mcp_selected, mcp_scroll);
+                }
 
-            // Footer
-            draw_footer(
-                f,
-                chunks[6],
-                &model,
-                messages.len(),
-                &cwd,
-                agent_busy,
-                spinner_tick,
-            );
-        })?;
+                // Footer
+                draw_footer(
+                    f,
+                    chunks[6],
+                    &model,
+                    messages.len(),
+                    &cwd,
+                    agent_busy,
+                    spinner_tick,
+                );
+            })?;
+            dirty = false;
+        }
 
         // Handle keyboard and mouse events
-        // 16ms ~60fps target for native feel (was 50ms)
-        if event::poll(std::time::Duration::from_millis(10))? {
-            match event::read()? {
+        // Poll fast while the spinner is animating, slower when idle.
+        let poll_ms = if agent_busy { 16 } else { 50 };
+        if event::poll(std::time::Duration::from_millis(poll_ms))? {
+            let term_event = event::read()?;
+            dirty = true;
+            match term_event {
                 Event::Paste(data) => {
                     crate::telemetry::record("paste");
                     let max_cols = (chunks[5].width as usize).saturating_sub(1);
@@ -2756,6 +2766,7 @@ async fn app_loop(
 
         // Poll agent events (non-blocking)
         while let Ok(ev) = rx.try_recv() {
+            dirty = true;
             match ev {
                 AgentEvent::Text { delta } => {
                     if delta.is_empty() {
@@ -2887,6 +2898,7 @@ async fn app_loop(
 
         // If agent is busy but no events arrived, check if the task died (panic/error)
         if agent_busy && agent_handle.as_ref().map_or(false, |h| h.is_finished()) {
+            dirty = true;
             agent_handle.take();
             // Drain stale done signals
             let mut done_rx = done_tx.subscribe();
@@ -2918,8 +2930,11 @@ async fn app_loop(
 
         // Persist session (fire-and-forget, cheap json write)
         persist(&messages, &mut session, &model);
-        // Advance spinner
-        spinner_tick = spinner_tick.wrapping_add(1);
+        // Advance spinner; force a redraw while it is animating.
+        if agent_busy {
+            spinner_tick = spinner_tick.wrapping_add(1);
+            dirty = true;
+        }
     }
 
     Ok(())
