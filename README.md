@@ -94,7 +94,7 @@ lean --no-session            # run without persistence
 | Area | Description |
 |------|-------------|
 | **Chat** | Conversation history, tool calls with results, and streaming output |
-| **Input** | Multiline editing (`Enter` for newline, `Ctrl+Enter` to send), history with `↑`/`↓`, slash commands, `Esc` to quit |
+| **Input** | Auto-wrapping multiline editing (`Enter` send, `Shift+Enter` newline, `Ctrl+C` clear), history with `↑`/`↓`, slash commands, `Esc` to quit |
 | **Overlays** | Approval prompts, session picker, and allowlist editor |
 | **Footer** | Current model, working directory, and token usage |
 

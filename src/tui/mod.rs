@@ -38,11 +38,24 @@ pub async fn run(opts: RunOpts) -> anyhow::Result<()> {
         crossterm::event::EnableMouseCapture,
         crossterm::event::EnableBracketedPaste
     )?;
+    // Best-effort: enable the kitty keyboard protocol so Shift+Enter (and other
+    // modified keys) are distinguishable. Unsupported terminals ignore the
+    // sequence; we skip the capability probe to avoid a blocking query.
+    let _ = crossterm::execute!(
+        stdout,
+        crossterm::event::PushKeyboardEnhancementFlags(
+            crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        )
+    );
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = ratatui::Terminal::new(backend)?;
 
     let res = app_loop(&mut terminal, opts).await;
 
+    let _ = crossterm::execute!(
+        terminal.backend_mut(),
+        crossterm::event::PopKeyboardEnhancementFlags
+    );
     crossterm::terminal::disable_raw_mode()?;
     crossterm::execute!(
         terminal.backend_mut(),
@@ -56,6 +69,60 @@ pub async fn run(opts: RunOpts) -> anyhow::Result<()> {
         eprintln!("TUI error: {}", e);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wrap_prefers_word_boundary_and_drops_break_space() {
+        assert_eq!(hard_wrap_str("hello world foo", 10), "hello\nworld foo");
+    }
+
+    #[test]
+    fn wrap_falls_back_to_exact_column_without_stripping_chars() {
+        assert_eq!(hard_wrap_str("abcdefghij", 4), "abcd\nefgh\nij");
+    }
+
+    #[test]
+    fn wrap_measures_display_width_for_wide_chars() {
+        // "犬" and "猫" are two columns each, so only "ab犬" (four columns) fits.
+        // A char-counting wrap would wrongly keep all four chars on one line.
+        assert_eq!(hard_wrap_str("ab犬猫", 4), "ab犬\n猫");
+        assert_eq!(hard_wrap_str("ab犬猫", 3), "ab\n犬\n猫");
+    }
+
+    #[test]
+    fn wrap_leaves_fitting_text_untouched() {
+        assert_eq!(hard_wrap_str("hello", 10), "hello");
+        assert_eq!(hard_wrap_str("ab\ncd", 10), "ab\ncd");
+    }
+
+    #[test]
+    fn wrap_cursor_line_wraps_tail_typing() {
+        let mut ta = TextArea::from(["hello world"]);
+        ta.move_cursor(CursorMove::End);
+        wrap_cursor_line(&mut ta, 6);
+        assert_eq!(ta.lines().to_vec(), vec!["hello", "world"]);
+        assert_eq!(ta.cursor(), (1, 5));
+    }
+
+    #[test]
+    fn wrap_cursor_line_ignores_cursor_away_from_line_end() {
+        let mut ta = TextArea::from(["hello world"]);
+        ta.move_cursor(CursorMove::Head);
+        wrap_cursor_line(&mut ta, 6);
+        assert_eq!(ta.lines().to_vec(), vec!["hello world"]);
+    }
+
+    #[test]
+    fn wrap_cursor_line_uses_char_boundaries_for_long_tokens() {
+        let mut ta = TextArea::from(["abcdefgh"]);
+        ta.move_cursor(CursorMove::End);
+        wrap_cursor_line(&mut ta, 4);
+        assert_eq!(ta.lines().to_vec(), vec!["abcd", "efgh"]);
+    }
 }
 
 // ── Message model ──────────────────────────────────────────────
@@ -639,6 +706,97 @@ fn crossterm_key_to_input(k: crossterm::event::KeyEvent) -> TAInput {
     }
 }
 
+// ── Hard wrap ──────────────────────────────────────────────────
+
+fn char_display_width(c: char) -> usize {
+    use unicode_width::UnicodeWidthChar;
+    c.width().unwrap_or(0)
+}
+
+fn line_display_width(chars: &[char]) -> usize {
+    chars.iter().map(|&c| char_display_width(c)).sum()
+}
+
+/// Choose where to split an over-long line so the first part fits `max_cols`
+/// columns. Prefers the last space that fits (the space is consumed by the
+/// break), falling back to an exact column split at a char boundary.
+/// Returns `(split_index, drop_space)`.
+fn wrap_split(chars: &[char], max_cols: usize) -> (usize, bool) {
+    let mut width = 0usize;
+    let mut fitting = 0usize;
+    let mut last_space: Option<usize> = None;
+    for (i, &c) in chars.iter().enumerate() {
+        let w = char_display_width(c);
+        if width + w > max_cols {
+            break;
+        }
+        width += w;
+        fitting = i + 1;
+        if c == ' ' && i >= 1 {
+            last_space = Some(i);
+        }
+    }
+    match last_space {
+        Some(i) => (i, true),
+        None => (fitting.max(1), false),
+    }
+}
+
+/// Insert hard newlines so the cursor's line stops exceeding `max_cols` columns.
+/// Only acts when the cursor sits at the end of its line (the tail-typing case
+/// that fills the input box).
+fn wrap_cursor_line(ta: &mut TextArea<'_>, max_cols: usize) {
+    if max_cols == 0 {
+        return;
+    }
+    loop {
+        let cur = ta.cursor();
+        let (row, col) = (cur.0, cur.1);
+        let chars: Vec<char> = ta.lines()[row].chars().collect();
+        if col != chars.len() || line_display_width(&chars) <= max_cols {
+            break;
+        }
+        let (split, drop_space) = wrap_split(&chars, max_cols);
+        if split == 0 || split >= chars.len() {
+            break;
+        }
+        ta.move_cursor(CursorMove::Jump(row as u16, split as u16));
+        if drop_space {
+            ta.delete_next_char();
+        }
+        ta.insert_newline();
+        ta.move_cursor(CursorMove::End);
+    }
+}
+
+/// Hard-wrap text before insertion (e.g. bracketed paste): each logical line is
+/// wrapped independently at `max_cols` columns.
+fn hard_wrap_str(text: &str, max_cols: usize) -> String {
+    if max_cols == 0 {
+        return text.to_string();
+    }
+    text.split('\n')
+        .map(|line| {
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            let mut out = String::new();
+            let mut rest: Vec<char> = line.chars().collect();
+            while line_display_width(&rest) > max_cols {
+                let (split, drop_space) = wrap_split(&rest, max_cols);
+                if split == 0 || split >= rest.len() {
+                    break;
+                }
+                out.extend(rest[..split].iter());
+                out.push('\n');
+                let skip = if drop_space { split + 1 } else { split };
+                rest = rest[skip.min(rest.len())..].to_vec();
+            }
+            out.extend(rest.iter());
+            out
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn draw_input(f: &mut Frame, area: Rect, textarea: &mut TextArea<'_>) {
     // Apply ash styling every frame (cheap)
     textarea.set_style(Style::default().fg(ASHEN.bone).bg(THEME.input_bg));
@@ -650,7 +808,7 @@ fn draw_input(f: &mut Frame, area: Rect, textarea: &mut TextArea<'_>) {
     );
     textarea.set_cursor_line_style(Style::default().bg(THEME.input_bg));
     textarea.set_placeholder_text(
-        "  ▸  type a message…  (@file $skill • /help • Enter send)",
+        "  ▸  type a message…  (/help • Enter send • Shift+Enter newline)",
     );
     textarea.set_placeholder_style(Style::default().fg(ASHEN.charcoal).bg(THEME.input_bg));
     // prompt gutter: we prepend via block title style instead of manual truncation
@@ -1603,7 +1761,7 @@ async fn app_loop(
         );
         ta.set_cursor_line_style(Style::default().bg(THEME.input_bg));
         ta.set_placeholder_text(
-            "  ▸  type a message…  (@file $skill • /help • Enter send)",
+            "  ▸  type a message…  (/help • Enter send • Shift+Enter newline)",
         );
         ta.set_placeholder_style(Style::default().fg(ASHEN.charcoal).bg(THEME.input_bg));
         ta.set_block(
@@ -1649,8 +1807,8 @@ async fn app_loop(
         }
         let term_size = terminal.size()?;
         let queue_rows = msg_queue.len().min(2) as u16;
-        // Dynamic input height 1..5 (auto-grow like pi/jcode, clamped)
-        let input_height = (textarea.lines().len() as u16).clamp(1, 5);
+        // Dynamic input height 1..6 (auto-grow like pi/jcode, clamped)
+        let input_height = (textarea.lines().len() as u16).clamp(1, 6);
         let overhead = 4 + queue_rows + input_height; // header + sep + sep + queue + input + footer
                                        // Content area: starts at row 2 (after header + sep), height is the rest
         let content_area = Rect {
@@ -1751,7 +1909,9 @@ async fn app_loop(
             match event::read()? {
                 Event::Paste(data) => {
                     crate::telemetry::record("paste");
-                    textarea.insert_str(data);
+                    let max_cols = (chunks[5].width as usize).saturating_sub(1);
+                    textarea.insert_str(hard_wrap_str(&data, max_cols));
+                    wrap_cursor_line(&mut textarea, max_cols);
                     ac_matches = current_completions(&textarea);
                     ac_idx = 0;
                 }
@@ -2015,6 +2175,7 @@ async fn app_loop(
                         continue;
                     }
                     let mut submit_pending = false;
+                    let lines_before = textarea.lines().to_vec();
                     // Ctrl+ base clearing handled before textarea
                     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
                     let alt = k.modifiers.contains(KeyModifiers::ALT);
@@ -2373,6 +2534,14 @@ async fn app_loop(
                                 }
                             }
                         }
+                    }
+                    // Hard-wrap the input line when typing reached the right edge
+                    if textarea.lines() != lines_before.as_slice() {
+                        let max_cols = (chunks[5].width as usize).saturating_sub(1);
+                        wrap_cursor_line(&mut textarea, max_cols);
+                        ac_matches = current_completions(&textarea);
+                        ac_idx = 0;
+                        ac_scroll = 0;
                     }
                     // Handle bracketed-paste style: ac_matches index scroll sync
                     if !ac_matches.is_empty() {

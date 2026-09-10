@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Input auto-wrap** — the prompt box hard-wraps at the right edge, inserting real newlines (word boundary preferred, exact column for long tokens) and growing up to 6 rows. Pasted text is wrapped the same way.
+- **`Shift+Enter` newline** — the TUI now pushes the kitty keyboard protocol (`DISAMBIGUATE_ESCAPE_CODES`), so `Shift+Enter` is reported distinctly and inserts a newline; unsupported terminals ignore the sequence.
+
+### Changed
+
+- **Input placeholder / README** — document `Enter` send, `Shift+Enter` newline, `Ctrl+C` clear.
+
 ## [0.2.1] - 2026-09-10
 
 Release-engineering lifecycle — cross-platform public GitHub Releases.

@@ -1293,6 +1293,7 @@ dependencies = [
  "similar",
  "tokio",
  "tokio-stream",
+ "unicode-width",
  "walkdir",
  "wildmatch",
 ]

@@ -34,5 +34,6 @@ async-stream = "0.3"
 base64 = "0.22"
 similar = { version = "2", features = ["text"] }
 wildmatch = "2"
+unicode-width = "0.2"
 rmcp = { version = "3.2", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 http = "1"
