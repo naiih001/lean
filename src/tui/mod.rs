@@ -874,7 +874,6 @@ fn draw_footer(
         String::new()
     };
     let right = format!(" {} msgs ", msg_count);
-    let model_display = format!("{}{}", model, api_suffix_for_alias(model));
 
     // Shorten cwd to show last 2 components
     let short_cwd = {
@@ -893,13 +892,13 @@ fn draw_footer(
     };
     let center = format!(" {} ", short_cwd);
 
-    let used = spinner_char.len() + auto_badge.len() + 1 + model_display.len() + 2 + center.len() + right.len();
+    let used = spinner_char.len() + auto_badge.len() + 1 + model.len() + 2 + center.len() + right.len();
     let gap = if used < width { width - used } else { 0 };
     let gap_left = gap / 2;
     let gap_right = gap - gap_left;
 
     let mut spans = vec![Span::styled(
-        format!(" {} ", model_display),
+        format!(" {} ", model),
         Style::default().fg(ASHEN.smoke).bg(THEME.page_bg),
     )];
     if !auto_badge.is_empty() {
