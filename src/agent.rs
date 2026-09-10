@@ -284,6 +284,10 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
                         if data == "[DONE]" { break; }
                         if data.is_empty() { continue; }
                         // Try responses event first
+                        // debug for tool delta issues
+                        if data.contains("function_call") || data.contains("delta") {
+                            // eprintln!("[DEBUG] data: {}", data);
+                        }
                         if let Some(ev) = llm::parse_responses_event(data) {
                             match ev {
                                 llm::ResponsesEvent::OutputTextDelta { delta, .. } => {
@@ -301,34 +305,46 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
                                 },
                                 llm::ResponsesEvent::OutputItemAdded { item } => {
                                     if item.item_type == "function_call" {
-                                        let cid = item.call_id.clone().unwrap_or_else(|| item.id.clone().unwrap_or_default());
+                                        let fc_id = item.id.clone().unwrap_or_default();
+                                        let call_id = item.call_id.clone().unwrap_or_else(|| fc_id.clone());
                                         let name = item.name.clone().unwrap_or_default();
-                                        if !cid.is_empty() {
-                                            let entry = tool_acc.entry(cid.clone()).or_insert_with(|| ToolAccum { id: cid.clone(), name: String::new(), args: String::new() });
+                                        if !call_id.is_empty() {
+                                            let entry = tool_acc.entry(call_id.clone()).or_insert_with(|| ToolAccum { id: call_id.clone(), name: String::new(), args: String::new() });
                                             if !name.is_empty() { entry.name = name.clone(); }
-                                            pending_calls.insert(cid.clone(), name);
+                                            entry.id = call_id.clone();
+                                            if !fc_id.is_empty() {
+                                                pending_calls.insert(fc_id.clone(), call_id.clone());
+                                                // also keep reverse for lookup if delta uses fc
+                                            }
                                         }
                                     }
                                 },
                                 llm::ResponsesEvent::OutputItemDone { item } => {
                                     if item.item_type == "function_call" {
-                                        let cid = item.call_id.clone().unwrap_or_else(|| item.id.clone().unwrap_or_default());
+                                        let fc_id = item.id.clone().unwrap_or_default();
+                                        let call_id = item.call_id.clone().unwrap_or_else(|| fc_id.clone());
                                         let name = item.name.clone().unwrap_or_default();
-                                        if !cid.is_empty() {
-                                            let entry = tool_acc.entry(cid.clone()).or_insert_with(|| ToolAccum { id: cid.clone(), name: String::new(), args: String::new() });
+                                        let key = if !call_id.is_empty() { call_id.clone() } else { fc_id.clone() };
+                                        // also resolve via pending if fc key exists but we keyed by call
+                                        let resolved_key = if tool_acc.contains_key(&key) { key.clone() } else if let Some(mapped) = pending_calls.get(&fc_id) { mapped.clone() } else { key.clone() };
+                                        if !resolved_key.is_empty() {
+                                            let entry = tool_acc.entry(resolved_key.clone()).or_insert_with(|| ToolAccum { id: call_id.clone(), name: String::new(), args: String::new() });
                                             if !name.is_empty() { entry.name = name; }
                                             if let Some(args) = item.arguments { if !args.is_empty() { entry.args = args; } }
+                                            if !call_id.is_empty() { entry.id = call_id.clone(); }
                                         }
                                     }
                                 },
                                 llm::ResponsesEvent::FunctionCallArgsDelta { delta, item_id, call_id, .. } => {
-                                    let key = call_id.clone().or(item_id.clone()).unwrap_or_default();
+                                    let raw = call_id.clone().or(item_id.clone()).unwrap_or_default();
+                                    // Resolve fc -> call via pending_calls
+                                    let resolved = if let Some(mapped) = pending_calls.get(&raw) { mapped.clone() } else { raw.clone() };
+                                    let key = if tool_acc.contains_key(&resolved) { resolved.clone() } else if tool_acc.contains_key(&raw) { raw.clone() } else { resolved.clone() };
                                     if key.is_empty() {
-                                        // fallback: use first entry or create generic
                                         if let Some((k, _)) = tool_acc.iter().next().map(|(k,v)| (k.clone(), v)) {
                                             if let Some(entry) = tool_acc.get_mut(&k) { entry.args.push_str(&delta); }
                                         } else {
-                                            // create anonymous
+                                            // No entry yet — create placeholder; name will be filled by OutputItemAdded/Done
                                             let entry = tool_acc.entry("call_0".to_string()).or_insert_with(|| ToolAccum { id: "call_0".to_string(), name: String::new(), args: String::new() });
                                             entry.args.push_str(&delta);
                                         }
@@ -337,14 +353,38 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
                                         entry.args.push_str(&delta);
                                     }
                                 },
-                                llm::ResponsesEvent::FunctionCallArgsDone { arguments } => {
-                                    // If any tool_acc has empty args, fill with this
-                                    let mut assigned = false;
-                                    for (_, entry) in tool_acc.iter_mut() { if entry.args.is_empty() { entry.args = arguments.clone(); assigned = true; break; } }
-                                    if !assigned {
-                                        // maybe specific key unknown, create
-                                        let entry = tool_acc.entry("call_0".to_string()).or_insert_with(|| ToolAccum { id: "call_0".to_string(), name: String::new(), args: String::new() });
-                                        if entry.args.is_empty() { entry.args = arguments; }
+                                llm::ResponsesEvent::FunctionCallArgsDone { arguments, item_id, call_id, .. } => {
+                                    // Try to map to correct tool via item_id/call_id
+                                    let raw = call_id.clone().or(item_id.clone()).unwrap_or_default();
+                                    let resolved = if let Some(mapped) = pending_calls.get(&raw) { mapped.clone() } else { raw.clone() };
+                                    let target = if tool_acc.contains_key(&resolved) { Some(resolved.clone()) } else if tool_acc.contains_key(&raw) { Some(raw.clone()) } else { None };
+                                    if let Some(k) = target {
+                                        if let Some(entry) = tool_acc.get_mut(&k) {
+                                            if entry.args.is_empty() {
+                                                entry.args = arguments.clone();
+                                            } else if entry.args != arguments {
+                                                // delta already filled, done may be same — only update if different and empty or placeholder
+                                                // avoid overwriting correctly streamed args
+                                            }
+                                        }
+                                    } else {
+                                        // No matching entry — try empty slot, else ignore (avoid duplicate call_0)
+                                        let mut assigned = false;
+                                        for (_, entry) in tool_acc.iter_mut() {
+                                            if entry.args.is_empty() {
+                                                entry.args = arguments.clone();
+                                                assigned = true;
+                                                break;
+                                            }
+                                        }
+                                        if !assigned {
+                                            // Check if any entry already has same arguments — likely duplicate done event, ignore
+                                            let already_has = tool_acc.values().any(|e| e.args == arguments);
+                                            if !already_has {
+                                                // Only create new if truly unknown and no empty slot, but avoid call_0 duplicate
+                                                // For safety, don't create; the tool call was already handled via delta
+                                            }
+                                        }
                                     }
                                 },
                                 llm::ResponsesEvent::Completed { response } => {
@@ -393,11 +433,21 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
                             llm::ResponsesEvent::OutputTextDelta { delta, .. } => { accum_text.push_str(&delta); yield AgentEvent::Text { delta }; },
                             llm::ResponsesEvent::ReasoningDelta { delta } | llm::ResponsesEvent::ReasoningTextDelta { delta } => { accum_reasoning.push_str(&delta); yield AgentEvent::Reasoning { delta }; },
                             llm::ResponsesEvent::OutputItemAdded { item } => {
-                                if item.item_type == "function_call" { let cid = item.call_id.clone().unwrap_or_else(|| item.id.clone().unwrap_or_default()); let name = item.name.clone().unwrap_or_default(); if !cid.is_empty() { let e = tool_acc.entry(cid.clone()).or_insert_with(|| ToolAccum { id: cid.clone(), name: String::new(), args: String::new() }); if !name.is_empty(){e.name=name;} } }
+                                if item.item_type == "function_call" {
+                                    let fc_id = item.id.clone().unwrap_or_default();
+                                    let call_id = item.call_id.clone().unwrap_or_else(|| fc_id.clone());
+                                    let name = item.name.clone().unwrap_or_default();
+                                    if !call_id.is_empty() {
+                                        let e = tool_acc.entry(call_id.clone()).or_insert_with(|| ToolAccum { id: call_id.clone(), name: String::new(), args: String::new() });
+                                        if !name.is_empty() { e.name = name; }
+                                        e.id = call_id.clone();
+                                    }
+                                }
                             },
                             llm::ResponsesEvent::FunctionCallArgsDelta { delta, item_id, call_id, .. } => {
-                                let key = call_id.or(item_id).unwrap_or_default();
-                                if key.is_empty() { if let Some((k,_))=tool_acc.iter().next().map(|(k,v)|(k.clone(),v)) { if let Some(e)=tool_acc.get_mut(&k){e.args.push_str(&delta);} } } else { let e=tool_acc.entry(key.clone()).or_insert_with(|| ToolAccum{id:key.clone(),name:String::new(),args:String::new()}); e.args.push_str(&delta); }
+                                let raw = call_id.clone().or(item_id.clone()).unwrap_or_default();
+                                let target = if tool_acc.contains_key(&raw) { raw.clone() } else if let Some((k,_)) = tool_acc.iter().next().map(|(k,v)|(k.clone(),v)) { k.clone() } else { raw.clone() };
+                                if target.is_empty() { if let Some((k,_))=tool_acc.iter().next().map(|(k,v)|(k.clone(),v)) { if let Some(e)=tool_acc.get_mut(&k){e.args.push_str(&delta);} } } else { let e=tool_acc.entry(target.clone()).or_insert_with(|| ToolAccum{id: target.clone(), name:String::new(), args:String::new()}); e.args.push_str(&delta); }
                             },
                             _ => {}
                         }

@@ -509,7 +509,12 @@ pub enum ResponsesEvent {
         #[serde(default)] call_id: Option<String>,
     },
     #[serde(rename = "response.function_call_arguments.done")]
-    FunctionCallArgsDone { arguments: String },
+    FunctionCallArgsDone {
+        arguments: String,
+        #[serde(default)] item_id: Option<String>,
+        #[serde(default)] output_index: Option<u32>,
+        #[serde(default)] call_id: Option<String>,
+    },
     #[serde(rename = "response.completed")]
     Completed { response: ResponsesCompleted },
     #[serde(other)]
