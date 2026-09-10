@@ -54,6 +54,7 @@ fn default_env_api_key() -> String {
         .unwrap_or_else(|_| "sk-test".to_string())
 }
 
+/// Canonical fresh-install template — must stay OpenAI (Q3). Do not change to localhost zen proxy.
 fn template_config() -> ModelsConfig {
     let mut models = HashMap::new();
     models.insert(
@@ -204,5 +205,14 @@ mod tests {
         assert_eq!(e.model, "gpt-4o");
         assert_eq!(e.base_url.as_deref(), Some("https://api.openai.com/v1"));
         assert_eq!(e.api_key_env.as_deref(), Some("OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn template_is_openai_default() {
+        let cfg = template_config();
+        assert!(!cfg.default.contains("mimo"));
+        assert!(!cfg.models.values().any(|e| e.base_url.as_deref().unwrap_or("").contains("127.0.0.1")));
+        let e = &cfg.models["gpt-4o"];
+        assert_eq!(e.base_url.as_deref(), Some("https://api.openai.com/v1"));
     }
 }
