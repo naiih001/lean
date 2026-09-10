@@ -821,6 +821,19 @@ fn draw_input(f: &mut Frame, area: Rect, textarea: &mut TextArea<'_>) {
     f.render_widget(&*textarea, area);
 }
 
+fn api_suffix_for_alias(alias: &str) -> String {
+    if let Ok(cfg) = crate::models::load() {
+        if let Some(e) = cfg.models.get(alias) {
+            let mode = e.api_mode();
+            return match mode {
+                crate::models::ApiMode::Responses => " (responses)".to_string(),
+                crate::models::ApiMode::ChatCompletions => " (chat)".to_string(),
+            };
+        }
+    }
+    String::new()
+}
+
 fn draw_footer(
     f: &mut Frame,
     area: Rect,
@@ -861,6 +874,7 @@ fn draw_footer(
         String::new()
     };
     let right = format!(" {} msgs ", msg_count);
+    let model_display = format!("{}{}", model, api_suffix_for_alias(model));
 
     // Shorten cwd to show last 2 components
     let short_cwd = {
@@ -879,13 +893,13 @@ fn draw_footer(
     };
     let center = format!(" {} ", short_cwd);
 
-    let used = spinner_char.len() + auto_badge.len() + 1 + model.len() + 2 + center.len() + right.len();
+    let used = spinner_char.len() + auto_badge.len() + 1 + model_display.len() + 2 + center.len() + right.len();
     let gap = if used < width { width - used } else { 0 };
     let gap_left = gap / 2;
     let gap_right = gap - gap_left;
 
     let mut spans = vec![Span::styled(
-        format!(" {} ", model),
+        format!(" {} ", model_display),
         Style::default().fg(ASHEN.smoke).bg(THEME.page_bg),
     )];
     if !auto_badge.is_empty() {
@@ -2775,13 +2789,20 @@ async fn app_loop(
                                         Ok(cfg) => {
                                             let entry = cfg.models.get(&model);
                                             let detail = if let Some(e) = entry {
-                                                format!(" → {} @ {}", e.model, e.base_url.as_deref().unwrap_or("env: OPENCODE_BASE_URL"))
+                                                let api_tag = match e.api_mode() { crate::models::ApiMode::Responses => "responses", _ => "chat" };
+                                                format!(" → {} @ {} [{}]", e.model, e.base_url.as_deref().unwrap_or("env: OPENCODE_BASE_URL"), api_tag)
                                             } else {
                                                 String::new()
                                             };
                                             let mut aliases: Vec<String> = cfg.models.keys().cloned().collect();
                                             aliases.sort();
-                                            let available = aliases.join(", ");
+                                            let decorated: Vec<String> = aliases.iter().map(|a| {
+                                                if let Some(e) = cfg.models.get(a) {
+                                                    let tag = match e.api_mode() { crate::models::ApiMode::Responses => "responses", _ => "chat" };
+                                                    format!("{} ({})", a, tag)
+                                                } else { a.clone() }
+                                            }).collect();
+                                            let available = decorated.join(", ");
                                             messages.push(Msg {
                                                 role: "system".into(),
                                                 content: format!("current model: {}{} (available: {})\nconfig: {} — use /model <alias> to switch", model, detail, available, crate::models::path_display()), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
@@ -2811,9 +2832,10 @@ async fn app_loop(
                                                     s.model = model.clone();
                                                     let _ = s.save();
                                                 }
+                                                let api_tag = match r.api_mode { crate::models::ApiMode::Responses => "responses", _ => "chat" };
                                                 messages.push(Msg {
                                                     role: "system".into(),
-                                                    content: format!("switched to {} ({} @ {}) — live + persisted", r.alias, r.model, r.base_url), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                                    content: format!("switched to {} ({} @ {} — {}) — live + persisted", r.alias, r.model, r.base_url, api_tag), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                             }
                                             Err(e) => {
                                                 messages.push(Msg { role: "system".into(), content: format!("model switch failed: {}", e), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});

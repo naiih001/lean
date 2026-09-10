@@ -176,7 +176,33 @@ lean --dir-guard-disabled      # disable directory confinement guard
 | `~/.lean/dir_allowlist.json` | Directory guard allowlist |
 | `~/.lean/memory.json` | Persistent memories |
 | `~/.lean/sessions/` | Persisted session history (pruned to 50 messages) |
+| `~/.lean/models.json` | Model aliases + provider config (see `api` field below) |
 | `./.env` | Project-local environment variables |
+
+### Model Config (`~/.lean/models.json`)
+
+```json
+{
+  "default": "gpt-4o",
+  "models": {
+    "gpt-4o": {
+      "model": "gpt-4o",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY"
+    },
+    "gpt-5-responses": {
+      "model": "gpt-5",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "api": "responses"
+    }
+  }
+}
+```
+- `model` — real model id sent to the API
+- `base_url` — optional override (defaults to `OPENAI_BASE_URL` / `OPENCODE_BASE_URL`)
+- `api_key_env` / `api_key` — env var name or inline key
+- `api` — `"chat_completions"` (default, `POST /v1/chat/completions`) or `"responses"` (`POST /v1/responses`). Aliases: `chat`/`completions` → chat, `responses` → responses. Existing configs without `api` keep working as chat completions.
 
 ---
 
@@ -264,14 +290,15 @@ cargo build --release
 src/
   main.rs        # CLI argument parsing
   tui/           # Terminal UI (ratatui + crossterm)
-  agent.rs       # Agent loop (SSE, tool routing)
-  llm.rs         # OpenAI-compatible client and tool definitions
+  agent.rs       # Agent loop (dual-stack: /chat/completions + /responses, SSE, tool routing)
+  llm.rs         # OpenAI-compatible client, tool defs, and Responses translation
   tools.rs       # Tool execution
   bash_guard.rs  # Bash allowlist guard
   dir_guard.rs   # Directory confinement guard
   session.rs     # Session persistence
   memory.rs      # Memory store
   skills.rs      # Skill discovery
+  models.rs      # Model config + ApiMode (chat vs responses)
 ```
 
 ---
@@ -279,7 +306,10 @@ src/
 ## FAQ
 
 **Which API does `lean` use?**
-Any OpenAI-compatible endpoint. Configure via `OPENAI_API_KEY` / `OPENAI_BASE_URL` (or `OPENCODE_*` alias) and model aliases in `~/.lean/models.json`. Fresh installs default to `gpt-4o` at `https://api.openai.com/v1`.
+Any OpenAI-compatible endpoint. Configure via `OPENAI_API_KEY` / `OPENAI_BASE_URL` (or `OPENCODE_*` alias) and model aliases in `~/.lean/models.json`. Fresh installs default to `gpt-4o` at `https://api.openai.com/v1`. Supports both `POST /v1/chat/completions` and `POST /v1/responses` — set per-model `"api": "responses"` to use Responses API (see Model Config above).
+
+**Does `lean` support `/v1/responses`?**
+Yes. Add `"api": "responses"` to a model entry in `~/.lean/models.json` (or use alias `"api": "chat"` for chat completions). Verify with `cat ~/.lean/models.json | jq .`; switch with `lean --model <alias>` or `/model <alias>` in the TUI — footer shows `(chat)` vs `(responses)`. Both modes share the same tools and streaming UX.
 
 **How do I switch models?**
 `lean --model <alias>` for one run, or `/model <alias>` inside the TUI (Tab completes aliases). Edit `~/.lean/models.json` to add providers — `alias → { model, base_url, api_key_env }`.

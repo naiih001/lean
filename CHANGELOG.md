@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Dual-stack `/v1/responses` support** — per-model `api` field in `~/.lean/models.json` (`"chat_completions"` default / `"responses"`). New `ApiMode` enum, `responses_url()`, tool definition converter, `chat_messages → instructions+input` translation, and streaming `ResponsesEvent` SSE parser. Agent branch `POST /v1/responses` with same `AgentEvent` UX, history translation, and focus/autorecall via `instructions`. TUI footer now shows `(chat)` / `(responses)` and `/model` lists/picks with api tag. Backwards compatible: existing configs default to chat completions.
+
 ## [0.3.0] - 2026-09-10
 
 ### Added
