@@ -1,5 +1,10 @@
 # lean
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/naiih001/lean?label=release)](https://github.com/naiih001/lean/releases)
+[![CI](https://github.com/naiih001/lean/actions/workflows/release.yml/badge.svg)](https://github.com/naiih001/lean/actions)
+[![Rust](https://img.shields.io/badge/rust-1.78%2B-orange.svg)](https://www.rust-lang.org)
+
 Light, fast autonomous coding assistant — single native binary, TUI-first.
 
 `lean` runs in your terminal, streams responses over SSE, and executes a focused set of tools for files, shell, web search, memories, and skills. No Electron, no Node — just `cargo build --release`.
@@ -23,27 +28,22 @@ Works with any OpenAI-compatible API.
 
 ## Installation
 
-### Prerequisites
-
-- Rust toolchain (stable)
-
-#### Optional (MCP stdio only)
-
-- Node.js 20+ and `npx` — only if you use MCP servers with `"command": "npx"` (e.g. `@modelcontextprotocol/server-github`). HTTP MCP (`"url": "https://..."`) needs no extra install.
-
 ### Quick install (recommended)
 
 **Linux / macOS:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/naiih001/lean/main/install.sh | bash
-# pin version: LEAN_VERSION=v0.2.0 curl -fsSL https://raw.githubusercontent.com/naiih001/lean/main/install.sh | bash
+# pin to a version:
+LEAN_VERSION=v0.2.1 curl -fsSL https://raw.githubusercontent.com/naiih001/lean/main/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
 irm https://raw.githubusercontent.com/naiih001/lean/main/install.ps1 | iex
+# pin to a version:
+$env:LEAN_VERSION="v0.2.1"; irm https://raw.githubusercontent.com/naiih001/lean/main/install.ps1 | iex
 ```
 
 ### Prebuilt binaries
@@ -54,7 +54,7 @@ irm https://raw.githubusercontent.com/naiih001/lean/main/install.ps1 | iex
 | macOS x86_64 | `lean-macos-x86_64.tar.gz` | Apple Silicon via Rosetta (arm64 via build from source) |
 | Windows x86_64 | `lean-windows-x86_64.zip` | No extra deps |
 
-Download from the [Releases](https://github.com/naiih001/lean/releases) page. Each asset has a `.sha256` checksum.
+Download from the [Releases](https://github.com/naiih001/lean/releases) page. Each asset ships with a `.sha256` checksum verified by the installers.
 
 ### Build from source
 
@@ -63,12 +63,21 @@ cargo build --release
 ./target/release/lean --help
 ```
 
-Prerequisites: Rust stable 1.78+, (Linux) `libssl-dev` / `libssl3`, (MCP stdio) Node 20+ & `npx`.
+### Prerequisites
+
+| Requirement | Version | Notes |
+|---|---|---|
+| Rust toolchain | 1.78+ stable | `rustup` recommended |
+| Linux system libs | `libssl-dev` / `libssl3` + `ca-certificates` | Only for building/running on Linux |
+| Node.js | 20+ with `npx` | Optional — only for MCP stdio servers (`"command": "npx"`) |
+
+> HTTP MCP (`"url": "https://..."`) needs no Node. See [MCP](#mcp-model-context-protocol) for opt-in setup.
 
 ### Development
 
 ```bash
 cargo run -- --help
+cargo check
 ```
 
 ---
