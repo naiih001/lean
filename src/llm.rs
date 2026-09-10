@@ -41,6 +41,10 @@ impl Client {
     pub fn chat_url(&self) -> String {
         format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
     }
+
+    pub fn responses_url(&self) -> String {
+        format!("{}/responses", self.base_url.trim_end_matches('/'))
+    }
 }
 
 pub fn native_tool_definitions() -> Vec<Value> {
