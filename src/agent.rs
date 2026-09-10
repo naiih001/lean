@@ -23,6 +23,7 @@ If a tool fails, read the error and try a different approach. Don't repeat a too
 You are confined to the working directory shown in the footer. Paths outside it need user approval.\n\n\
 ## Tool guidance\n\
 - Read before edit. Make precise edits with unique oldText.\n\
+- If you need a file, call read_file immediately — don't just say you will.\n\
 - When done, give a short summary and state you are done. If unsure what to do next, re-read the goal and continue.\n";
 
 const TOTAL_BUDGET: usize = 4000;
