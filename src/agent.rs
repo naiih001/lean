@@ -25,19 +25,55 @@ You are confined to the working directory shown in the footer. Paths outside it 
 - Read before edit. Make precise edits with unique oldText.\n\
 - When done, give a short summary and state you are done. If unsure what to do next, re-read the goal and continue.\n";
 
+const TOTAL_BUDGET: usize = 4000;
+const SKILL_MAX_COUNT: usize = 8;
+const SKILL_LINE_MAX: usize = 120;
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut t: String = s.chars().take(max - 1).collect();
+    t.push('…');
+    t
+}
+
 pub async fn build_system_prompt() -> String {
-    let catalog = skills::get_skill_catalog().await;
+    let raw_catalog = skills::get_skill_catalog().await;
+    // Diet: keep names+one-line, max 8, each line truncated to 120 chars
+    let catalog = {
+        let lines: Vec<&str> = raw_catalog.lines().collect();
+        // If catalog is the "No skills" message, keep as is truncated
+        if raw_catalog.starts_with("No skills") {
+            truncate_str(&raw_catalog, 300)
+        } else {
+            let mut out: Vec<String> = Vec::new();
+            for line in lines.iter().take(SKILL_MAX_COUNT) {
+                // line is "- name: desc (path: ...)" — keep "- name: desc" part, truncate
+                let short = if let Some(path_idx) = line.find(" (path:") {
+                    &line[..path_idx]
+                } else {
+                    line
+                };
+                out.push(truncate_str(short, SKILL_LINE_MAX));
+            }
+            if lines.len() > SKILL_MAX_COUNT {
+                out.push(format!("... +{} more (use read_skill to see)", lines.len() - SKILL_MAX_COUNT));
+            }
+            out.join("\n")
+        }
+    };
     let cwd = crate::dir_guard::project_root().display().to_string();
     let dir_note = if crate::dir_guard::is_disabled() {
         String::new()
     } else {
-        format!("\n\n## Confinement\nYou are confined to CWD: `{}`. Any file or bash path outside this dir will be blocked until the user approves ([a]/[A]). Do not try to bypass with `../` or absolute paths unless the user asked to go outside.", cwd)
+        truncate_str(&format!("\n\n## Confinement\nYou are confined to CWD: `{}`. Paths outside need approval.", cwd), 300)
     };
     let mcp_snap = crate::mcp::snapshot();
     let mcp_note = if mcp_snap.is_empty() {
-        "\n\n## MCP\nNo MCP servers configured. To enable MCP, create ~/.lean/mcp.json or .lean/mcp.json (see mcp.json.example).".to_string()
+        "\n\n## MCP\nNo MCP servers configured.".to_string()
     } else {
-        let mut s = String::from("\n\n## MCP Servers (tools are namespaced server__tool, every call requires approval [a]/[A])\n");
+        let mut s = String::from("\n\n## MCP Servers (server__tool, needs approval)\n");
         for srv in &mcp_snap {
             let status = srv.status.as_str();
             s.push_str(&format!("- {} [{}] ({} tools)", srv.name, status, srv.tools.len()));
@@ -47,17 +83,32 @@ pub async fn build_system_prompt() -> String {
                 if srv.tools.len() > 5 { s.push_str(&format!(" +{} more", srv.tools.len()-5)); }
             }
             if let Some(err) = &srv.error_detail {
-                s.push_str(&format!(" — error: {}", err));
+                s.push_str(&format!(" — {}", truncate_str(err, 80)));
             }
             s.push('\n');
         }
-        s.push_str("\nUse MCP tools like you use native tools. They are merged into the tool list as server__tool. Check /mcp for status.");
-        s
+        truncate_str(&s, 400)
     };
-    format!(
-        "{}\n\n## Available Skills\nThese skills contain proven workflows for specific tasks. You MUST check if any skill matches your current task.\n{}\n\n**If a skill matches your task, call read_skill immediately. Then follow the skill's instructions.** You may call multiple read_skill in one step if needed.{}{}",
+    let mut prompt = format!(
+        "{}\n\n## Available Skills\n{}\n\nIf a skill matches the task, call read_skill to load its full guide.{}{}",
         SYSTEM_PROMPT, catalog, dir_note, mcp_note
-    )
+    );
+    // Enforce total budget — truncate catalog/notes first, keep SYSTEM_PROMPT intact
+    if prompt.len() > TOTAL_BUDGET {
+        let excess = prompt.len() - TOTAL_BUDGET;
+        // try trimming catalog first
+        if catalog.len() > excess + 100 {
+            let trimmed_catalog = truncate_str(&catalog, catalog.len() - excess - 50);
+            prompt = format!(
+                "{}\n\n## Available Skills\n{}\n\nIf a skill matches the task, call read_skill to load its full guide.{}{}",
+                SYSTEM_PROMPT, trimmed_catalog, dir_note, mcp_note
+            );
+        }
+        if prompt.len() > TOTAL_BUDGET {
+            prompt = truncate_str(&prompt, TOTAL_BUDGET);
+        }
+    }
+    prompt
 }
 
 const MAX_TOOL_OUTPUT_FOR_LLM: usize = 2000;
