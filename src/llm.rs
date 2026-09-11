@@ -232,7 +232,7 @@ pub fn native_tool_definitions() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "ask_user",
-                "description": "Ask the user one or more clarifying questions with concrete options. MANDATORY for any Real-task (any non-conversational request) in Phases 2-3 before any mutation: use it to confirm scope, constraints, and approach and to get explicit '✓ Proceed as proposed' approval. Iterate until you are 100% sure — keep asking until no assumptions remain. The UI asks one question at a time; every question also offers an 'Other…' free-text row. The final gating question MUST contain an option exactly labeled '✓ Proceed as proposed'.",
+                "description": "Ask the user one or more clarifying questions with concrete options. In PLAN mode, MANDATORY in Phases 2-3 before any mutation (except .hermes/plans) to confirm scope/approach and get explicit '✓ Proceed as proposed'; iterate until 100% sure. In regular mode, use when genuinely ambiguous (unclear target, scope, preference) and you can't discover the answer; otherwise bias toward doing. The UI asks one question at a time; every question also offers an 'Other…' free-text row. In plan mode the final gating question MUST contain an option exactly labeled '✓ Proceed as proposed'.",
                 "parameters": {
                     "type": "object",
                     "properties": {

@@ -4,34 +4,71 @@ use futures::Stream;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
-pub const SYSTEM_PROMPT: &str = "You are lean, a coding assistant in the terminal. Be direct, concise, and verify your work.\n\n\
+pub const REGULAR_SYSTEM_PROMPT: &str = "You are lean, a coding assistant in the terminal. Be direct, concise, and verify your work.\n\n\
 ## When to act\n\
 - Greeting or small talk with no request (\"hi\", \"thanks\", \"how are you\") → reply warmly in 1-2 sentences and stop. No tools, no follow-up.\n\
-- Otherwise → Real-task mode. This includes write tasks (create/edit files, run bash, MCP) AND read-only investigations, explanations, and web searches — any non-conversational task uses Real-task mode.\n\n\
+- Otherwise → task mode (doing).\n\n\
+## Task mode (regular — doing)\n\
+1. Understand: read the relevant files before editing.\n\
+2. Act: use tools (read_file, edit_file, write_file, bash, web_search). Make the smallest change that solves the problem.\n\
+3. Verify: run the build, tests, or lint that covers the change; don't assume success.\n\
+4. Summarize: state what changed and end with \"All done.\"\n\
+Continue while steps remain. Stop when the goal is met and verified. If a tool fails, read the error and adjust; don't repeat a call that already succeeded.\n\n\
+## Tools\n\
+- Read before edit; use a unique oldText for precise edits.\n\
+- If you need a file, call read_file now instead of saying you will.\n\
+- Only respond as the assistant. Never write a user \"thanks\" or \"you're welcome\" on the user's behalf.\n\n\
+## Asking the user\n\
+- If a request is genuinely ambiguous (unclear target, scope, or preference) and you can't discover the answer from the repo, call ask_user with concrete options instead of guessing.\n\
+- Don't ask when you can find the answer yourself. For simple, low-risk tasks, bias toward doing — call the tool and verify.\n\n\
+## Skills and memory\n\
+- Skills are markdown workflows listed below. If one matches the task, call read_skill and follow it.\n\
+- Search memory only when prior context helps (multi-turn, user preference, project fact). Call remember when you learn something worth keeping.\n";
+
+pub const PLAN_SYSTEM_PROMPT: &str = "You are lean, a coding assistant in the terminal. Be direct, concise, and verify your work. You are in PLAN MODE — you plan, you do not implement (except the plan file).\n\n\
+## When to act\n\
+- Greeting or small talk with no request (\"hi\", \"thanks\", \"how are you\") → reply warmly in 1-2 sentences and stop. No tools, no follow-up.\n\
+- Otherwise → Real-task planning mode. This includes write tasks, and also read-only investigations, explanations, and searches when the user wants a plan.\n\n\
 ## Task classification (do this silently before Phase 1)\n\
 Classify the request:\n\
 - `write` — needs file writes/edits, mutating bash, or MCP tools.\n\
 - `explain` — answer about code/content without mutation.\n\
 - `search` — needs web lookup.\n\
-If unsure, treat as `write`. You still follow the full 5-phase gate for any non-conversational task, regardless of class — classification only helps you scope questions.\n\n\
-## Real-task mode — 5-phase gate (MANDATORY)\n\
-You MUST NOT call write_file, edit_file, bash, or any MCP tool (name contains `__`) until you have completed Phases 1-4 and received explicit user approval via ask_user. Read-only tools (read_file, read_skill, web_search, search_memory, recall_memory, list_memories, memory_stats) are allowed in Phase 1, but all mutations are BLOCKED until Phase 4 approval.\n\n\
+If unsure, treat as `write`.\n\n\
+## Plan mode — 5-phase gate (MANDATORY)\n\
+You MUST NOT call write_file, edit_file, bash, or any MCP tool (name contains `__`) on project files until you have completed Phases 1-4 and received explicit user approval via ask_user. Read-only tools (read_file, read_skill, web_search, search_memory, etc.) are always allowed. In plan mode, the ONLY write allowed before approval is `write_file` to `.hermes/plans/` for the deliverable plan. All other mutations are BLOCKED until Phase 4 approval.\n\n\
 Phase 1 — DISCOVER (read-only): read relevant files, search memory/skills, gather context. No mutations.\n\
-Phase 2 — CLARIFY: call ask_user with concrete options until scope is 100% clear. For each ambiguity present 2-3 options with pros/cons. Cover: goal, non-goals, files/modules in scope, UX/constraints, edge cases. Keep asking — do not assume. Ask until you are 100% sure you know exactly what to do.\n\n\
-Phase 3 — PROPOSE: summarize Shared Understanding (scope + chosen approach + files to change + verification plan) and ask a final ask_user question that MUST contain an option exactly labeled `✓ Proceed as proposed` (and an option like `Needs changes` or free-text Other for feedback).\n\n\
-Phase 4 — WAIT: Do NOT mutate. If user selects `✓ Proceed as proposed` → you are approved to proceed to Phase 5. If user selects Other/Needs changes or gives feedback → loop back to Phase 2 and re-clarify.\n\n\
-Phase 5 — ACT: execute the approved plan (smallest change that solves the problem), verify (build/tests/lint), summarize and end with `All done.`\n\n\
+Phase 2 — CLARIFY: call ask_user with concrete options until scope is 100% clear. For each ambiguity present 2-3 options with pros/cons. Cover: goal, non-goals, files/modules in scope, UX/constraints, edge cases. Keep asking — do not assume.\n\n\
+Phase 3 — PROPOSE: write a concrete plan markdown to `.hermes/plans/YYYY-MM-DD_HHMMSS-<slug>.md` (see plan skill for template: goal, context, approach, steps, files, tests, risks). Then summarize Shared Understanding (scope + chosen approach + files + verification) and ask a final ask_user question that MUST contain an option exactly labeled `✓ Proceed as proposed` (and `Needs changes` / Other).\n\n\
+Phase 4 — WAIT: Do NOT mutate project files. If user selects `✓ Proceed as proposed` → approved (plan is done; user will run implementation separately or ask you to implement). If Other/Needs changes → loop back to Phase 2.\n\n\
+Phase 5 — (only if user explicitly asks to implement after plan approval): execute the approved plan, verify, summarize and end with `All done.` Otherwise, end after plan is written and approved.\n\n\
 Continue while steps remain. If a tool fails, read the error and adjust; don't repeat a call that already succeeded. Do not act on inferred intent before Phase 4 approval.\n\n\
 ## Tools\n\
 - Read before edit; use a unique oldText for precise edits.\n\
 - If you need a file, call read_file now instead of saying you will.\n\
 - Only respond as the assistant. Never write a user \"thanks\" or \"you're welcome\" on the user's behalf.\n\n\
 ## Asking the user\n\
-- For any Real-task (any non-conversational request), you MUST use ask_user in Phases 2-3 — to confirm scope, constraints, and approach and to get explicit `✓ Proceed as proposed` approval. Iterate until no assumptions remain.\n\
-- Even if you think you understand, still ask. Prefer asking over guessing. Ask until you are 100% sure.\n\n\
+- In plan mode, you MUST use ask_user in Phases 2-3 — to confirm scope, constraints, and approach and to get explicit `✓ Proceed as proposed` approval. Iterate until no assumptions remain. Ask until you are 100% sure.\n\n\
 ## Skills and memory\n\
-- Skills are markdown workflows listed below. If one matches the task, call read_skill and follow it.\n\
+- Skills are markdown workflows listed below. If one matches the task, call read_skill and follow it — especially `plan` in this mode.\n\
 - Search memory only when prior context helps (multi-turn, user preference, project fact). Call remember when you learn something worth keeping.\n";
+
+pub const SYSTEM_PROMPT: &str = REGULAR_SYSTEM_PROMPT;
+
+use std::sync::atomic::{AtomicBool, Ordering};
+static PLAN_MODE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_plan_mode(v: bool) { PLAN_MODE.store(v, Ordering::Relaxed); }
+pub fn is_plan_mode() -> bool { PLAN_MODE.load(Ordering::Relaxed) }
+pub fn toggle_plan_mode() -> bool {
+    let cur = is_plan_mode();
+    set_plan_mode(!cur);
+    !cur
+}
+
+fn current_system_prompt() -> &'static str {
+    if is_plan_mode() { PLAN_SYSTEM_PROMPT } else { REGULAR_SYSTEM_PROMPT }
+}
 
 const TOTAL_BUDGET: usize = 4000;
 const SKILL_MAX_COUNT: usize = 8;
@@ -140,15 +177,16 @@ fn mcp_section() -> String {
 
 /// Assemble the full system prompt within `TOTAL_BUDGET`.
 ///
-/// Priority order: the base `SYSTEM_PROMPT` is never truncated, the confinement
+/// Priority order: the base prompt (regular or plan) is never truncated, the confinement
 /// guard is kept when enabled, the skill catalog is shrunk line by line, and the
 /// MCP section is dropped first when the budget is exceeded.
 pub async fn build_system_prompt() -> String {
+    let base = current_system_prompt();
     let raw_catalog = skills::get_skill_catalog().await;
     let confinement = confinement_section();
 
     let assemble = |catalog: &str| {
-        let mut prompt = format!("{}{}", SYSTEM_PROMPT, skills_section(catalog));
+        let mut prompt = format!("{}{}", base, skills_section(catalog));
         if let Some(note) = &confinement {
             prompt.push_str(note);
         }
@@ -172,7 +210,7 @@ pub async fn build_system_prompt() -> String {
     }
 
     // Last resort: base prompt plus confinement, bounded by bytes.
-    let mut minimal = String::from(SYSTEM_PROMPT);
+    let mut minimal = String::from(base);
     if let Some(note) = &confinement {
         minimal.push_str(note);
     }
@@ -213,6 +251,15 @@ struct ToolAccum {
 
 pub(crate) fn is_mutating_tool(name: &str) -> bool {
     matches!(name, "write_file" | "edit_file" | "bash") || name.contains("__")
+}
+
+pub(crate) fn is_plan_exempt_write(name: &str, args: &Value) -> bool {
+    if !is_plan_mode() { return false; }
+    if name != "write_file" { return false; }
+    if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
+        return p.starts_with(".hermes/plans") || p.starts_with("./.hermes/plans") || p.contains("/.hermes/plans");
+    }
+    false
 }
 
 fn is_conversational_str(goal: &str) -> bool {
@@ -258,7 +305,8 @@ const COMPLETE_SIGNALS: [&str; 10] = [
 
 impl PlanTracker {
     fn new(goal: &str) -> Self {
-        let requires_approval = !is_conversational_str(goal);
+        // Plan mode = strict 5-phase gate; Regular mode = no gating, bias to doing.
+        let requires_approval = is_plan_mode() && !is_conversational_str(goal);
         Self { goal: goal.to_string(), steps_done: Vec::new(), last_tools: Vec::new(), nocall_streak: 0, requires_approval, approved: false }
     }
 
@@ -687,7 +735,7 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
                     yield AgentEvent::ToolStart { name: acc.name.clone(), args: args_val.clone(), id: acc.id.clone() };
                 }
                 let gate_active = tracker.requires_approval() && !tracker.has_approval();
-                let futs: Vec<_> = ordered.iter().map(|(_, acc)| { let name=acc.name.clone(); let id=acc.id.clone(); let args_val: Value=serde_json::from_str(&acc.args).unwrap_or(Value::String(acc.args.clone())); let blocked = gate_active && is_mutating_tool(&name); async move { let start=std::time::Instant::now(); let result = if blocked { format!("[GATING BLOCKED] Mutating tool '{}' is blocked until you complete Phases 1-4 and get explicit user approval via ask_user with '\\u{{2713}} Proceed as proposed'. Call ask_user now to clarify scope/approach. Read-only tools (read_file, read_skill, web_search, memory) are still allowed.", name) } else { crate::tools::execute_tool(&name, args_val.clone()).await }; let elapsed_ms=start.elapsed().as_millis() as u64; (id,name,result,args_val,elapsed_ms) }}).collect();
+                let futs: Vec<_> = ordered.iter().map(|(_, acc)| { let name=acc.name.clone(); let id=acc.id.clone(); let args_val: Value=serde_json::from_str(&acc.args).unwrap_or(Value::String(acc.args.clone())); let blocked = gate_active && is_mutating_tool(&name) && !is_plan_exempt_write(&name, &args_val); async move { let start=std::time::Instant::now(); let result = if blocked { format!("[GATING BLOCKED — plan mode] Mutating tool '{}' is blocked until you complete Phases 1-4 and get explicit user approval via ask_user with '\\u{{2713}} Proceed as proposed'. Call ask_user now to clarify scope/approach. In plan mode only .hermes/plans writes are allowed before approval; all other mutations blocked. (Toggle plan mode off with /plan if you want regular doing mode.)", name) } else { crate::tools::execute_tool(&name, args_val.clone()).await }; let elapsed_ms=start.elapsed().as_millis() as u64; (id,name,result,args_val,elapsed_ms) }}).collect();
                 let results = futures::future::join_all(futs).await;
                 for (id, name, result, args_val, elapsed_ms) in results {
                     let display = result.find("<<IMAGE:").map_or_else(|| result.clone(), |pos| format!("{}[image data omitted for display]", result[..pos].trim_end()));
@@ -840,10 +888,10 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
                 let name = acc.name.clone();
                 let id = acc.id.clone();
                 let args_val: Value = serde_json::from_str(&acc.args).unwrap_or(Value::String(acc.args.clone()));
-                let blocked = gate_active && is_mutating_tool(&name);
+                let blocked = gate_active && is_mutating_tool(&name) && !is_plan_exempt_write(&name, &args_val);
                 async move {
                     let start = std::time::Instant::now();
-                    let result = if blocked { format!("[GATING BLOCKED] Mutating tool '{}' is blocked until you complete Phases 1-4 and get explicit user approval via ask_user with '\\u{{2713}} Proceed as proposed'. Call ask_user now to clarify scope/approach. Read-only tools (read_file, read_skill, web_search, memory) are still allowed.", name) } else { crate::tools::execute_tool(&name, args_val.clone()).await };
+                    let result = if blocked { format!("[GATING BLOCKED — plan mode] Mutating tool '{}' is blocked until you complete Phases 1-4 and get explicit user approval via ask_user with '\\u{{2713}} Proceed as proposed'. Call ask_user now to clarify scope/approach. In plan mode only .hermes/plans writes are allowed before approval; all other mutations blocked. (Toggle plan mode off with /plan if you want regular doing mode.)", name) } else { crate::tools::execute_tool(&name, args_val.clone()).await };
                     let elapsed_ms = start.elapsed().as_millis() as u64;
                     (id, name, result, args_val, elapsed_ms)
                 }

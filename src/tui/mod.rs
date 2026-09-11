@@ -869,6 +869,11 @@ fn draw_footer(
     } else {
         String::new()
     };
+    let plan_badge = if crate::agent::is_plan_mode() {
+        format!(" PLAN ")
+    } else {
+        String::new()
+    };
     let spinner_char = if agent_busy {
         format!("{} ", spinner[spinner_tick % spinner.len()])
     } else {
@@ -893,7 +898,7 @@ fn draw_footer(
     };
     let center = format!(" {} ", short_cwd);
 
-    let used = spinner_char.len() + auto_badge.len() + 1 + model.len() + 2 + center.len() + right.len();
+    let used = spinner_char.len() + auto_badge.len() + plan_badge.len() + 1 + model.len() + 2 + center.len() + right.len();
     let gap = if used < width { width - used } else { 0 };
     let gap_left = gap / 2;
     let gap_right = gap - gap_left;
@@ -908,6 +913,15 @@ fn draw_footer(
             Style::default()
                 .fg(ASHEN.bone)
                 .bg(ASHEN.ember)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    if !plan_badge.is_empty() {
+        spans.push(Span::styled(
+            plan_badge.clone(),
+            Style::default()
+                .fg(ASHEN.bone)
+                .bg(ASHEN.frost)
                 .add_modifier(Modifier::BOLD),
         ));
     }
@@ -946,7 +960,7 @@ fn draw_footer(
 
 // ── Autocomplete + @-mentions ─────────────────────────────────
 
-const COMMANDS: &[&str] = &["/help", "/new", "/clear", "/exit", "/quit", "/model", "/sessions", "/resume", "/allowlist", "/allowlist clear", "/mcp", "/memory", "/memory stats", "/memory consolidate", "/auto-accept"];
+const COMMANDS: &[&str] = &["/help", "/new", "/clear", "/exit", "/quit", "/model", "/sessions", "/resume", "/allowlist", "/allowlist clear", "/mcp", "/memory", "/memory stats", "/memory consolidate", "/auto-accept", "/plan"];
 
 /// Filter commands matching the current input prefix.
 /// Also completes model aliases after `/model `.
@@ -2824,7 +2838,17 @@ async fn app_loop(
                                 "/help" => {
                                     messages.push(Msg {
                                         role: "system".into(),
-                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /mcp /memory stats|consolidate /model <name> /clear /exit /auto-accept  ·  Enter send · Shift+Enter newline · Shift+Tab auto-accept · @file $skill · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /mcp /memory stats|consolidate /model <name> /clear /exit /auto-accept /plan  ·  Enter send · Shift+Enter newline · Shift+Tab auto-accept · @file $skill · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll — /plan toggles plan mode (strict 5-phase, mutations blocked until ✓ Proceed) vs regular doing mode".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                }
+                                "/plan" => {
+                                    let now_on = crate::agent::toggle_plan_mode();
+                                    if now_on {
+                                        messages.push(Msg { role: "system".into(), content: "[plan mode ON — strict 5-phase gate. Mutations (except .hermes/plans) blocked until you answer '✓ Proceed as proposed' via ask_user. Regular doing is off. Use /plan again to toggle off.] 🗺".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        crate::telemetry::record("plan_mode_on");
+                                    } else {
+                                        messages.push(Msg { role: "system".into(), content: "[plan mode OFF — regular doing mode. Agent will read → act → verify with minimal clarification. Use /plan to re-enable strict planning.] ⚡".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        crate::telemetry::record("plan_mode_off");
+                                    }
                                 }
                                 "/mcp" => {
                                     show_mcp = true;
@@ -3005,6 +3029,42 @@ async fn app_loop(
                                                 messages.push(Msg { role: "system".into(), content: format!("model switch failed: {}", e), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                             }
                                         }
+                                    }
+                                }
+                                _ if prompt.starts_with("/plan ") => {
+                                    let task = prompt.strip_prefix("/plan ").unwrap().trim().to_string();
+                                    if task.is_empty() {
+                                        messages.push(Msg { role: "system".into(), content: "usage: /plan <task> — runs task in plan mode, or /plan to toggle".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                    } else {
+                                        let was_on = crate::agent::is_plan_mode();
+                                        if !was_on {
+                                            crate::agent::set_plan_mode(true);
+                                            messages.push(Msg { role: "system".into(), content: "[plan mode ON for this task — strict 5-phase, mutations blocked until ✓ Proceed. Toggle off with /plan]".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                            crate::telemetry::record("plan_mode_on");
+                                        }
+                                        // Treat task as normal prompt but in plan mode
+                                        let expanded_task = expand_at_mentions(&task);
+                                        // Defer actual spawn to after textarea clear — set pending plan task
+                                        // We push history and spawn directly here to avoid going through unknown path
+                                        history.push(task.clone());
+                                        hist_idx = None;
+                                        step_info = "...".into();
+                                        textarea.select_all();
+                                        textarea.cut();
+                                        auto_scroll = true;
+                                        ac_matches.clear();
+                                        ac_idx = 0;
+                                        if agent_busy {
+                                            msg_queue.push(task.clone());
+                                        } else {
+                                            let hist = llm_history_for_spawn(&session, &messages);
+                                            messages.push(Msg { role: "user".into(), content: task.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                            persist(&messages, &mut session, &model);
+                                            agent_busy = true;
+                                            agent_handle = Some(spawn_agent_with_history(expanded_task, model.clone(), hist, tx.clone(), done_tx.clone()));
+                                        }
+                                        // Skip generic textarea clear below by marking handled
+                                        // (we already cleared, but set a flag to avoid double handling)
                                     }
                                 }
                                 _ => {
