@@ -2106,15 +2106,12 @@ async fn app_loop(
                                 while let Some(mut req) = crate::approval::take_pending() {
                                     if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
                                 }
-                                messages.push(Msg { role: "system".into(), content: "[AUTO — guards bypassed, all tools allowed · Shift+Tab → NORM] ⚡".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None });
                                 crate::telemetry::record("mode_auto");
                             },
                             crate::agent::Mode::Plan => {
-                                messages.push(Msg { role: "system".into(), content: "[PLAN — strict 5-phase · only .lean/plans + read/MCP reads/read-only bash/docs allowed until ✓ Proceed · Shift+Tab → AUTO] 🗺".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None });
                                 crate::telemetry::record("mode_plan");
                             },
                             crate::agent::Mode::Norm => {
-                                messages.push(Msg { role: "system".into(), content: "[NORM — regular doing · guards on · ask only when ambiguous · Shift+Tab → PLAN] ".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None });
                                 crate::telemetry::record("mode_norm");
                             },
                         }
@@ -2813,14 +2810,8 @@ async fn app_loop(
                                     let next = if crate::agent::current_mode() == crate::agent::Mode::Plan { crate::agent::Mode::Norm } else { crate::agent::Mode::Plan };
                                     crate::agent::set_mode(next);
                                     match next {
-                                        crate::agent::Mode::Plan => {
-                                            messages.push(Msg { role: "system".into(), content: "[PLAN — strict 5-phase · only .lean/plans + read/MCP reads/read-only bash/docs allowed until ✓ Proceed · Shift+Tab → AUTO] 🗺".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
-                                            crate::telemetry::record("mode_plan");
-                                        },
-                                        _ => {
-                                            messages.push(Msg { role: "system".into(), content: "[NORM — regular doing · guards on · Shift+Tab → PLAN] ".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
-                                            crate::telemetry::record("mode_norm");
-                                        }
+                                        crate::agent::Mode::Plan => crate::telemetry::record("mode_plan"),
+                                        _ => crate::telemetry::record("mode_norm"),
                                     }
                                 }
                                 "/mcp" => {
@@ -2859,13 +2850,9 @@ async fn app_loop(
                                         crate::agent::Mode::Auto => {
                                             if let Some(mut req) = pending_approval.take() { if let Some(tx) = req.tx.take() { let _ = tx.send(true); } }
                                             while let Some(mut req) = crate::approval::take_pending() { if let Some(tx) = req.tx.take() { let _ = tx.send(true); } }
-                                            messages.push(Msg { role: "system".into(), content: "[AUTO — guards bypassed, all tools allowed · Shift+Tab → NORM] ⚡".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                             crate::telemetry::record("mode_auto");
                                         },
-                                        _ => {
-                                            messages.push(Msg { role: "system".into(), content: "[NORM — regular doing · guards on · Shift+Tab → PLAN] ".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
-                                            crate::telemetry::record("mode_norm");
-                                        }
+                                        _ => crate::telemetry::record("mode_norm"),
                                     }
                                 }
                                 _ if prompt.starts_with("/auto-accept ") => {
@@ -2883,15 +2870,10 @@ async fn app_loop(
                                             if want_on {
                                                 if let Some(mut req) = pending_approval.take() { if let Some(tx) = req.tx.take() { let _ = tx.send(true); } }
                                                 while let Some(mut req) = crate::approval::take_pending() { if let Some(tx) = req.tx.take() { let _ = tx.send(true); } }
-                                                messages.push(Msg { role: "system".into(), content: "[AUTO — guards bypassed · Shift+Tab → NORM] ⚡".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                                 crate::telemetry::record("mode_auto");
                                             } else {
-                                                messages.push(Msg { role: "system".into(), content: "[NORM — regular doing · guards on · Shift+Tab → PLAN] ".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                                 crate::telemetry::record("mode_norm");
                                             }
-                                        } else {
-                                            let state = if want_on { "AUTO" } else { "NORM" };
-                                            messages.push(Msg { role: "system".into(), content: format!("[already {}]", state), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                         }
                                     } else {
                                         messages.push(Msg { role: "system".into(), content: "usage: /auto-accept [on|off]".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
@@ -3008,7 +2990,6 @@ async fn app_loop(
                                     } else {
                                         if crate::agent::current_mode() != crate::agent::Mode::Plan {
                                             crate::agent::set_mode(crate::agent::Mode::Plan);
-                                            messages.push(Msg { role: "system".into(), content: "[PLAN for this task — strict 5-phase · only .lean/plans + read/MCP reads/read-only bash/docs allowed until ✓ Proceed · Shift+Tab → AUTO] 🗺".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                             crate::telemetry::record("mode_plan");
                                         }
                                         // Treat task as normal prompt but in plan mode
