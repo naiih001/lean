@@ -3185,7 +3185,6 @@ async fn app_loop(
                     }
                 }
             }
-            auto_scroll = true;
         }
 
         // If agent is busy but no events arrived, check if the task died (panic/error)
