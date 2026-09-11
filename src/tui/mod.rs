@@ -29,6 +29,7 @@ pub async fn run(opts: RunOpts) -> anyhow::Result<()> {
     crate::dir_guard::set_disabled(opts.dir_guard_disabled);
     crate::dir_guard::init(None);
     crate::question::set_interactive(true);
+    crate::agent::load_persisted_mode();
     let _model = opts.model.clone();
 
     crossterm::terminal::enable_raw_mode()?;
@@ -809,7 +810,7 @@ fn draw_input(f: &mut Frame, area: Rect, textarea: &mut TextArea<'_>) {
     );
     textarea.set_cursor_line_style(Style::default().bg(THEME.input_bg));
     textarea.set_placeholder_text(
-        "  ▸  type a message…  (/help • Enter send • Shift+Enter newline • Shift+Tab auto-accept)",
+        "  ▸  type a message…  (/help • Enter send • Shift+Enter newline • Shift+Tab NORM/PLAN/AUTO)",
     );
     textarea.set_placeholder_style(Style::default().fg(ASHEN.charcoal).bg(THEME.input_bg));
     // prompt gutter: we prepend via block title style instead of manual truncation
@@ -864,15 +865,10 @@ fn draw_footer(
         "\u{280b}", "\u{2819}", "\u{2813}", "\u{2827}", "\u{2836}", "\u{2834}", "\u{2826}",
         "\u{282e}",
     ];
-    let auto_badge = if crate::approval::is_auto_accept() {
-        format!(" AUTO ")
-    } else {
-        String::new()
-    };
-    let plan_badge = if crate::agent::is_plan_mode() {
-        format!(" PLAN ")
-    } else {
-        String::new()
+    let (mode_badge, mode_style) = match crate::agent::current_mode() {
+        crate::agent::Mode::Norm => (format!(" NORM "), Style::default().fg(ASHEN.slate).bg(THEME.header_bg).add_modifier(Modifier::BOLD)),
+        crate::agent::Mode::Plan => (format!(" PLAN "), Style::default().fg(ASHEN.bone).bg(ASHEN.frost).add_modifier(Modifier::BOLD)),
+        crate::agent::Mode::Auto => (format!(" AUTO "), Style::default().fg(ASHEN.bone).bg(ASHEN.ember).add_modifier(Modifier::BOLD)),
     };
     let spinner_char = if agent_busy {
         format!("{} ", spinner[spinner_tick % spinner.len()])
@@ -898,7 +894,7 @@ fn draw_footer(
     };
     let center = format!(" {} ", short_cwd);
 
-    let used = spinner_char.len() + auto_badge.len() + plan_badge.len() + 1 + model.len() + 2 + center.len() + right.len();
+    let used = spinner_char.len() + mode_badge.len() + 1 + model.len() + 2 + center.len() + right.len();
     let gap = if used < width { width - used } else { 0 };
     let gap_left = gap / 2;
     let gap_right = gap - gap_left;
@@ -907,24 +903,7 @@ fn draw_footer(
         format!(" {} ", model),
         Style::default().fg(ASHEN.smoke).bg(THEME.page_bg),
     )];
-    if !auto_badge.is_empty() {
-        spans.push(Span::styled(
-            auto_badge.clone(),
-            Style::default()
-                .fg(ASHEN.bone)
-                .bg(ASHEN.ember)
-                .add_modifier(Modifier::BOLD),
-        ));
-    }
-    if !plan_badge.is_empty() {
-        spans.push(Span::styled(
-            plan_badge.clone(),
-            Style::default()
-                .fg(ASHEN.bone)
-                .bg(ASHEN.frost)
-                .add_modifier(Modifier::BOLD),
-        ));
-    }
+    spans.push(Span::styled(mode_badge.clone(), mode_style));
     if !spinner_char.is_empty() {
         spans.insert(
             0,
@@ -1911,7 +1890,7 @@ async fn app_loop(
         );
         ta.set_cursor_line_style(Style::default().bg(THEME.input_bg));
         ta.set_placeholder_text(
-            "  ▸  type a message…  (/help • Enter send • Shift+Enter newline • Shift+Tab auto-accept)",
+            "  ▸  type a message…  (/help • Enter send • Shift+Enter newline • Shift+Tab NORM/PLAN/AUTO)",
         );
         ta.set_placeholder_style(Style::default().fg(ASHEN.charcoal).bg(THEME.input_bg));
         ta.set_block(
@@ -2113,41 +2092,31 @@ async fn app_loop(
                     }
                 }
                 Event::Key(k) => {
-                    // Global auto-accept toggle — must be before any modal hijack
+                    // Global mode cycle: Shift+Tab circles NORM → PLAN → AUTO → NORM — must be before any modal hijack, wins over wizard BackTab
                     let is_shift_tab = k.code == KeyCode::BackTab
                         || (k.code == KeyCode::Tab && k.modifiers.contains(KeyModifiers::SHIFT));
                     if is_shift_tab {
-                        let now_on = crate::approval::toggle_auto_accept();
-                        if now_on {
-                            if let Some(mut req) = pending_approval.take() {
-                                if let Some(tx) = req.tx.take() {
-                                    let _ = tx.send(true);
+                        let next = crate::agent::cycle_mode();
+                        match next {
+                            crate::agent::Mode::Auto => {
+                                // AUTO takes effect immediately: drain pending approvals
+                                if let Some(mut req) = pending_approval.take() {
+                                    if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
                                 }
-                            }
-                            while let Some(mut req) = crate::approval::take_pending() {
-                                if let Some(tx) = req.tx.take() {
-                                    let _ = tx.send(true);
+                                while let Some(mut req) = crate::approval::take_pending() {
+                                    if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
                                 }
-                            }
-                            messages.push(Msg {
-                                role: "system".into(),
-                                content: "[auto-accept ON — all guards bypassed, Shift+Tab to disable]".into(),
-                                tool_id: None,
-                                tool_name: None,
-                                tool_args: None,
-                                elapsed_ms: None,
-                            });
-                            crate::telemetry::record("auto_accept_on");
-                        } else {
-                            messages.push(Msg {
-                                role: "system".into(),
-                                content: "[auto-accept OFF]".into(),
-                                tool_id: None,
-                                tool_name: None,
-                                tool_args: None,
-                                elapsed_ms: None,
-                            });
-                            crate::telemetry::record("auto_accept_off");
+                                messages.push(Msg { role: "system".into(), content: "[AUTO — guards bypassed, all tools allowed · Shift+Tab → NORM] ⚡".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None });
+                                crate::telemetry::record("mode_auto");
+                            },
+                            crate::agent::Mode::Plan => {
+                                messages.push(Msg { role: "system".into(), content: "[PLAN — strict 5-phase · only .lean/plans + read/MCP reads/read-only bash/docs allowed until ✓ Proceed · Shift+Tab → AUTO] 🗺".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None });
+                                crate::telemetry::record("mode_plan");
+                            },
+                            crate::agent::Mode::Norm => {
+                                messages.push(Msg { role: "system".into(), content: "[NORM — regular doing · guards on · ask only when ambiguous · Shift+Tab → PLAN] ".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None });
+                                crate::telemetry::record("mode_norm");
+                            },
                         }
                         continue;
                     }
@@ -2838,16 +2807,20 @@ async fn app_loop(
                                 "/help" => {
                                     messages.push(Msg {
                                         role: "system".into(),
-                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /mcp /memory stats|consolidate /model <name> /clear /exit /auto-accept /plan  ·  Enter send · Shift+Enter newline · Shift+Tab auto-accept · @file $skill · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll — /plan toggles plan mode (strict 5-phase, mutations blocked until ✓ Proceed) vs regular doing mode".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /mcp /memory stats|consolidate /model <name> /clear /exit /auto-accept /plan  ·  Enter send · Shift+Enter newline · Shift+Tab NORM/PLAN/AUTO · @file $skill · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll — /plan toggles PLAN, /auto-accept toggles AUTO, Shift+Tab cycles".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                 }
                                 "/plan" => {
-                                    let now_on = crate::agent::toggle_plan_mode();
-                                    if now_on {
-                                        messages.push(Msg { role: "system".into(), content: "[plan mode ON — strict 5-phase gate. Mutations (except .hermes/plans) blocked until you answer '✓ Proceed as proposed' via ask_user. Regular doing is off. Use /plan again to toggle off.] 🗺".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
-                                        crate::telemetry::record("plan_mode_on");
-                                    } else {
-                                        messages.push(Msg { role: "system".into(), content: "[plan mode OFF — regular doing mode. Agent will read → act → verify with minimal clarification. Use /plan to re-enable strict planning.] ⚡".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
-                                        crate::telemetry::record("plan_mode_off");
+                                    let next = if crate::agent::current_mode() == crate::agent::Mode::Plan { crate::agent::Mode::Norm } else { crate::agent::Mode::Plan };
+                                    crate::agent::set_mode(next);
+                                    match next {
+                                        crate::agent::Mode::Plan => {
+                                            messages.push(Msg { role: "system".into(), content: "[PLAN — strict 5-phase · only .lean/plans + read/MCP reads/read-only bash/docs allowed until ✓ Proceed · Shift+Tab → AUTO] 🗺".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                            crate::telemetry::record("mode_plan");
+                                        },
+                                        _ => {
+                                            messages.push(Msg { role: "system".into(), content: "[NORM — regular doing · guards on · Shift+Tab → PLAN] ".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                            crate::telemetry::record("mode_norm");
+                                        }
                                     }
                                 }
                                 "/mcp" => {
@@ -2880,19 +2853,19 @@ async fn app_loop(
                                     messages.push(Msg { role: "system".into(), content: out, tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                 }
                                 "/auto-accept" => {
-                                    let now_on = crate::approval::toggle_auto_accept();
-                                    if now_on {
-                                        if let Some(mut req) = pending_approval.take() {
-                                            if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
+                                    let next = if crate::agent::current_mode() == crate::agent::Mode::Auto { crate::agent::Mode::Norm } else { crate::agent::Mode::Auto };
+                                    crate::agent::set_mode(next);
+                                    match next {
+                                        crate::agent::Mode::Auto => {
+                                            if let Some(mut req) = pending_approval.take() { if let Some(tx) = req.tx.take() { let _ = tx.send(true); } }
+                                            while let Some(mut req) = crate::approval::take_pending() { if let Some(tx) = req.tx.take() { let _ = tx.send(true); } }
+                                            messages.push(Msg { role: "system".into(), content: "[AUTO — guards bypassed, all tools allowed · Shift+Tab → NORM] ⚡".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                            crate::telemetry::record("mode_auto");
+                                        },
+                                        _ => {
+                                            messages.push(Msg { role: "system".into(), content: "[NORM — regular doing · guards on · Shift+Tab → PLAN] ".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                            crate::telemetry::record("mode_norm");
                                         }
-                                        while let Some(mut req) = crate::approval::take_pending() {
-                                            if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
-                                        }
-                                        messages.push(Msg { role: "system".into(), content: "[auto-accept ON — all guards bypassed, Shift+Tab to disable]".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
-                                        crate::telemetry::record("auto_accept_on");
-                                    } else {
-                                        messages.push(Msg { role: "system".into(), content: "[auto-accept OFF]".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
-                                        crate::telemetry::record("auto_accept_off");
                                     }
                                 }
                                 _ if prompt.starts_with("/auto-accept ") => {
@@ -2903,25 +2876,22 @@ async fn app_loop(
                                         _ => None,
                                     };
                                     if let Some(want_on) = target_on {
-                                        let cur = crate::approval::is_auto_accept();
-                                        if want_on != cur {
-                                            let now_on = crate::approval::toggle_auto_accept();
-                                            if now_on {
-                                                if let Some(mut req) = pending_approval.take() {
-                                                    if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
-                                                }
-                                                while let Some(mut req) = crate::approval::take_pending() {
-                                                    if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
-                                                }
-                                                messages.push(Msg { role: "system".into(), content: "[auto-accept ON — all guards bypassed, Shift+Tab to disable]".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
-                                                crate::telemetry::record("auto_accept_on");
+                                        let target = if want_on { crate::agent::Mode::Auto } else { crate::agent::Mode::Norm };
+                                        let cur = crate::agent::current_mode();
+                                        if target != cur {
+                                            crate::agent::set_mode(target);
+                                            if want_on {
+                                                if let Some(mut req) = pending_approval.take() { if let Some(tx) = req.tx.take() { let _ = tx.send(true); } }
+                                                while let Some(mut req) = crate::approval::take_pending() { if let Some(tx) = req.tx.take() { let _ = tx.send(true); } }
+                                                messages.push(Msg { role: "system".into(), content: "[AUTO — guards bypassed · Shift+Tab → NORM] ⚡".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                                crate::telemetry::record("mode_auto");
                                             } else {
-                                                messages.push(Msg { role: "system".into(), content: "[auto-accept OFF]".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
-                                                crate::telemetry::record("auto_accept_off");
+                                                messages.push(Msg { role: "system".into(), content: "[NORM — regular doing · guards on · Shift+Tab → PLAN] ".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                                crate::telemetry::record("mode_norm");
                                             }
                                         } else {
-                                            let state = if cur { "ON" } else { "OFF" };
-                                            messages.push(Msg { role: "system".into(), content: format!("[auto-accept already {}]", state), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                            let state = if want_on { "AUTO" } else { "NORM" };
+                                            messages.push(Msg { role: "system".into(), content: format!("[already {}]", state), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                         }
                                     } else {
                                         messages.push(Msg { role: "system".into(), content: "usage: /auto-accept [on|off]".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
@@ -3036,11 +3006,10 @@ async fn app_loop(
                                     if task.is_empty() {
                                         messages.push(Msg { role: "system".into(), content: "usage: /plan <task> — runs task in plan mode, or /plan to toggle".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                     } else {
-                                        let was_on = crate::agent::is_plan_mode();
-                                        if !was_on {
-                                            crate::agent::set_plan_mode(true);
-                                            messages.push(Msg { role: "system".into(), content: "[plan mode ON for this task — strict 5-phase, mutations blocked until ✓ Proceed. Toggle off with /plan]".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
-                                            crate::telemetry::record("plan_mode_on");
+                                        if crate::agent::current_mode() != crate::agent::Mode::Plan {
+                                            crate::agent::set_mode(crate::agent::Mode::Plan);
+                                            messages.push(Msg { role: "system".into(), content: "[PLAN for this task — strict 5-phase · only .lean/plans + read/MCP reads/read-only bash/docs allowed until ✓ Proceed · Shift+Tab → AUTO] 🗺".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                            crate::telemetry::record("mode_plan");
                                         }
                                         // Treat task as normal prompt but in plan mode
                                         let expanded_task = expand_at_mentions(&task);

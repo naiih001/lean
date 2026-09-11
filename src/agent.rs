@@ -36,10 +36,10 @@ Classify the request:\n\
 - `search` — needs web lookup.\n\
 If unsure, treat as `write`.\n\n\
 ## Plan mode — 5-phase gate (MANDATORY)\n\
-You MUST NOT call write_file, edit_file, bash, or any MCP tool (name contains `__`) on project files until you have completed Phases 1-4 and received explicit user approval via ask_user. Read-only tools (read_file, read_skill, web_search, search_memory, etc.) are always allowed. In plan mode, the ONLY write allowed before approval is `write_file` to `.hermes/plans/` for the deliverable plan. All other mutations are BLOCKED until Phase 4 approval.\n\n\
+You MUST NOT call write_file, edit_file, bash (mutating), or any MCP write tool on project files until you have completed Phases 1-4 and received explicit user approval via ask_user. Read-only tools (read_file, read_skill, web_search, search_memory, etc., plus read-only bash like ls/cat/grep/find and MCP reads) are always allowed. In plan mode, the ONLY write allowed before approval is `write_file` to `.lean/plans/` for the deliverable plan. All other mutations are BLOCKED until Phase 4 approval.\n\n\
 Phase 1 — DISCOVER (read-only): read relevant files, search memory/skills, gather context. No mutations.\n\
 Phase 2 — CLARIFY: call ask_user with concrete options until scope is 100% clear. For each ambiguity present 2-3 options with pros/cons. Cover: goal, non-goals, files/modules in scope, UX/constraints, edge cases. Keep asking — do not assume.\n\n\
-Phase 3 — PROPOSE: write a concrete plan markdown to `.hermes/plans/YYYY-MM-DD_HHMMSS-<slug>.md` (see plan skill for template: goal, context, approach, steps, files, tests, risks). Then summarize Shared Understanding (scope + chosen approach + files + verification) and ask a final ask_user question that MUST contain an option exactly labeled `✓ Proceed as proposed` (and `Needs changes` / Other).\n\n\
+Phase 3 — PROPOSE: write a concrete plan markdown to `.lean/plans/YYYY-MM-DD_HHMMSS-<slug>.md` (see plan skill for template: goal, context, approach, steps, files, tests, risks). Then summarize Shared Understanding (scope + chosen approach + files + verification) and ask a final ask_user question that MUST contain an option exactly labeled `✓ Proceed as proposed` (and `Needs changes` / Other).\n\n\
 Phase 4 — WAIT: Do NOT mutate project files. If user selects `✓ Proceed as proposed` → approved (plan is done; user will run implementation separately or ask you to implement). If Other/Needs changes → loop back to Phase 2.\n\n\
 Phase 5 — (only if user explicitly asks to implement after plan approval): execute the approved plan, verify, summarize and end with `All done.` Otherwise, end after plan is written and approved.\n\n\
 Continue while steps remain. If a tool fails, read the error and adjust; don't repeat a call that already succeeded. Do not act on inferred intent before Phase 4 approval.\n\n\
@@ -57,6 +57,60 @@ pub const SYSTEM_PROMPT: &str = REGULAR_SYSTEM_PROMPT;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 static PLAN_MODE: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode { Norm, Plan, Auto }
+
+impl Mode {
+    pub fn as_str(&self) -> &'static str { match self { Mode::Norm => "norm", Mode::Plan => "plan", Mode::Auto => "auto" } }
+    pub fn from_str(s: &str) -> Self { match s { "plan" => Mode::Plan, "auto" => Mode::Auto, _ => Mode::Norm } }
+}
+
+pub fn current_mode() -> Mode {
+    if is_plan_mode() { Mode::Plan } else if crate::approval::is_auto_accept() { Mode::Auto } else { Mode::Norm }
+}
+
+pub fn set_mode(m: Mode) {
+    match m {
+        Mode::Norm => { set_plan_mode(false); crate::approval::set_auto_accept(false); },
+        Mode::Plan => { set_plan_mode(true); crate::approval::set_auto_accept(false); },
+        Mode::Auto => { set_plan_mode(false); crate::approval::set_auto_accept(true); },
+    }
+    save_persisted_mode(m);
+}
+
+pub fn cycle_mode() -> Mode {
+    let next = match current_mode() { Mode::Norm => Mode::Plan, Mode::Plan => Mode::Auto, Mode::Auto => Mode::Norm };
+    set_mode(next);
+    next
+}
+
+fn mode_file_path() -> std::path::PathBuf {
+    dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join(".lean").join("mode.json")
+}
+
+fn save_persisted_mode(m: Mode) {
+    let p = mode_file_path();
+    let _ = std::fs::create_dir_all(p.parent().unwrap());
+    let _ = std::fs::write(&p, serde_json::json!({"mode": m.as_str()}).to_string());
+}
+
+pub fn load_persisted_mode() {
+    let p = mode_file_path();
+    if let Ok(s) = std::fs::read_to_string(&p) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
+            if let Some(ms) = v.get("mode").and_then(|x| x.as_str()) {
+                let m = Mode::from_str(ms);
+                // set without re-saving
+                match m {
+                    Mode::Norm => { PLAN_MODE.store(false, Ordering::Relaxed); crate::approval::set_auto_accept(false); },
+                    Mode::Plan => { PLAN_MODE.store(true, Ordering::Relaxed); crate::approval::set_auto_accept(false); },
+                    Mode::Auto => { PLAN_MODE.store(false, Ordering::Relaxed); crate::approval::set_auto_accept(true); },
+                }
+            }
+        }
+    }
+}
 
 pub fn set_plan_mode(v: bool) { PLAN_MODE.store(v, Ordering::Relaxed); }
 pub fn is_plan_mode() -> bool { PLAN_MODE.load(Ordering::Relaxed) }
@@ -257,9 +311,27 @@ pub(crate) fn is_plan_exempt_write(name: &str, args: &Value) -> bool {
     if !is_plan_mode() { return false; }
     if name != "write_file" { return false; }
     if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
-        return p.starts_with(".hermes/plans") || p.starts_with("./.hermes/plans") || p.contains("/.hermes/plans");
+        return p.starts_with(".lean/plans") || p.starts_with("./.lean/plans") || p.contains("/.lean/plans");
     }
     false
+}
+
+pub(crate) fn is_readonly_bash(cmd: &str) -> bool {
+    let lower = cmd.trim().to_lowercase();
+    if lower.is_empty() { return true; }
+    // Mutating markers: redirection or known mutating commands
+    if lower.contains('>') { return false; }
+    let mutating = [" rm ", " rm", "mv ", "cp ", "mkdir", "touch ", "chmod", "chown", "sed -i", "tee ", "rmdir", "unlink ", "shred "];
+    for m in mutating { if lower.contains(m) { return false; } }
+    // Cargo/other build commands are mutating except check
+    if lower.starts_with("cargo build") || lower.starts_with("cargo test") || lower.starts_with("cargo run") || lower.starts_with("npm run") || lower.starts_with("npm install") || lower.starts_with("git commit") || lower.starts_with("git push") || lower.starts_with("git checkout") { return false; }
+    true
+}
+
+pub(crate) fn is_mcp_read(name: &str) -> bool {
+    // Heuristic: MCP tools containing read/list/get/search are reads; others are writes
+    let lower = name.to_lowercase();
+    lower.contains("read") || lower.contains("list") || lower.contains("get") || lower.contains("search") || lower.contains("query") || lower.contains("fetch")
 }
 
 fn is_conversational_str(goal: &str) -> bool {
@@ -735,7 +807,7 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
                     yield AgentEvent::ToolStart { name: acc.name.clone(), args: args_val.clone(), id: acc.id.clone() };
                 }
                 let gate_active = tracker.requires_approval() && !tracker.has_approval();
-                let futs: Vec<_> = ordered.iter().map(|(_, acc)| { let name=acc.name.clone(); let id=acc.id.clone(); let args_val: Value=serde_json::from_str(&acc.args).unwrap_or(Value::String(acc.args.clone())); let blocked = gate_active && is_mutating_tool(&name) && !is_plan_exempt_write(&name, &args_val); async move { let start=std::time::Instant::now(); let result = if blocked { format!("[GATING BLOCKED — plan mode] Mutating tool '{}' is blocked until you complete Phases 1-4 and get explicit user approval via ask_user with '\\u{{2713}} Proceed as proposed'. Call ask_user now to clarify scope/approach. In plan mode only .hermes/plans writes are allowed before approval; all other mutations blocked. (Toggle plan mode off with /plan if you want regular doing mode.)", name) } else { crate::tools::execute_tool(&name, args_val.clone()).await }; let elapsed_ms=start.elapsed().as_millis() as u64; (id,name,result,args_val,elapsed_ms) }}).collect();
+                let futs: Vec<_> = ordered.iter().map(|(_, acc)| { let name=acc.name.clone(); let id=acc.id.clone(); let args_val: Value=serde_json::from_str(&acc.args).unwrap_or(Value::String(acc.args.clone())); let is_bash_readonly = name == "bash" && is_readonly_bash(args_val.get("command").and_then(|v| v.as_str()).unwrap_or("")); let is_mcp_readonly = name.contains("__") && is_mcp_read(&name); let blocked = gate_active && is_mutating_tool(&name) && !is_plan_exempt_write(&name, &args_val) && !is_bash_readonly && !is_mcp_readonly && !crate::approval::is_auto_accept(); async move { let start=std::time::Instant::now(); let result = if blocked { format!("[GATING BLOCKED — plan mode] Mutating tool '{}' is blocked until you complete Phases 1-4 and get explicit user approval via ask_user with '\\u{{2713}} Proceed as proposed'. Call ask_user now to clarify scope/approach. In plan mode only .lean/plans writes + read-only bash/docs/MCP reads are allowed before approval; all other mutations blocked. (Shift+Tab to cycle NORM/PLAN/AUTO or /plan to toggle.)", name) } else { crate::tools::execute_tool(&name, args_val.clone()).await }; let elapsed_ms=start.elapsed().as_millis() as u64; (id,name,result,args_val,elapsed_ms) }}).collect();
                 let results = futures::future::join_all(futs).await;
                 for (id, name, result, args_val, elapsed_ms) in results {
                     let display = result.find("<<IMAGE:").map_or_else(|| result.clone(), |pos| format!("{}[image data omitted for display]", result[..pos].trim_end()));
@@ -888,10 +960,12 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
                 let name = acc.name.clone();
                 let id = acc.id.clone();
                 let args_val: Value = serde_json::from_str(&acc.args).unwrap_or(Value::String(acc.args.clone()));
-                let blocked = gate_active && is_mutating_tool(&name) && !is_plan_exempt_write(&name, &args_val);
+                let is_bash_readonly = name == "bash" && is_readonly_bash(args_val.get("command").and_then(|v| v.as_str()).unwrap_or(""));
+                let is_mcp_readonly = name.contains("__") && is_mcp_read(&name);
+                let blocked = gate_active && is_mutating_tool(&name) && !is_plan_exempt_write(&name, &args_val) && !is_bash_readonly && !is_mcp_readonly && !crate::approval::is_auto_accept();
                 async move {
                     let start = std::time::Instant::now();
-                    let result = if blocked { format!("[GATING BLOCKED — plan mode] Mutating tool '{}' is blocked until you complete Phases 1-4 and get explicit user approval via ask_user with '\\u{{2713}} Proceed as proposed'. Call ask_user now to clarify scope/approach. In plan mode only .hermes/plans writes are allowed before approval; all other mutations blocked. (Toggle plan mode off with /plan if you want regular doing mode.)", name) } else { crate::tools::execute_tool(&name, args_val.clone()).await };
+                    let result = if blocked { format!("[GATING BLOCKED — plan mode] Mutating tool '{}' is blocked until you complete Phases 1-4 and get explicit user approval via ask_user with '\\u{{2713}} Proceed as proposed'. Call ask_user now to clarify scope/approach. In plan mode only .lean/plans writes + read-only bash/docs/MCP reads are allowed before approval; all other mutations blocked. (Shift+Tab to cycle NORM/PLAN/AUTO or /plan to toggle.)", name) } else { crate::tools::execute_tool(&name, args_val.clone()).await };
                     let elapsed_ms = start.elapsed().as_millis() as u64;
                     (id, name, result, args_val, elapsed_ms)
                 }
