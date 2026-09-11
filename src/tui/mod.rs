@@ -2329,9 +2329,15 @@ async fn app_loop(
                             KeyCode::Down => { wizard.move_down(); crate::question::WizardOutcome::Continue }
                             KeyCode::BackTab | KeyCode::Left => wizard.back(),
                             KeyCode::Backspace => { wizard.backspace(); crate::question::WizardOutcome::Continue }
-                            KeyCode::Char(' ') if !q_ctrl && !q_alt => { wizard.toggle(); crate::question::WizardOutcome::Continue }
                             KeyCode::Char('c') if q_ctrl => wizard.cancel(),
-                            KeyCode::Char(c) if !q_ctrl && !q_alt => { wizard.push_char(c); crate::question::WizardOutcome::Continue }
+                            KeyCode::Char(c) if !q_ctrl && !q_alt => {
+                                if wizard.on_other() {
+                                    wizard.push_char(c);
+                                } else if c == ' ' {
+                                    wizard.toggle();
+                                }
+                                crate::question::WizardOutcome::Continue
+                            }
                             KeyCode::Enter => wizard.confirm(),
                             KeyCode::Esc => wizard.cancel(),
                             _ => crate::question::WizardOutcome::Continue,
