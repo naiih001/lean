@@ -99,7 +99,7 @@ pub async fn read_file(path: &str) -> Result<String, String> {
 }
 
 /// Return the MIME type for a file extension, if it's a known image format.
-fn image_mime_type(ext: &str) -> Option<&'static str> {
+pub(crate) fn image_mime_type(ext: &str) -> Option<&'static str> {
     match ext.to_lowercase().as_str() {
         "png" => Some("image/png"),
         "jpg" | "jpeg" => Some("image/jpeg"),
@@ -113,7 +113,7 @@ fn image_mime_type(ext: &str) -> Option<&'static str> {
 }
 
 /// Check if a file path looks like an image.
-fn is_image_file(path: &str) -> bool {
+pub(crate) fn is_image_file(path: &str) -> bool {
     Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
@@ -148,7 +148,7 @@ async fn read_image(path: &str) -> Result<String, String> {
     ))
 }
 
-fn human_size(bytes: usize) -> String {
+pub(crate) fn human_size(bytes: usize) -> String {
     if bytes >= 1_048_576 {
         format!("{:.1} MB", bytes as f64 / 1_048_576.0)
     } else if bytes >= 1024 {

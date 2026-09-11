@@ -67,12 +67,42 @@ impl Session {
         sessions_dir().join(format!("{}.json", self.id))
     }
 
+    fn sanitize_history(history: &Option<Vec<serde_json::Value>>) -> Option<Vec<serde_json::Value>> {
+        history.as_ref().map(|vec| {
+            vec.iter().map(|v| {
+                let mut val = v.clone();
+                // Sanitize multimodal content arrays (image_url -> placeholder)
+                if let Some(arr) = val.get("content").and_then(|c| c.as_array()).cloned() {
+                    let sanitized: Vec<serde_json::Value> = arr.into_iter().map(|part| {
+                        if part.get("type").and_then(|t| t.as_str()) == Some("image_url") {
+                            serde_json::json!({"type": "text", "text": "[image omitted — not stored]"})
+                        } else { part }
+                    }).collect();
+                    // If only one text part, collapse to string for SavedMsg compat, but keep array for llm_history
+                    // Keep array shape but without images.
+                    val["content"] = serde_json::Value::Array(sanitized);
+                } else if let Some(s) = val.get("content").and_then(|c| c.as_str()) {
+                    if s.contains("<<IMAGE:") || s.contains("<<IMAGE_URL:") {
+                        let cleaned = s.replace("<<IMAGE:", "[image omitted").replace("<<IMAGE_URL:", "[image omitted URL");
+                        // truncate any long base64 that slipped via string content
+                        let truncated = if cleaned.len() > 2000 { format!("{}… [image data stripped]", &cleaned[..2000]) } else { cleaned };
+                        val["content"] = serde_json::Value::String(truncated);
+                    }
+                }
+                val
+            }).collect()
+        })
+    }
+
     pub fn save(&mut self) -> anyhow::Result<()> {
         self.updated_at = now_unix();
         let dir = sessions_dir();
         std::fs::create_dir_all(&dir)?;
         let path = self.file_path();
-        let json = serde_json::to_string_pretty(self)?;
+        // Do not persist raw image base64 — strip before serializing
+        let mut to_save = self.clone();
+        to_save.llm_history = Self::sanitize_history(&self.llm_history);
+        let json = serde_json::to_string_pretty(&to_save)?;
         std::fs::write(&path, json)?;
         Ok(())
     }
@@ -80,7 +110,9 @@ impl Session {
     pub fn save_sync(&self) -> anyhow::Result<()> {
         let dir = sessions_dir();
         std::fs::create_dir_all(&dir)?;
-        let json = serde_json::to_string_pretty(self)?;
+        let mut to_save = self.clone();
+        to_save.llm_history = Self::sanitize_history(&self.llm_history);
+        let json = serde_json::to_string_pretty(&to_save)?;
         std::fs::write(self.file_path(), json)?;
         Ok(())
     }

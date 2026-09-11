@@ -153,11 +153,35 @@ impl Msg {
     }
 }
 
+fn sanitize_display_content(s: &str) -> String {
+    // Replace base64 image markers with short placeholder for display (keep LLM data but don't render it)
+    let mut out = s.to_string();
+    // Replace <<IMAGE:...>> and <<IMAGE_URL:...>>
+    while let Some(start) = out.find("<<IMAGE") {
+        if let Some(end) = out[start..].find(">>") {
+            let end_idx = start + end + 2;
+            let marker = &out[start..end_idx];
+            let placeholder = if marker.starts_with("<<IMAGE_URL:") {
+                let url = marker.trim_start_matches("<<IMAGE_URL:").trim_end_matches(">>");
+                let short = if url.len() > 40 { format!("{}…", &url[..40]) } else { url.to_string() };
+                format!("[img: {}]", short)
+            } else if marker.starts_with("<<IMAGE:") {
+                let inner = marker.trim_start_matches("<<IMAGE:").trim_end_matches(">>");
+                let mime = inner.split(':').next().unwrap_or("image");
+                format!("[img: {}]", mime)
+            } else { "[img]".to_string() };
+            out.replace_range(start..end_idx, &placeholder);
+        } else { break; }
+    }
+    out
+}
+
 impl Msg {
     /// Render this message as styled ratatui Lines.
     fn render_lines(&self) -> Vec<Line<'static>> {
         match self.role.as_str() {
             "user" => {
+                let display = sanitize_display_content(&self.content);
                 let mut lines = vec![Line::from(vec![
                     Span::styled("  ", Style::default()),
                     Span::styled(
@@ -173,7 +197,7 @@ impl Msg {
                             .add_modifier(Modifier::BOLD),
                     ),
                 ])];
-                for l in self.content.lines() {
+                for l in display.lines() {
                     // Highlight @file mentions in ember color
                     let mut spans: Vec<Span<'static>> = vec![Span::styled(
                         "     ".to_string(),
@@ -1235,6 +1259,77 @@ fn find_skill_content(name: &str) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
+use std::sync::{Mutex, OnceLock};
+static PASTED_IMAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+fn pasted_store() -> &'static Mutex<Vec<String>> { PASTED_IMAGES.get_or_init(|| Mutex::new(Vec::new())) }
+
+fn clipboard_image_marker() -> Option<String> {
+    const MAX_BYTES: usize = 4 * 1024 * 1024;
+    let try_bytes = |prog: &str, args: &[&str]| -> Option<Vec<u8>> {
+        let mut cmd = std::process::Command::new(prog);
+        cmd.args(args);
+        if std::env::var("WAYLAND_DISPLAY").is_err() {
+            // Ghostty on Wayland often has wayland-0/1 but agent env may lack it
+            if std::path::Path::new("/run/user/1000/wayland-0").exists() {
+                cmd.env("WAYLAND_DISPLAY", "wayland-0");
+            } else if std::path::Path::new("/run/user/1000/wayland-1").exists() {
+                cmd.env("WAYLAND_DISPLAY", "wayland-1");
+            }
+            if std::env::var("XDG_RUNTIME_DIR").is_err() && std::path::Path::new("/run/user/1000").exists() {
+                cmd.env("XDG_RUNTIME_DIR", "/run/user/1000");
+            }
+        } else if std::env::var("XDG_RUNTIME_DIR").is_err() {
+            cmd.env("XDG_RUNTIME_DIR", "/run/user/1000");
+        }
+        let out = cmd.output().ok()?;
+        if !out.status.success() || out.stdout.is_empty() { return None; }
+        if out.stdout.len() > 8 && (out.stdout.starts_with(&[0x89, b'P', b'N', b'G']) || out.stdout[0]==0xFF && out.stdout[1]==0xD8 || out.stdout.starts_with(b"GIF")) {
+            Some(out.stdout)
+        } else if out.stdout.len() > 100 {
+            Some(out.stdout)
+        } else { None }
+    };
+    let try_types = || -> Vec<String> {
+        let mut cmd = std::process::Command::new("wl-paste");
+        cmd.arg("--list-types");
+        if std::env::var("WAYLAND_DISPLAY").is_err() && std::path::Path::new("/run/user/1000/wayland-0").exists() {
+            cmd.env("WAYLAND_DISPLAY", "wayland-0");
+        }
+        cmd.output().ok().and_then(|o| if o.status.success() { Some(String::from_utf8_lossy(&o.stdout).to_string()) } else { None })
+            .unwrap_or_default().lines().map(|s| s.trim().to_string()).collect()
+    };
+    let types = try_types();
+    let has_png = types.iter().any(|t| t == "image/png");
+    let has_jpeg = types.iter().any(|t| t.contains("jpeg") || t.contains("jpg"));
+    // Wayland first, then X11 variants — prefer detected mime
+    let mut candidates: Vec<Option<Vec<u8>>> = Vec::new();
+    if has_png || types.is_empty() { candidates.push(try_bytes("wl-paste", &["--type", "image/png"])); }
+    if has_jpeg { candidates.push(try_bytes("wl-paste", &["--type", "image/jpeg"])); }
+    candidates.push(try_bytes("wl-paste", &["-t", "image/png"]));
+    candidates.push(try_bytes("wl-paste", &["--type", "image/jpeg"]));
+    candidates.push(try_bytes("wl-paste", &[])); // raw, let compositor pick
+    candidates.push(try_bytes("xclip", &["-selection", "clipboard", "-t", "image/png", "-o"]));
+    candidates.push(try_bytes("xsel", &["--clipboard", "--output"]));
+    for maybe in candidates {
+        if let Some(bytes) = maybe {
+            if bytes.is_empty() { continue; }
+            if bytes.len() > MAX_BYTES {
+                // over cap — skip with hint instead of marker
+                return Some(format!("[image skipped: clipboard {} — over 4MB]", crate::tools::human_size(bytes.len())));
+            }
+            // sniff mime
+            let mime = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) { "image/png" }
+                else if bytes.starts_with(&[0xFF, 0xD8]) { "image/jpeg" }
+                else if bytes.starts_with(b"GIF") { "image/gif" }
+                else if bytes.len() > 12 && bytes[8..12] == *b"WEBP" { "image/webp" }
+                else { "image/png" };
+            let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+            return Some(format!("<<IMAGE:{}:{}>>", mime, b64));
+        }
+    }
+    None
+}
+
 fn current_completions(textarea: &TextArea<'_>) -> Vec<String> {
     if let Some(m) = detect_skill_mention(textarea) {
         return skill_autocomplete_matches(&m.prefix);
@@ -1248,8 +1343,11 @@ fn current_completions(textarea: &TextArea<'_>) -> Vec<String> {
 
 fn expand_at_mentions(prompt: &str) -> String {
     // Find @<path> tokens that resolve to existing files and $skill tokens that force skills, appending contents.
+    // Images (@*.png etc.) are encoded as <<IMAGE:mime:b64>> (handled by agent.rs, shown as placeholder in TUI).
+    // Remote @https:// URLs are fetched (4MB cap) or left as URL for vision models.
     let root = crate::dir_guard::project_root();
     let mut files: Vec<String> = Vec::new();
+    let mut remotes: Vec<String> = Vec::new();
     let mut skills: Vec<String> = Vec::new();
     let chars: Vec<char> = prompt.chars().collect();
     let mut i = 0;
@@ -1298,7 +1396,11 @@ fn expand_at_mentions(prompt: &str) -> String {
                 {
                     raw.pop();
                 }
-                if !raw.is_empty() && !files.contains(&raw) {
+                if raw.starts_with("http://") || raw.starts_with("https://") {
+                    if !remotes.contains(&raw) && !files.contains(&raw) {
+                        remotes.push(raw);
+                    }
+                } else if !raw.is_empty() && !files.contains(&raw) {
                     // check existence relative to root (or absolute)
                     let p = std::path::Path::new(&raw);
                     let full = if p.is_absolute() {
@@ -1316,25 +1418,83 @@ fn expand_at_mentions(prompt: &str) -> String {
         }
         i += 1;
     }
-    if files.is_empty() && skills.is_empty() {
+    // Expand pasted [[IMAGE #N]] placeholders (Ctrl+V) — replace with actual marker before counting
+    let mut pasted_expanded = prompt.to_string();
+    if prompt.contains("[[IMAGE #") {
+        if let Ok(store) = pasted_store().lock() {
+            for (idx, marker) in store.iter().enumerate() {
+                let ph = format!("[[IMAGE #{}]]", idx + 1);
+                if pasted_expanded.contains(&ph) {
+                    pasted_expanded = pasted_expanded.replace(&ph, marker);
+                }
+            }
+        }
+    }
+    if files.is_empty() && remotes.is_empty() && skills.is_empty() && pasted_expanded == prompt {
         return prompt.to_string();
     }
-    let mut out = prompt.to_string();
+    let mut out = pasted_expanded;
+    const MAX_IMAGE_BYTES: usize = 4 * 1024 * 1024;
+    const MAX_IMAGES_PER_TURN: usize = 5;
+    let mut image_count = out.matches("<<IMAGE").count(); // count already-expanded pasted images
+    // If pasted images already hit cap, warn
+    if image_count >= MAX_IMAGES_PER_TURN && (!files.is_empty() || !remotes.is_empty()) {
+        out.push_str(&format!("\n\n[image note: already {} images from paste — max {} /turn, @files may be skipped]", image_count, MAX_IMAGES_PER_TURN));
+    }
     for rel in files {
+        if image_count >= MAX_IMAGES_PER_TURN {
+            out.push_str(&format!("\n\n[image skipped: {} — max {} images/turn]", rel, MAX_IMAGES_PER_TURN));
+            continue;
+        }
         let p = std::path::Path::new(&rel);
         let full = if p.is_absolute() {
             p.to_path_buf()
         } else {
             root.join(p)
         };
-        let content = std::fs::read_to_string(&full).unwrap_or_else(|e| format!("[read error: {}]", e));
-        let truncated = if content.len() > 8000 {
-            format!("{}… [truncated {} chars]", &content[..8000], content.len() - 8000)
+        if crate::tools::is_image_file(&rel) {
+            image_count += 1;
+            match std::fs::read(&full) {
+                Ok(bytes) => {
+                    if bytes.len() > MAX_IMAGE_BYTES {
+                        out.push_str(&format!("\n\n[image skipped: {} ({}) — over 4MB, compress or use smaller image]", rel, crate::tools::human_size(bytes.len())));
+                        continue;
+                    }
+                    let ext = full.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                    let mime = crate::tools::image_mime_type(&ext).unwrap_or("image/png");
+                    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+                    out.push_str(&format!("\n\n[File: {} ({}, {})]\n<<IMAGE:{}:{}>>", rel, mime, crate::tools::human_size(bytes.len()), mime, b64));
+                }
+                Err(e) => out.push_str(&format!("\n\n[read error: {}: {}]", rel, e)),
+            }
         } else {
-            content
-        };
-        let ext = full.extension().and_then(|e| e.to_str()).unwrap_or("");
-        out.push_str(&format!("\n\n[File: {}]\n```{}\n{}```", rel, ext, truncated));
+            let content = std::fs::read_to_string(&full).unwrap_or_else(|e| format!("[read error: {}]", e));
+            let truncated = if content.len() > 8000 {
+                format!("{}… [truncated {} chars]", &content[..8000], content.len() - 8000)
+            } else {
+                content
+            };
+            let ext = full.extension().and_then(|e| e.to_str()).unwrap_or("");
+            out.push_str(&format!("\n\n[File: {}]\n```{}\n{}```", rel, ext, truncated));
+        }
+    }
+    for url in remotes {
+        if image_count >= MAX_IMAGES_PER_TURN {
+            out.push_str(&format!("\n\n[image skipped: {} — max {} images/turn]", url, MAX_IMAGES_PER_TURN));
+            continue;
+        }
+        // For @https:// URLs, pass through as image_url placeholder (agent will send as input_image URL).
+        // If extension looks like image or URL is likely image, treat as image; otherwise as file reference.
+        let lower = url.to_lowercase();
+        let is_image_url = lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") || lower.ends_with(".gif") || lower.ends_with(".webp") || lower.ends_with(".bmp") || lower.contains("images.unsplash") || lower.contains("image") || true; // default to image for vision UX
+        if is_image_url {
+            image_count += 1;
+            // Keep URL as-is; agent.rs will forward as image_url without base64 if we embed marker with URL.
+            // We use a lightweight marker that llm.rs can map to input_image url.
+            out.push_str(&format!("\n\n[Remote image: {}]\n<<IMAGE_URL:{}>>", url, url));
+        } else {
+            out.push_str(&format!("\n\n[Remote file: {}]", url));
+        }
     }
     for skill_name in skills {
         if let Some(content) = find_skill_content(&skill_name) {
@@ -2482,6 +2642,31 @@ async fn app_loop(
                             textarea.undo();
                             ac_matches = current_completions(&textarea);
                             ac_idx = 0;
+                        }
+                        KeyCode::Char('v') | KeyCode::Char('V') if ctrl => {
+                            // Ctrl+V (and Ctrl+Shift+V): try image clipboard first, fallback to text paste
+                            if let Some(marker) = clipboard_image_marker() {
+                                if marker.starts_with("[image skipped") {
+                                    messages.push(Msg { role: "system".into(), content: marker.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                } else {
+                                    // Store actual marker, insert visible placeholder [[IMAGE #N]]
+                                    let idx = {
+                                        let mut store = pasted_store().lock().unwrap();
+                                        store.push(marker);
+                                        store.len()
+                                    };
+                                    let placeholder = format!("[[IMAGE #{}]] ", idx);
+                                    textarea.insert_str(&placeholder);
+                                }
+                                crate::telemetry::record("image_paste");
+                                ac_matches = current_completions(&textarea);
+                                ac_idx = 0;
+                            } else {
+                                textarea.paste();
+                                crate::telemetry::record("paste");
+                                ac_matches = current_completions(&textarea);
+                                ac_idx = 0;
+                            }
                         }
                         KeyCode::Char('y') if ctrl => {
                             textarea.paste();
