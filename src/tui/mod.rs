@@ -861,11 +861,42 @@ fn api_suffix_for_alias(alias: &str) -> String {
     String::new()
 }
 
+fn context_window_for_model(model: &str) -> usize {
+    let lower = model.to_lowercase();
+    if lower.contains("128k") { 128_000 }
+    else if lower.contains("200k") { 200_000 }
+    else if lower.contains("32k") { 32_000 }
+    else if lower.contains("1m") || lower.contains("1000k") || lower.contains("1.0m") { 1_000_000 }
+    else { 1_000_000 }
+}
+
+fn estimate_tokens(messages: &[Msg], model: &str) -> usize {
+    // ~4 chars per token + per-message overhead + system prompt
+    let mut chars: usize = 4000; // system prompt estimate
+    for m in messages {
+        chars += m.content.chars().count() + 8;
+    }
+    // Also include model name overhead
+    chars += model.len();
+    (chars + 3) / 4
+}
+
+fn format_context_label(est: usize, window: usize) -> String {
+    let pct = ((est as f64 / window as f64) * 100.0).min(100.0);
+    // Format window as 1.0M, 128k, etc.
+    let window_str = if window >= 1_000_000 { format!("{:.1}M", window as f64 / 1_000_000.0) }
+        else if window >= 1000 { format!("{}k", window / 1000) }
+        else { format!("{}", window) };
+    // Show pct as integer, but keep one decimal if <10%
+    let pct_str = if pct < 10.0 { format!("{:.1}%", pct) } else { format!("{:.0}%", pct) };
+    format!("{} / {}", pct_str, window_str)
+}
+
 fn draw_footer(
     f: &mut Frame,
     area: Rect,
     model: &str,
-    msg_count: usize,
+    messages: &[Msg],
     cwd: &str,
     agent_busy: bool,
     spinner_tick: usize,
@@ -873,6 +904,9 @@ fn draw_footer(
     // Always clear footer area first to avoid ghosting when popup was over it
     f.render_widget(Clear, area);
     let width = area.width as usize;
+    // Split footer into 2 rows: top = main footer, bottom = context window
+    let top_area = if area.height >= 2 { Rect { x: area.x, y: area.y, width: area.width, height: 1 } } else { area };
+    let bottom_area = if area.height >= 2 { Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 } } else { Rect { x: area.x, y: area.y, width: 0, height: 0 } };
     // Footer never shows MCP status — check via /mcp only (as requested)
     // Narrow terminal (<10 cols) – just show truncated model to avoid overflow/wrap bleed
     if width < 15 {
@@ -882,7 +916,15 @@ fn draw_footer(
             format!(" {} ", model)
         };
         let para = Paragraph::new(Line::from(Span::styled(txt, Style::default().fg(ASHEN.smoke).bg(THEME.page_bg))));
-        f.render_widget(para, area);
+        f.render_widget(para, top_area);
+        if area.height >= 2 {
+            let est = estimate_tokens(messages, model);
+            let window = context_window_for_model(model);
+            let ctx = format_context_label(est, window);
+            let ctx_txt = if ctx.chars().count() > width.saturating_sub(2) { format!(" {}… ", ctx.chars().take(width.saturating_sub(3)).collect::<String>()) } else { format!(" {} ", ctx) };
+            let cpara = Paragraph::new(Line::from(Span::styled(ctx_txt, Style::default().fg(ASHEN.deep_ash).bg(THEME.page_bg))));
+            f.render_widget(cpara, bottom_area);
+        }
         return;
     }
 
@@ -900,7 +942,7 @@ fn draw_footer(
     } else {
         String::new()
     };
-    let right = format!(" {} msgs ", msg_count);
+    let right = format!(" {} msgs ", messages.len());
 
     // Shorten cwd to show last 2 components
     let short_cwd = {
@@ -959,7 +1001,23 @@ fn draw_footer(
     ));
 
     let footer = Paragraph::new(Line::from(spans));
-    f.render_widget(footer, area);
+    f.render_widget(footer, top_area);
+    // Second row: context window
+    if area.height >= 2 {
+        let est = estimate_tokens(messages, model);
+        let window = context_window_for_model(model);
+        let ctx_label = format_context_label(est, window);
+        let pct = ((est as f64 / window as f64) * 100.0).min(100.0);
+        let bar_width = width.saturating_sub(ctx_label.chars().count() + 4).max(6);
+        let filled = ((pct / 100.0) * bar_width as f64).round() as usize;
+        let empty = bar_width.saturating_sub(filled);
+        let bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
+        let ctx_line = format!(" {} {} ", bar, ctx_label);
+        let display = if ctx_line.chars().count() > width { ctx_line.chars().take(width).collect::<String>() } else { ctx_line };
+        let ctx_style = if pct > 85.0 { Style::default().fg(ASHEN.ember).bg(THEME.page_bg) } else if pct > 60.0 { Style::default().fg(ASHEN.frost).bg(THEME.page_bg) } else { Style::default().fg(ASHEN.deep_ash).bg(THEME.page_bg) };
+        let cpara = Paragraph::new(Line::from(Span::styled(display, ctx_style)));
+        f.render_widget(cpara, bottom_area);
+    }
 }
 
 // ── Autocomplete + @-mentions ─────────────────────────────────
@@ -1265,6 +1323,73 @@ fn pasted_store() -> &'static Mutex<Vec<String>> { PASTED_IMAGES.get_or_init(|| 
 
 fn clipboard_image_marker() -> Option<String> {
     const MAX_BYTES: usize = 4 * 1024 * 1024;
+    // Windows: PowerShell Get-Clipboard -Format Image -> temp file
+    #[cfg(target_os = "windows")]
+    {
+        let tmp = std::env::temp_dir().join(format!("lean_clip_{}.png", std::process::id()));
+        let ps = format!("$img = Get-Clipboard -Format Image -ErrorAction SilentlyContinue; if ($img -ne $null) {{ $img.Save('{}'); Write-Host 'ok' }} else {{ Write-Host 'no' }}", tmp.display().to_string().replace('\\', "/"));
+        let out = std::process::Command::new("powershell").args(["-NoProfile", "-Command", &ps]).output().ok()?;
+        if String::from_utf8_lossy(&out.stdout).contains("ok") {
+            if let Ok(bytes) = std::fs::read(&tmp) {
+                let _ = std::fs::remove_file(&tmp);
+                if !bytes.is_empty() && bytes.len() <= MAX_BYTES {
+                    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+                    return Some(format!("<<IMAGE:image/png:{}>>", b64));
+                } else if bytes.len() > MAX_BYTES {
+                    return Some(format!("[image skipped: clipboard {} — over 4MB]", crate::tools::human_size(bytes.len())));
+                }
+            }
+        }
+        // also try pwsh
+        let out2 = std::process::Command::new("pwsh").args(["-NoProfile", "-Command", &ps]).output().ok();
+        if let Some(o) = out2 {
+            if String::from_utf8_lossy(&o.stdout).contains("ok") {
+                if let Ok(bytes) = std::fs::read(&tmp) {
+                    let _ = std::fs::remove_file(&tmp);
+                    if !bytes.is_empty() {
+                        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+                        return Some(format!("<<IMAGE:image/png:{}>>", b64));
+                    }
+                }
+            }
+        }
+        return None;
+    }
+    // macOS: pngpaste or osascript -> temp file
+    #[cfg(target_os = "macos")]
+    {
+        let tmp = std::env::temp_dir().join(format!("lean_clip_{}.png", std::process::id()));
+        for prog in ["pngpaste", "/opt/homebrew/bin/pngpaste", "/usr/local/bin/pngpaste"] {
+            let out = std::process::Command::new(prog).arg(&tmp).output().ok();
+            if let Some(o) = out {
+                if o.status.success() && tmp.exists() {
+                    if let Ok(bytes) = std::fs::read(&tmp) {
+                        let _ = std::fs::remove_file(&tmp);
+                        if !bytes.is_empty() && bytes.len() <= MAX_BYTES {
+                            let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+                            return Some(format!("<<IMAGE:image/png:{}>>", b64));
+                        } else if bytes.len() > MAX_BYTES {
+                            return Some(format!("[image skipped: clipboard {} — over 4MB]", crate::tools::human_size(bytes.len())));
+                        }
+                    }
+                }
+            }
+        }
+        // osascript fallback: save clipboard PNG to temp
+        let osa = format!("set f to \"{}\"\ntry\n  set img to the clipboard as «class PNGf»\n  set out to open for access f with write permission\n  set eof of out to 0\n  write img to out\n  close access out\n  return \"ok\"\non error\n  return \"no\"\nend try", tmp.display());
+        let out = std::process::Command::new("osascript").args(["-e", &osa]).output().ok()?;
+        if String::from_utf8_lossy(&out.stdout).contains("ok") {
+            if let Ok(bytes) = std::fs::read(&tmp) {
+                let _ = std::fs::remove_file(&tmp);
+                if !bytes.is_empty() {
+                    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+                    return Some(format!("<<IMAGE:image/png:{}>>", b64));
+                }
+            }
+        }
+        return None;
+    }
+    // Linux / other Unix
     let try_bytes = |prog: &str, args: &[&str]| -> Option<Vec<u8>> {
         let mut cmd = std::process::Command::new(prog);
         cmd.args(args);
@@ -2113,7 +2238,7 @@ async fn app_loop(
         let queue_rows = msg_queue.len().min(2) as u16;
         // Dynamic input height 1..6 (auto-grow like pi/jcode, clamped)
         let input_height = (textarea.lines().len() as u16).clamp(1, 6);
-        let overhead = 4 + queue_rows + input_height; // header + sep + sep + queue + input + footer
+        let overhead = 5 + queue_rows + input_height; // header + sep + sep + queue + input + footer(2 rows)
                                        // Content area: starts at row 2 (after header + sep), height is the rest
         let content_area = Rect {
             x: 0,
@@ -2133,7 +2258,7 @@ async fn app_loop(
                     Constraint::Length(1),              // separator
                     Constraint::Length(queue_rows),     // queue (0-2)
                     Constraint::Length(input_height),   // input (auto-grow 1..5)
-                    Constraint::Length(1),              // footer
+                    Constraint::Length(2),              // footer (2 rows: main + context)
                 ])
                 .split(Rect {
                     x: 0,
@@ -2203,12 +2328,12 @@ async fn app_loop(
                     draw_mcp(f, f.area(), mcp_selected, mcp_scroll);
                 }
 
-                // Footer
+                // Footer (2 rows)
                 draw_footer(
                     f,
                     chunks[6],
                     &model,
-                    messages.len(),
+                    &messages,
                     &cwd,
                     agent_busy,
                     spinner_tick,
@@ -2643,8 +2768,8 @@ async fn app_loop(
                             ac_matches = current_completions(&textarea);
                             ac_idx = 0;
                         }
-                        KeyCode::Char('v') | KeyCode::Char('V') if ctrl => {
-                            // Ctrl+V (and Ctrl+Shift+V): try image clipboard first, fallback to text paste
+                        KeyCode::Char('v') | KeyCode::Char('V') if ctrl || k.modifiers.contains(KeyModifiers::SUPER) => {
+                            // Ctrl+V / Cmd+V (macOS) / Ctrl+Shift+V: try image clipboard first, fallback to text paste
                             if let Some(marker) = clipboard_image_marker() {
                                 if marker.starts_with("[image skipped") {
                                     messages.push(Msg { role: "system".into(), content: marker.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
@@ -2662,7 +2787,13 @@ async fn app_loop(
                                 ac_matches = current_completions(&textarea);
                                 ac_idx = 0;
                             } else {
+                                let before = textarea.lines().join("\n");
                                 textarea.paste();
+                                let after = textarea.lines().join("\n");
+                                if before == after {
+                                    // No text pasted and no image found — likely image clipboard without tool support
+                                    messages.push(Msg { role: "system".into(), content: "no image in clipboard (and no text). Tip: copy screenshot as PNG (Flameshot/Spectacle), ensure wl-clipboard installed, or use @path/to/image.png — see wl-paste --list-types to debug.".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                }
                                 crate::telemetry::record("paste");
                                 ac_matches = current_completions(&textarea);
                                 ac_idx = 0;
