@@ -36,12 +36,14 @@ Classify the request:\n\
 - `search` — needs web lookup.\n\
 If unsure, treat as `write`.\n\n\
 ## Plan mode — 5-phase gate (MANDATORY)\n\
-You MUST NOT call write_file, edit_file, bash (mutating), or any MCP write tool on project files until you have completed Phases 1-4 and received explicit user approval via ask_user. Read-only tools (read_file, read_skill, web_search, search_memory, etc., plus read-only bash like ls/cat/grep/find and MCP reads) are always allowed. In plan mode, the ONLY write allowed before approval is `write_file` to `.lean/plans/` for the deliverable plan. All other mutations are BLOCKED until Phase 4 approval.\n\n\
+You MUST NOT call write_file, edit_file, bash (mutating), or any MCP write tool on project files until you have completed Phases 1-4, received `✓ Proceed as proposed`, AND received explicit permission to leave PLAN mode via ask_user. Read-only tools (read_file, read_skill, web_search, search_memory, etc., plus read-only bash like ls/cat/grep/find and MCP reads) are always allowed. In plan mode, the ONLY write allowed before leaving is `write_file` to `.lean/plans/` for the deliverable plan. All other mutations are BLOCKED until you leave PLAN.\n\n\
 Phase 1 — DISCOVER (read-only): read relevant files, search memory/skills, gather context. No mutations.\n\
 Phase 2 — CLARIFY: call ask_user with concrete options until scope is 100% clear. For each ambiguity present 2-3 options with pros/cons. Cover: goal, non-goals, files/modules in scope, UX/constraints, edge cases. Keep asking — do not assume.\n\n\
 Phase 3 — PROPOSE: write a concrete plan markdown to `.lean/plans/YYYY-MM-DD_HHMMSS-<slug>.md` (see plan skill for template: goal, context, approach, steps, files, tests, risks). Then summarize Shared Understanding (scope + chosen approach + files + verification) and ask a final ask_user question that MUST contain an option exactly labeled `✓ Proceed as proposed` (and `Needs changes` / Other).\n\n\
-Phase 4 — WAIT: Do NOT mutate project files. If user selects `✓ Proceed as proposed` → approved (plan is done; user will run implementation separately or ask you to implement). If Other/Needs changes → loop back to Phase 2.\n\n\
-Phase 5 — (only if user explicitly asks to implement after plan approval): execute the approved plan, verify, summarize and end with `All done.` Otherwise, end after plan is written and approved.\n\n\
+Phase 4 — WAIT: Do NOT mutate project files. If user selects `✓ Proceed as proposed` → plan approved. If Other/Needs changes → loop back to Phase 2.
+
+Phase 4b — LEAVE PERMISSION (required before any building): When you are done planning and want to start building, you MUST call ask_user with header `Leave PLAN?`, question `Leave PLAN mode and start building?` and options exactly `[\"✓ Yes, leave PLAN and implement\", \"Stay in PLAN\"]` (do not add extra options; Other row will appear but you should not rely on it). If user selects `✓ Yes, leave PLAN and implement` → you will be switched to NORM automatically and may proceed to Phase 5. If `Stay in PLAN` → remain in PLAN, do not mutate.\n\n\
+Phase 5 — (only after Leave permission granted): switch to NORM and execute the approved plan, verify, summarize and end with `All done.` Otherwise, end after plan is written and approved.\n\n\
 Continue while steps remain. If a tool fails, read the error and adjust; don't repeat a call that already succeeded. Do not act on inferred intent before Phase 4 approval.\n\n\
 ## Tools\n\
 - Read before edit; use a unique oldText for precise edits.\n\
@@ -316,6 +318,16 @@ pub(crate) fn is_plan_exempt_write(name: &str, args: &Value) -> bool {
     false
 }
 
+pub(crate) fn is_permission_to_leave_plan(result: &str) -> bool {
+    let lower = result.to_lowercase();
+    lower.contains("leave plan and implement") || lower.contains("yes, leave plan")
+}
+
+pub(crate) fn is_stay_in_plan(result: &str) -> bool {
+    let lower = result.to_lowercase();
+    lower.contains("stay in plan")
+}
+
 pub(crate) fn is_readonly_bash(cmd: &str) -> bool {
     let lower = cmd.trim().to_lowercase();
     if lower.is_empty() { return true; }
@@ -389,6 +401,15 @@ impl PlanTracker {
         let lower = result.to_lowercase();
         if lower.contains("proceed as proposed") || lower.contains("\u{2713} proceed") || lower.contains("✓ proceed") {
             self.approved = true;
+        }
+        if is_permission_to_leave_plan(result) {
+            // User granted permission to leave PLAN — switch to NORM and mark approved so building can start
+            set_mode(Mode::Norm);
+            self.approved = true;
+            self.requires_approval = false;
+        } else if is_stay_in_plan(result) {
+            // Stay in PLAN — remain gated
+            self.requires_approval = is_plan_mode() && !is_conversational_str(&self.goal);
         }
         // If user said Needs changes / Other with feedback, reset to not approved so we loop
         // We keep approved=true only on explicit proceed; any other ask_user result keeps blocked until proceed is seen.
