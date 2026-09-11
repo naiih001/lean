@@ -153,8 +153,10 @@ Environment variables are loaded from `.env` via `dotenvy`.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `OPENAI_API_KEY` / `OPENCODE_API_KEY` | — | API key for the LLM provider |
-| `OPENAI_BASE_URL` / `OPENCODE_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API base URL |
+| `OPENAI_API_KEY` / `OPENCODE_API_KEY` | — | API key for OpenAI / Generic providers |
+| `ANTHROPIC_API_KEY` | — | API key for Anthropic provider (`provider: anthropic`) |
+| `OPENAI_BASE_URL` / `OPENCODE_BASE_URL` | `https://api.openai.com/v1` | Default base URL for `openai`/`generic` providers |
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama host (auto-detected, no key required) |
 | `EXA_API_KEY` | *(none)* | API key for web search via Exa; falls back to DuckDuckGo when unset |
 
 ### CLI Flags
@@ -186,23 +188,35 @@ lean --dir-guard-disabled      # disable directory confinement guard
   "default": "gpt-4o",
   "models": {
     "gpt-4o": {
+      "provider": "openai",
       "model": "gpt-4o",
       "base_url": "https://api.openai.com/v1",
       "api_key_env": "OPENAI_API_KEY"
     },
+    "claude": {
+      "provider": "anthropic",
+      "model": "claude-3-5-sonnet-20241022",
+      "api": "anthropic",
+      "api_key_env": "ANTHROPIC_API_KEY"
+    },
+    "qwen-local": {
+      "provider": "ollama",
+      "model": "qwen2.5:7b",
+      "base_url": "http://localhost:11434/v1",
+      "api_key": "ollama"
+    },
     "gpt-5-responses": {
       "model": "gpt-5",
-      "base_url": "https://api.openai.com/v1",
-      "api_key_env": "OPENAI_API_KEY",
       "api": "responses"
     }
   }
 }
 ```
+- `provider` — `openai` (default), `anthropic`, `ollama`/`local`, `generic`. Inferred from `base_url`/`api` if missing — old configs stay compatible.
 - `model` — real model id sent to the API
-- `base_url` — optional override (defaults to `OPENAI_BASE_URL` / `OPENCODE_BASE_URL`)
-- `api_key_env` / `api_key` — env var name or inline key
-- `api` — `"chat_completions"` (default, `POST /v1/chat/completions`) or `"responses"` (`POST /v1/responses`). Aliases: `chat`/`completions` → chat, `responses` → responses. Existing configs without `api` keep working as chat completions.
+- `base_url` — optional override. Defaults: `openai` → `https://api.openai.com/v1`, `anthropic` → `https://api.anthropic.com`, `ollama` → `http://localhost:11434/v1` (auto-detected via `http://localhost:11434/api/tags`)
+- `api_key_env` / `api_key` — env var name or inline key. `ollama`/`local` requires no key (`"ollama"` placeholder ok).
+- `api` — `"chat_completions"` (default, `POST /v1/chat/completions`), `"responses"` (`POST /v1/responses`), or `"anthropic"` (`POST /v1/messages` with `x-api-key`). Existing configs without `api`/`provider` keep working as chat completions.
 
 ---
 

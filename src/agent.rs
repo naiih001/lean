@@ -595,7 +595,7 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
                 // Build tools for responses
                 let tools = llm::responses_tool_definitions().await;
                 let body = llm::build_responses_request_body(&model_id, &instructions, &input, &tools);
-                let resp = match client.http.post(client.responses_url()).header("Authorization", format!("Bearer {}", client.api_key)).header("Content-Type", "application/json").json(&body).send().await {
+                let resp = match client.apply_auth(client.http.post(client.responses_url())).header("Content-Type", "application/json").json(&body).send().await {
                     Ok(r) => r,
                     Err(e) => { yield AgentEvent::Text { delta: format!("\n[LLM error: {}]", e) }; break; }
                 };
@@ -889,7 +889,7 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
             if messages.len() > 1 { messages.insert(1, focus_msg); } else { messages.push(focus_msg); }
             let tools = llm::tool_definitions().await;
             let body = json!({"model": model_id, "messages": messages, "tools": tools, "tool_choice": "auto", "stream": true});
-            let resp = match client.http.post(client.chat_url()).header("Authorization", format!("Bearer {}", client.api_key)).header("Content-Type", "application/json").json(&body).send().await {
+            let resp = match client.apply_auth(client.http.post(client.chat_url())).header("Content-Type", "application/json").json(&body).send().await {
                 Ok(r) => r,
                 Err(e) => { yield AgentEvent::Text { delta: format!("\n[LLM error: {}]", e) }; break; }
             };

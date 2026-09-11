@@ -829,6 +829,7 @@ fn api_suffix_for_alias(alias: &str) -> String {
             let mode = e.api_mode();
             return match mode {
                 crate::models::ApiMode::Responses => " (responses)".to_string(),
+                crate::models::ApiMode::Anthropic => " (anthropic)".to_string(),
                 crate::models::ApiMode::ChatCompletions => " (chat)".to_string(),
             };
         }
@@ -2929,7 +2930,7 @@ async fn app_loop(
                                         Ok(cfg) => {
                                             let entry = cfg.models.get(&model);
                                             let detail = if let Some(e) = entry {
-                                                let api_tag = match e.api_mode() { crate::models::ApiMode::Responses => "responses", _ => "chat" };
+                                                let api_tag = match e.api_mode() { crate::models::ApiMode::Responses => "responses", crate::models::ApiMode::Anthropic => "anthropic", _ => "chat" };
                                                 format!(" → {} @ {} [{}]", e.model, e.base_url.as_deref().unwrap_or("env: OPENCODE_BASE_URL"), api_tag)
                                             } else {
                                                 String::new()
@@ -2938,7 +2939,7 @@ async fn app_loop(
                                             aliases.sort();
                                             let decorated: Vec<String> = aliases.iter().map(|a| {
                                                 if let Some(e) = cfg.models.get(a) {
-                                                    let tag = match e.api_mode() { crate::models::ApiMode::Responses => "responses", _ => "chat" };
+                                                    let tag = match e.api_mode() { crate::models::ApiMode::Responses => "responses", crate::models::ApiMode::Anthropic => "anthropic", _ => "chat" };
                                                     format!("{} ({})", a, tag)
                                                 } else { a.clone() }
                                             }).collect();
@@ -2972,7 +2973,7 @@ async fn app_loop(
                                                     s.model = model.clone();
                                                     let _ = s.save();
                                                 }
-                                                let api_tag = match r.api_mode { crate::models::ApiMode::Responses => "responses", _ => "chat" };
+                                                let api_tag = match r.api_mode { crate::models::ApiMode::Responses => "responses", crate::models::ApiMode::Anthropic => "anthropic", _ => "chat" };
                                                 messages.push(Msg {
                                                     role: "system".into(),
                                                     content: format!("switched to {} ({} @ {} — {}) — live + persisted", r.alias, r.model, r.base_url, api_tag), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
