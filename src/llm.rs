@@ -232,7 +232,7 @@ pub fn native_tool_definitions() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "ask_user",
-                "description": "Ask the user one or more clarifying questions with concrete options. Use when a request is genuinely ambiguous (unclear target, scope, or preference) and you cannot discover the answer yourself. The UI asks one question at a time; every question also offers an 'Other…' free-text row. Prefer this over guessing.",
+                "description": "Ask the user one or more clarifying questions with concrete options. MANDATORY for any Real-task (any non-conversational request) in Phases 2-3 before any mutation: use it to confirm scope, constraints, and approach and to get explicit '✓ Proceed as proposed' approval. Iterate until you are 100% sure — keep asking until no assumptions remain. The UI asks one question at a time; every question also offers an 'Other…' free-text row. The final gating question MUST contain an option exactly labeled '✓ Proceed as proposed'.",
                 "parameters": {
                     "type": "object",
                     "properties": {

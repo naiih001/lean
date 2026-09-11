@@ -7,20 +7,28 @@ use std::collections::HashMap;
 pub const SYSTEM_PROMPT: &str = "You are lean, a coding assistant in the terminal. Be direct, concise, and verify your work.\n\n\
 ## When to act\n\
 - Greeting or small talk with no request (\"hi\", \"thanks\", \"how are you\") → reply warmly in 1-2 sentences and stop. No tools, no follow-up.\n\
-- Otherwise → task mode.\n\n\
-## Task mode\n\
-1. Understand: read the relevant files before editing.\n\
-2. Act: use tools (read_file, edit_file, write_file, bash, web_search). Make the smallest change that solves the problem.\n\
-3. Verify: run the build, tests, or lint that covers the change; don't assume success.\n\
-4. Summarize: state what changed and end with \"All done.\"\n\
-Continue while steps remain. Stop when the goal is met and verified. If a tool fails, read the error and adjust; don't repeat a call that already succeeded.\n\n\
+- Otherwise → Real-task mode. This includes write tasks (create/edit files, run bash, MCP) AND read-only investigations, explanations, and web searches — any non-conversational task uses Real-task mode.\n\n\
+## Task classification (do this silently before Phase 1)\n\
+Classify the request:\n\
+- `write` — needs file writes/edits, mutating bash, or MCP tools.\n\
+- `explain` — answer about code/content without mutation.\n\
+- `search` — needs web lookup.\n\
+If unsure, treat as `write`. You still follow the full 5-phase gate for any non-conversational task, regardless of class — classification only helps you scope questions.\n\n\
+## Real-task mode — 5-phase gate (MANDATORY)\n\
+You MUST NOT call write_file, edit_file, bash, or any MCP tool (name contains `__`) until you have completed Phases 1-4 and received explicit user approval via ask_user. Read-only tools (read_file, read_skill, web_search, search_memory, recall_memory, list_memories, memory_stats) are allowed in Phase 1, but all mutations are BLOCKED until Phase 4 approval.\n\n\
+Phase 1 — DISCOVER (read-only): read relevant files, search memory/skills, gather context. No mutations.\n\
+Phase 2 — CLARIFY: call ask_user with concrete options until scope is 100% clear. For each ambiguity present 2-3 options with pros/cons. Cover: goal, non-goals, files/modules in scope, UX/constraints, edge cases. Keep asking — do not assume. Ask until you are 100% sure you know exactly what to do.\n\n\
+Phase 3 — PROPOSE: summarize Shared Understanding (scope + chosen approach + files to change + verification plan) and ask a final ask_user question that MUST contain an option exactly labeled `✓ Proceed as proposed` (and an option like `Needs changes` or free-text Other for feedback).\n\n\
+Phase 4 — WAIT: Do NOT mutate. If user selects `✓ Proceed as proposed` → you are approved to proceed to Phase 5. If user selects Other/Needs changes or gives feedback → loop back to Phase 2 and re-clarify.\n\n\
+Phase 5 — ACT: execute the approved plan (smallest change that solves the problem), verify (build/tests/lint), summarize and end with `All done.`\n\n\
+Continue while steps remain. If a tool fails, read the error and adjust; don't repeat a call that already succeeded. Do not act on inferred intent before Phase 4 approval.\n\n\
 ## Tools\n\
 - Read before edit; use a unique oldText for precise edits.\n\
 - If you need a file, call read_file now instead of saying you will.\n\
 - Only respond as the assistant. Never write a user \"thanks\" or \"you're welcome\" on the user's behalf.\n\n\
 ## Asking the user\n\
-- If a request is genuinely ambiguous (unclear target, scope, or preference) and you can't discover the answer from the repo, call ask_user with concrete options instead of guessing.\n\
-- Don't ask when you can find the answer yourself.\n\n\
+- For any Real-task (any non-conversational request), you MUST use ask_user in Phases 2-3 — to confirm scope, constraints, and approach and to get explicit `✓ Proceed as proposed` approval. Iterate until no assumptions remain.\n\
+- Even if you think you understand, still ask. Prefer asking over guessing. Ask until you are 100% sure.\n\n\
 ## Skills and memory\n\
 - Skills are markdown workflows listed below. If one matches the task, call read_skill and follow it.\n\
 - Search memory only when prior context helps (multi-turn, user preference, project fact). Call remember when you learn something worth keeping.\n";
@@ -203,11 +211,33 @@ struct ToolAccum {
     args: String,
 }
 
+pub(crate) fn is_mutating_tool(name: &str) -> bool {
+    matches!(name, "write_file" | "edit_file" | "bash") || name.contains("__")
+}
+
+fn is_conversational_str(goal: &str) -> bool {
+    let g = goal.trim().to_lowercase();
+    let stripped = g.trim_matches(|c: char| c == '!' || c == '.' || c == ',' || c == '?' || c == '\'' || c == '"').trim();
+    let conversational_exact = ["hi","hello","hey","hi there","hello there","hey there","thanks","thank you","thanks!","thank you!","yo","sup","howdy","hola","how are you","how are you?","hey!","hello!","hi!"];
+    if conversational_exact.contains(&stripped) { return true; }
+    if stripped.len() >= 30 { return false; }
+    let has_task_verb = ["write","create","fix","build","edit","read","search","make","add","update","implement","explain","help with","can you","could you","please","run","test","refactor","remove","delete"].iter().any(|v| stripped.contains(v));
+    if has_task_verb { return false; }
+    let greet_prefixes = ["hi ","hello ","hey ","thanks ","thank you "];
+    if greet_prefixes.iter().any(|p| stripped.starts_with(p)) { return true; }
+    if stripped.split_whitespace().count() <= 3 {
+        if ["hi","hello","hey"].iter().any(|w| stripped.contains(w)) { return true; }
+    }
+    false
+}
+
 struct PlanTracker {
     goal: String,
     steps_done: Vec<String>,
     last_tools: Vec<String>,
     nocall_streak: usize,
+    requires_approval: bool,
+    approved: bool,
 }
 
 const MAX_NOCALL_STREAK: usize = 3;
@@ -228,7 +258,20 @@ const COMPLETE_SIGNALS: [&str; 10] = [
 
 impl PlanTracker {
     fn new(goal: &str) -> Self {
-        Self { goal: goal.to_string(), steps_done: Vec::new(), last_tools: Vec::new(), nocall_streak: 0 }
+        let requires_approval = !is_conversational_str(goal);
+        Self { goal: goal.to_string(), steps_done: Vec::new(), last_tools: Vec::new(), nocall_streak: 0, requires_approval, approved: false }
+    }
+
+    fn requires_approval(&self) -> bool { self.requires_approval }
+    fn has_approval(&self) -> bool { self.approved }
+    fn set_approved(&mut self, v: bool) { self.approved = v; }
+    fn note_ask_result(&mut self, result: &str) {
+        let lower = result.to_lowercase();
+        if lower.contains("proceed as proposed") || lower.contains("\u{2713} proceed") || lower.contains("✓ proceed") {
+            self.approved = true;
+        }
+        // If user said Needs changes / Other with feedback, reset to not approved so we loop
+        // We keep approved=true only on explicit proceed; any other ask_user result keeps blocked until proceed is seen.
     }
 
     /// True only when the reply carries a terminal signal and nothing is still pending.
@@ -241,28 +284,36 @@ impl PlanTracker {
     }
 
     fn is_conversational_goal(&self) -> bool {
-        let g = self.goal.trim().to_lowercase();
-        let stripped = g.trim_matches(|c: char| c == '!' || c == '.' || c == ',' || c == '?' || c == '\'' || c == '"').trim();
-        let conversational_exact = ["hi","hello","hey","hi there","hello there","hey there","thanks","thank you","thanks!","thank you!","yo","sup","howdy","hola","how are you","how are you?","hey!","hello!","hi!"];
-        if conversational_exact.contains(&stripped) { return true; }
-        if stripped.len() >= 30 { return false; }
-        // A task verb anywhere means this is real work, even behind a "thanks," opener.
-        let has_task_verb = ["write","create","fix","build","edit","read","search","make","add","update","implement","explain","help with","can you","could you","please","run","test","refactor","remove","delete"].iter().any(|v| stripped.contains(v));
-        if has_task_verb { return false; }
-        let greet_prefixes = ["hi ","hello ","hey ","thanks ","thank you "];
-        if greet_prefixes.iter().any(|p| stripped.starts_with(p)) { return true; }
-        if stripped.split_whitespace().count() <= 3 {
-            if ["hi","hello","hey"].iter().any(|w| stripped.contains(w)) { return true; }
-        }
-        false
+        is_conversational_str(&self.goal)
     }
 
     fn focus_context(&self, step: usize) -> String {
         if self.is_conversational_goal() {
             return format!("[Focus — conversational]\nGoal: \"{}\" — this is small talk. Reply warmly in 1-2 sentences and stop. No tools needed.\nStep: {}.", self.goal, step);
         }
+        // Gating: Phases 1-4 — mutating tools blocked until Proceed
+        if self.requires_approval && !self.approved {
+            let mut out = String::from("[Focus — REAL-TASK GATING ACTIVE]\n");
+            out.push_str(&format!("Goal: {}\n", self.goal));
+            out.push_str("Phase: you are in Phases 1-4 (Discover → Clarify → Propose → Wait). MUTATING tools (write_file, edit_file, bash, any MCP __) are BLOCKED until user selects \"\u{2713} Proceed as proposed\" via ask_user.\n");
+            out.push_str("Allowed now: read_file (read-only), read_skill, web_search, search_memory/recall_memory/list_memories, ask_user.\n");
+            out.push_str("You MUST call ask_user now to clarify scope/approach. Cover goal, non-goals, files in scope, constraints, edge cases. Iterate until 100% sure. Final gating question MUST contain option exactly `\u{2713} Proceed as proposed`. Do NOT call mutating tools.\n");
+            if !self.steps_done.is_empty() {
+                out.push_str(&format!("Progress ({}):\n", self.steps_done.len()));
+                for (i, s) in self.steps_done.iter().enumerate() { out.push_str(&format!("  {}. {}\n", i+1, s)); }
+            }
+            if !self.last_tools.is_empty() { out.push_str(&format!("Recent tools: {}\n", self.last_tools.join(", "))); }
+            if self.nocall_streak > 0 {
+                out.push_str(&format!("No tool call yet (attempt {}/{}): call ask_user now to clarify, or if already clarified, ask the final Proceed question.\n", self.nocall_streak, MAX_NOCALL_STREAK));
+            }
+            out.push_str(&format!("Step {}.\n", step));
+            return out;
+        }
         let mut out = String::from("[Focus]\n");
         out.push_str(&format!("Goal: {}\n", self.goal));
+        if self.requires_approval && self.approved {
+            out.push_str("Gating: APPROVED — you have received `\u{2713} Proceed as proposed`. You may now use all tools in Phase 5 (Act).\n");
+        }
         if !self.steps_done.is_empty() {
             out.push_str(&format!("Progress ({}):\n", self.steps_done.len()));
             for (i, s) in self.steps_done.iter().enumerate() { out.push_str(&format!("  {}. {}\n", i+1, s)); }
@@ -635,11 +686,16 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
                     let args_val: Value = serde_json::from_str(&acc.args).unwrap_or(Value::String(acc.args.clone()));
                     yield AgentEvent::ToolStart { name: acc.name.clone(), args: args_val.clone(), id: acc.id.clone() };
                 }
-                let futs: Vec<_> = ordered.iter().map(|(_, acc)| { let name=acc.name.clone(); let id=acc.id.clone(); let args_val: Value=serde_json::from_str(&acc.args).unwrap_or(Value::String(acc.args.clone())); async move { let start=std::time::Instant::now(); let result=crate::tools::execute_tool(&name, args_val.clone()).await; let elapsed_ms=start.elapsed().as_millis() as u64; (id,name,result,args_val,elapsed_ms) }}).collect();
+                let gate_active = tracker.requires_approval() && !tracker.has_approval();
+                let futs: Vec<_> = ordered.iter().map(|(_, acc)| { let name=acc.name.clone(); let id=acc.id.clone(); let args_val: Value=serde_json::from_str(&acc.args).unwrap_or(Value::String(acc.args.clone())); let blocked = gate_active && is_mutating_tool(&name); async move { let start=std::time::Instant::now(); let result = if blocked { format!("[GATING BLOCKED] Mutating tool '{}' is blocked until you complete Phases 1-4 and get explicit user approval via ask_user with '\\u{{2713}} Proceed as proposed'. Call ask_user now to clarify scope/approach. Read-only tools (read_file, read_skill, web_search, memory) are still allowed.", name) } else { crate::tools::execute_tool(&name, args_val.clone()).await }; let elapsed_ms=start.elapsed().as_millis() as u64; (id,name,result,args_val,elapsed_ms) }}).collect();
                 let results = futures::future::join_all(futs).await;
                 for (id, name, result, args_val, elapsed_ms) in results {
                     let display = result.find("<<IMAGE:").map_or_else(|| result.clone(), |pos| format!("{}[image data omitted for display]", result[..pos].trim_end()));
                     yield AgentEvent::ToolResult { name: name.clone(), result: display, id: id.clone(), elapsed_ms };
+                    // If this was ask_user, check for Proceed approval
+                    if name == "ask_user" {
+                        tracker.note_ask_result(&result);
+                    }
                     tool_results.push((id,name,result,args_val));
                 }
                 let tool_calls_json: Vec<Value> = ordered.iter().map(|(_, acc)| json!({"id": acc.id, "type": "function", "function": {"name": acc.name, "arguments": acc.args}})).collect();
@@ -779,13 +835,15 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
                 let args_val: Value = serde_json::from_str(&acc.args).unwrap_or(Value::String(acc.args.clone()));
                 yield AgentEvent::ToolStart { name: acc.name.clone(), args: args_val.clone(), id: acc.id.clone() };
             }
+            let gate_active = tracker.requires_approval() && !tracker.has_approval();
             let futs: Vec<_> = ordered.iter().map(|(_, acc)| {
                 let name = acc.name.clone();
                 let id = acc.id.clone();
                 let args_val: Value = serde_json::from_str(&acc.args).unwrap_or(Value::String(acc.args.clone()));
+                let blocked = gate_active && is_mutating_tool(&name);
                 async move {
                     let start = std::time::Instant::now();
-                    let result = crate::tools::execute_tool(&name, args_val.clone()).await;
+                    let result = if blocked { format!("[GATING BLOCKED] Mutating tool '{}' is blocked until you complete Phases 1-4 and get explicit user approval via ask_user with '\\u{{2713}} Proceed as proposed'. Call ask_user now to clarify scope/approach. Read-only tools (read_file, read_skill, web_search, memory) are still allowed.", name) } else { crate::tools::execute_tool(&name, args_val.clone()).await };
                     let elapsed_ms = start.elapsed().as_millis() as u64;
                     (id, name, result, args_val, elapsed_ms)
                 }
@@ -794,6 +852,9 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
             for (id, name, result, args_val, elapsed_ms) in results {
                 let display = result.find("<<IMAGE:").map_or_else(|| result.clone(), |pos| format!("{}[image data omitted for display]", result[..pos].trim_end()));
                 yield AgentEvent::ToolResult { name: name.clone(), result: display, id: id.clone(), elapsed_ms };
+                if name == "ask_user" {
+                    tracker.note_ask_result(&result);
+                }
                 tool_results.push((id, name, result, args_val));
             }
             let tool_calls_json: Vec<Value> = ordered.iter().map(|(_, acc)| json!({"id": acc.id, "type": "function", "function": {"name": acc.name, "arguments": acc.args}})).collect();
@@ -820,7 +881,7 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
 #[cfg(test)]
 mod prompt_tests {
     use super::*;
-    const BASE_BUDGET: usize = 2500;
+    const BASE_BUDGET: usize = 3600;
     const TOTAL_BUDGET: usize = 4000;
 
     #[test]
