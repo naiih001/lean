@@ -24,6 +24,7 @@ impl Client {
             base_url,
             http: reqwest::Client::builder()
                 .user_agent("opencode/1.0")
+                .timeout(std::time::Duration::from_secs(60))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
             provider: crate::models::Provider::Generic,
@@ -32,11 +33,16 @@ impl Client {
     }
 
     pub fn from_resolved(resolved: &crate::models::ResolvedModel) -> Self {
+        let timeout_secs = match resolved.provider {
+            crate::models::Provider::Ollama => 30,
+            _ => 60,
+        };
         Self {
             api_key: resolved.api_key.clone(),
             base_url: resolved.base_url.clone(),
             http: reqwest::Client::builder()
                 .user_agent("opencode/1.0")
+                .timeout(std::time::Duration::from_secs(timeout_secs))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
             provider: resolved.provider.clone(),

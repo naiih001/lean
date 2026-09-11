@@ -3,6 +3,7 @@ use crate::skills;
 use futures::Stream;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::time::Duration;
 
 pub const REGULAR_SYSTEM_PROMPT: &str = "You are lean, a coding assistant in the terminal. Be direct, concise, and verify your work.\n\n\
 ## When to act\n\
@@ -542,6 +543,138 @@ fn prune_context_messages(messages: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+// ── Network retry helpers ──────────────────────────────────────────────
+fn is_retryable_status(status: u16) -> bool {
+    matches!(status, 429 | 500..=599)
+}
+
+fn is_retryable_error(e: &reqwest::Error) -> bool {
+    e.is_timeout() || e.is_connect() || e.is_request() && format!("{:?}", e).to_lowercase().contains("connection")
+}
+
+fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    if let Some(v) = headers.get(reqwest::header::RETRY_AFTER) {
+        if let Ok(s) = v.to_str() {
+            // Try seconds as integer
+            if let Ok(secs) = s.trim().parse::<u64>() {
+                return Some(Duration::from_secs(secs));
+            }
+            // Try HTTP date (fallback: ignore, use backoff)
+        }
+    }
+    None
+}
+
+async fn post_with_retry(client: &Client, url: String, body: &Value) -> Result<reqwest::Response, String> {
+    let is_ollama = client.provider == crate::models::Provider::Ollama;
+    let max_retries = if is_ollama { 2 } else { 3 };
+    let base_delays_ms: Vec<u64> = if is_ollama { vec![300, 600] } else { vec![500, 1000, 2000] };
+    let mut last_err: Option<String> = None;
+    for attempt in 0..=max_retries {
+        let res = client.apply_auth(client.http.post(url.clone()))
+            .header("Content-Type", "application/json")
+            .json(body)
+            .send()
+            .await;
+        match res {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    return Ok(resp);
+                }
+                let status = resp.status().as_u16();
+                if is_retryable_status(status) && attempt < max_retries {
+                    let retry_after = parse_retry_after(resp.headers()).unwrap_or(Duration::from_millis(base_delays_ms[attempt as usize]));
+                    let delay = std::cmp::min(retry_after, Duration::from_secs(30));
+                    tokio::time::sleep(delay).await;
+                    continue;
+                } else {
+                    let txt = resp.text().await.unwrap_or_default();
+                    let hint = if is_ollama {
+                        " — Ollama is not running or model not pulled. Run 'ollama serve' and 'ollama pull <model>' and check http://localhost:11434/api/tags"
+                    } else if status == 401 || status == 403 {
+                        " — check API key (OPENAI_API_KEY / ANTHROPIC_API_KEY / OPENCODE_API_KEY)"
+                    } else if status == 429 {
+                        " — rate limited, try again shortly"
+                    } else { "" };
+                    // Truncate long body for inline display
+                    let snippet = if txt.chars().count() > 800 { format!("{}… [truncated]", txt.chars().take(800).collect::<String>()) } else { txt };
+                    return Err(format!("[LLM HTTP {}: {}{}] (provider: {}, url: {})", status, snippet, hint, client.provider.as_str(), url));
+                }
+            },
+            Err(e) if is_retryable_error(&e) && attempt < max_retries => {
+                let delay = Duration::from_millis(base_delays_ms[attempt as usize]);
+                tokio::time::sleep(delay).await;
+                last_err = Some(e.to_string());
+                continue;
+            },
+            Err(e) => {
+                let hint = if is_ollama && (e.is_connect() || format!("{:?}", e).to_lowercase().contains("connection")) {
+                    " — Ollama is not running — run 'ollama serve' and ensure http://localhost:11434/api/tags is reachable"
+                } else if e.is_timeout() {
+                    " — timeout"
+                } else { "" };
+                return Err(format!("[LLM error: {}{}] (provider: {})", e, hint, client.provider.as_str()));
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| "[LLM error: max retries exceeded]".to_string()))
+}
+
+const MAX_IMAGES_PER_TURN: usize = 5;
+
+fn build_user_content(prompt: &str) -> Value {
+    if !prompt.contains("<<IMAGE:") && !prompt.contains("<<IMAGE_URL:") {
+        return Value::String(prompt.to_string());
+    }
+    let mut parts: Vec<Value> = Vec::new();
+    let mut remaining = prompt;
+    let mut count = 0usize;
+    while let Some(start) = remaining.find("<<IMAGE") {
+        let before = &remaining[..start];
+        if !before.is_empty() {
+            parts.push(json!({"type": "text", "text": before }));
+        }
+        if let Some(end) = remaining[start..].find(">>") {
+            let marker = &remaining[start..start+end+2];
+            if marker.starts_with("<<IMAGE_URL:") {
+                let url = marker.trim_start_matches("<<IMAGE_URL:").trim_end_matches(">>");
+                if count < MAX_IMAGES_PER_TURN {
+                    parts.push(json!({"type": "image_url", "image_url": {"url": url}}));
+                    count += 1;
+                } else {
+                    parts.push(json!({"type": "text", "text": format!("[image skipped: {} — max {} images/turn]", url, MAX_IMAGES_PER_TURN)}));
+                }
+            } else if marker.starts_with("<<IMAGE:") {
+                let inner = marker.trim_start_matches("<<IMAGE:").trim_end_matches(">>");
+                if let Some(colon) = inner.find(':') {
+                    let mime = &inner[..colon];
+                    let b64 = &inner[colon+1..];
+                    if count < MAX_IMAGES_PER_TURN {
+                        parts.push(json!({"type": "image_url", "image_url": {"url": format!("data:{};base64,{}", mime, b64)}}));
+                        count += 1;
+                    } else {
+                        parts.push(json!({"type": "text", "text": format!("[image skipped — max {} images/turn, {} omitted]", MAX_IMAGES_PER_TURN, mime)}));
+                    }
+                }
+            }
+            remaining = &remaining[start+end+2..];
+        } else {
+            parts.push(json!({"type": "text", "text": remaining[start..].to_string()}));
+            remaining = "";
+            break;
+        }
+    }
+    if !remaining.is_empty() {
+        parts.push(json!({"type": "text", "text": remaining}));
+    }
+    if parts.iter().any(|p| p.get("type").and_then(|t| t.as_str()) == Some("image_url")) {
+        Value::Array(parts)
+    } else {
+        let txt: String = parts.iter().filter_map(|p| p.get("text").and_then(|v| v.as_str())).collect();
+        Value::String(txt)
+    }
+}
+
 pub fn run_agent(user_prompt: String, model: String, max_steps: usize) -> impl Stream<Item = AgentEvent> {
     run_agent_with_history(user_prompt, model, max_steps, Vec::new())
 }
@@ -569,13 +702,18 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
                 if let Some(content) = val.get("content") { if let Some(s) = content.as_str() { if s.chars().count() > 3000 { val["content"] = json!(format!("{}… [truncated]", truncate_chars(s, 3000))); } } }
                 messages.push(val);
             }
-            messages.push(json!({"role": "user", "content": &user_prompt}));
+            messages.push(json!({"role": "user", "content": build_user_content(&user_prompt)}));
             let mut final_text = String::new();
             let mut tracker = PlanTracker::new(&user_prompt);
             for step in 0..max_steps {
                 yield AgentEvent::Step { n: step + 1 };
                 if step > 0 && !tracker.is_conversational_goal() {
-                    let context: String = messages.iter().rev().take(4).filter_map(|m| m.get("content").and_then(|c| c.as_str())).collect::<Vec<&str>>().join(" ");
+                    let context: String = messages.iter().rev().take(4).filter_map(|m| {
+                        if let Some(s) = m.get("content").and_then(|c| c.as_str()) { Some(s.to_string()) }
+                        else if let Some(arr) = m.get("content").and_then(|c| c.as_array()) {
+                            Some(arr.iter().filter_map(|p| p.get("text").and_then(|t| t.as_str())).collect::<Vec<_>>().join(" "))
+                        } else { None }
+                    }).collect::<Vec<String>>().join(" ");
                     if context.trim().len() > 20 {
                         if let Some(memory_note) = crate::memory::autorecall(&context) {
                             // Budget guard: skip if would push instructions near limit
@@ -595,15 +733,10 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
                 // Build tools for responses
                 let tools = llm::responses_tool_definitions().await;
                 let body = llm::build_responses_request_body(&model_id, &instructions, &input, &tools);
-                let resp = match client.apply_auth(client.http.post(client.responses_url())).header("Content-Type", "application/json").json(&body).send().await {
+                let resp = match post_with_retry(&client, client.responses_url(), &body).await {
                     Ok(r) => r,
-                    Err(e) => { yield AgentEvent::Text { delta: format!("\n[LLM error: {}]", e) }; break; }
+                    Err(e) => { yield AgentEvent::Text { delta: format!("\n{}", e) }; break; }
                 };
-                if !resp.status().is_success() {
-                    let txt = resp.text().await.unwrap_or_default();
-                    yield AgentEvent::Text { delta: format!("\n[LLM HTTP error: {}]", txt) };
-                    break;
-                }
                 let mut accum_text = String::new();
                 let mut accum_reasoning = String::new();
                 let mut tool_acc: HashMap<String, ToolAccum> = HashMap::new();
@@ -866,13 +999,18 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
             if let Some(content) = val.get("content") { if let Some(s) = content.as_str() { if s.chars().count() > 3000 { val["content"] = json!(format!("{}… [truncated]", truncate_chars(s, 3000))); } } }
             messages.push(val);
         }
-        messages.push(json!({"role": "user", "content": &user_prompt}));
+        messages.push(json!({"role": "user", "content": build_user_content(&user_prompt)}));
         let mut final_text = String::new();
         let mut tracker = PlanTracker::new(&user_prompt);
         for step in 0..max_steps {
             yield AgentEvent::Step { n: step + 1 };
             if step > 0 && !tracker.is_conversational_goal() {
-                let context: String = messages.iter().rev().take(4).filter_map(|m| m.get("content").and_then(|c| c.as_str())).collect::<Vec<&str>>().join(" ");
+                let context: String = messages.iter().rev().take(4).filter_map(|m| {
+                    if let Some(s) = m.get("content").and_then(|c| c.as_str()) { Some(s.to_string()) }
+                    else if let Some(arr) = m.get("content").and_then(|c| c.as_array()) {
+                        Some(arr.iter().filter_map(|p| p.get("text").and_then(|t| t.as_str())).collect::<Vec<_>>().join(" "))
+                    } else { None }
+                }).collect::<Vec<String>>().join(" ");
                 if context.trim().len() > 20 {
                     if let Some(memory_note) = crate::memory::autorecall(&context) {
                         if memory_note.len() + 500 < 3800 {
@@ -889,15 +1027,10 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
             if messages.len() > 1 { messages.insert(1, focus_msg); } else { messages.push(focus_msg); }
             let tools = llm::tool_definitions().await;
             let body = json!({"model": model_id, "messages": messages, "tools": tools, "tool_choice": "auto", "stream": true});
-            let resp = match client.apply_auth(client.http.post(client.chat_url())).header("Content-Type", "application/json").json(&body).send().await {
+            let resp = match post_with_retry(&client, client.chat_url(), &body).await {
                 Ok(r) => r,
-                Err(e) => { yield AgentEvent::Text { delta: format!("\n[LLM error: {}]", e) }; break; }
+                Err(e) => { yield AgentEvent::Text { delta: format!("\n{}", e) }; break; }
             };
-            if !resp.status().is_success() {
-                let txt = resp.text().await.unwrap_or_default();
-                yield AgentEvent::Text { delta: format!("\n[LLM HTTP error: {}]", txt) };
-                break;
-            }
             let mut accum_text = String::new();
             let mut accum_reasoning = String::new();
             let mut tool_acc: HashMap<usize, ToolAccum> = HashMap::new();
