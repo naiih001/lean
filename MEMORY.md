@@ -3,28 +3,30 @@
 > This file is loaded on every lean session to personalize assistance. 3-5 short sections is ideal — concise but enough for the agent to understand your perspective. Edit freely; the agent will respect it.
 
 ## About Me
-- **Name / handle:** [your name]
-- **Role:** [e.g., indie hacker, senior backend engineer, student]
-- **Location / timezone:** [e.g., UTC+8, Europe/Berlin]
-- **Experience:** [1-2 lines about your background]
+- **Name / handle:** naet
+- **Role:** Senior backend engineer
+- **Location / timezone:** Lagos, Africa (WAT, UTC+1)
+- **Experience:** Backend engineering, Rust/TUI development (building lean)
 
 ## Preferences
-- **Communication style:** [e.g., direct and concise, thorough with examples, prefer code over prose]
-- **Code style:** [e.g., idiomatic Rust, functional preference, explicit error handling]
-- **Tools:** [e.g., Neovim, VS Code, Ghostty, Linux]
-- **Language:** [e.g., English, or mix]
+- **Communication style:** Direct and concise — short, no fluff, code over prose
+- **Code style:** Idiomatic Rust, explicit error handling, keep diffs minimal
+- **Tools:** [fill in: editor, terminal, OS]
+- **Language:** English
 
 ## Goals
-- **Current focus:** [what you're building or learning right now]
-- **Long-term:** [bigger direction, if you want the agent to know]
+- **Current focus:** Building lean — a light, fast autonomous coding assistant
+- **Long-term:** [fill in]
 
 ## Working Style
-- **How I like to work:** [e.g., plan first then build, bias to doing, ask before big changes]
-- **When to ask vs. act:** [e.g., ask for ambiguous scope, otherwise proceed]
-- **Constraints:** [e.g., avoid over-engineering, keep diffs minimal]
+- **How I like to work:** Bias to doing, plan first then build
+- **When to ask vs. act:** Ask for ambiguous scope, otherwise proceed
+- **Constraints:** Avoid over-engineering, keep diffs minimal
 
 ## Context the Agent Should Remember
-- [Anything else: past decisions, product context, team notes — keep to a few paragraphs]
+- lean is a single-binary Rust TUI coding assistant with SSE streaming, MCP support, and tool guards
+- Sessions are per-CWD in ~/.lean/sessions
+- Requires OPENAI_API_KEY or OPENCODE_API_KEY in .env
 
 ---
 *Tip: run `/init` to regenerate AGENT.md from the codebase; edit this file directly to refine how lean understands you.*
