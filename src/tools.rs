@@ -525,13 +525,30 @@ async fn run_subagent(agent_name: &str, task: &str, label: &str) -> String {
     futures::pin_mut!(stream);
     let mut final_text = String::new();
     let mut last_error = None;
+    crate::agents::append_subagent_transcript(&id, format!("[{}] started: {}", agent_name, task));
     while let Some(ev) = stream.next().await {
         match ev {
-            crate::agent::AgentEvent::Text { delta } => { final_text.push_str(&delta); },
-            crate::agent::AgentEvent::Done { text, .. } => { final_text = text; break; },
-            crate::agent::AgentEvent::ToolResult { name, result, .. } if result.contains("Error") && name == "subagent" => {
-                last_error = Some(result);
+            crate::agent::AgentEvent::Text { delta } => {
+                final_text.push_str(&delta);
+                // push first 200 chars of delta as transcript line to keep lean
+                let preview = delta.chars().take(200).collect::<String>();
+                if !preview.trim().is_empty() {
+                    crate::agents::append_subagent_transcript(&id, preview);
+                }
             },
+            crate::agent::AgentEvent::ToolStart { name, args, .. } => {
+                let args_str = format!("{:?}", args);
+                let preview = args_str.chars().take(80).collect::<String>();
+                crate::agents::append_subagent_transcript(&id, format!("{} {}", name, preview));
+            },
+            crate::agent::AgentEvent::ToolResult { name, result, .. } => {
+                if result.contains("Error") && name == "subagent" {
+                    last_error = Some(result.clone());
+                }
+                let preview = result.chars().take(120).collect::<String>();
+                crate::agents::append_subagent_transcript(&id, format!("{} → {}", name, preview));
+            },
+            crate::agent::AgentEvent::Done { text, .. } => { final_text = text; break; },
             _ => {}
         }
     }
@@ -540,9 +557,11 @@ async fn run_subagent(agent_name: &str, task: &str, label: &str) -> String {
             crate::agents::update_subagent(&id, "error");
             return format!("[subagent {} error] {}", display_label, e);
         }
+        crate::agents::append_subagent_transcript(&id, "[error] no output".to_string());
         crate::agents::update_subagent(&id, "error");
         return format!("[subagent {}] no output", display_label);
     }
+    crate::agents::append_subagent_transcript(&id, format!("done: {} chars", final_text.len()));
     crate::agents::update_subagent(&id, "done");
     format!("[subagent:{}]\n{}", display_label, final_text)
 }

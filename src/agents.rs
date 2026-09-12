@@ -204,6 +204,7 @@ pub struct SubagentStatus {
     pub task: String,
     pub status: String, // running, done, error
     pub started_at: SystemTime,
+    pub transcript: Vec<String>,
 }
 
 static SUBAGENTS: OnceLock<Mutex<Vec<SubagentStatus>>> = OnceLock::new();
@@ -217,7 +218,35 @@ pub fn list_subagents() -> Vec<SubagentStatus> {
 
 pub fn register_subagent(id: String, agent: String, task: String) {
     let mut lock = subagents_lock().lock().unwrap();
-    lock.push(SubagentStatus { id, agent, task, status: "running".to_string(), started_at: SystemTime::now() });
+    lock.push(SubagentStatus { id, agent, task, status: "running".to_string(), started_at: SystemTime::now(), transcript: Vec::new() });
+}
+
+
+pub fn append_subagent_transcript(id: &str, line: String) {
+    let mut lock = subagents_lock().lock().unwrap();
+    if let Some(s) = lock.iter_mut().find(|s| s.id == id) {
+        s.transcript.push(line);
+        if s.transcript.len() > 200 {
+            let excess = s.transcript.len() - 200;
+            s.transcript.drain(0..excess);
+        }
+    }
+}
+
+pub fn kill_subagent(id: &str) -> bool {
+    let mut lock = subagents_lock().lock().unwrap();
+    if let Some(s) = lock.iter_mut().find(|s| s.id == id) {
+        if s.status == "running" {
+            s.status = "killed".to_string();
+            s.transcript.push("[killed by user]".to_string());
+            return true;
+        }
+    }
+    false
+}
+
+pub fn get_subagent(id: &str) -> Option<SubagentStatus> {
+    subagents_lock().lock().unwrap().iter().find(|s| s.id == id).cloned()
 }
 
 pub fn update_subagent(id: &str, status: &str) {

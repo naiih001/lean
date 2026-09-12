@@ -152,6 +152,79 @@ impl Msg {
     }
 }
 
+
+fn shorten_path(p: &str) -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    if !home.is_empty() && p.starts_with(&home) {
+        format!("~{}", &p[home.len()..])
+    } else {
+        p.to_string()
+    }
+}
+
+fn format_tool_preview(name: &str, args_str: &str) -> String {
+    let v: serde_json::Value = serde_json::from_str(args_str).unwrap_or(serde_json::Value::Null);
+    let obj = v.as_object();
+    let s = shorten_path;
+    match name {
+        "bash" => {
+            let cmd = obj.and_then(|o| o.get("command")).and_then(|v| v.as_str()).unwrap_or("...");
+            let preview = if cmd.len() > 60 { format!("{}…", &cmd[..60]) } else { cmd.to_string() };
+            format!("$ {}", preview)
+        },
+        "read" => {
+            let path = obj.and_then(|o| o.get("path")).and_then(|v| v.as_str()).unwrap_or("...");
+            let off = obj.and_then(|o| o.get("offset")).and_then(|v| v.as_u64());
+            let lim = obj.and_then(|o| o.get("limit")).and_then(|v| v.as_u64());
+            let mut txt = s(path);
+            if off.is_some() || lim.is_some() {
+                let start = off.unwrap_or(1);
+                let end = lim.map(|l| start + l - 1).map(|e| e.to_string()).unwrap_or_default();
+                txt = format!("{}:{}{}", txt, start, if end.is_empty() { "".to_string() } else { format!("-{}", end) });
+            }
+            format!("read {}", txt)
+        },
+        "write" => {
+            let path = obj.and_then(|o| o.get("path")).and_then(|v| v.as_str()).unwrap_or("...");
+            let content = obj.and_then(|o| o.get("content")).and_then(|v| v.as_str()).unwrap_or("");
+            let lines = content.lines().count();
+            if lines > 1 { format!("write {} ({} lines)", s(path), lines) } else { format!("write {}", s(path)) }
+        },
+        "edit" => {
+            let path = obj.and_then(|o| o.get("path")).and_then(|v| v.as_str()).unwrap_or("...");
+            format!("edit {}", s(path))
+        },
+        "ls" => {
+            let path = obj.and_then(|o| o.get("path")).and_then(|v| v.as_str()).unwrap_or(".");
+            format!("ls {}", s(path))
+        },
+        "find" => {
+            let pat = obj.and_then(|o| o.get("pattern")).and_then(|v| v.as_str()).unwrap_or("*");
+            let path = obj.and_then(|o| o.get("path")).and_then(|v| v.as_str()).unwrap_or(".");
+            if path == "." { format!("find {}", pat) } else { format!("find {} in {}", pat, s(path)) }
+        },
+        "grep" => {
+            let pat = obj.and_then(|o| o.get("pattern")).and_then(|v| v.as_str()).unwrap_or("");
+            let path = obj.and_then(|o| o.get("path")).and_then(|v| v.as_str()).unwrap_or(".");
+            if path == "." { format!("grep /{}/", pat) } else { format!("grep /{}/ in {}", pat, s(path)) }
+        },
+        "web_fetch" => {
+            let url = obj.and_then(|o| o.get("url")).and_then(|v| v.as_str()).unwrap_or("...");
+            let short = if url.len() > 50 { format!("{}…", &url[..50]) } else { url.to_string() };
+            format!("fetch {}", short)
+        },
+        "web_search" => {
+            let q = obj.and_then(|o| o.get("query")).and_then(|v| v.as_str()).unwrap_or("");
+            let short = if q.len() > 40 { format!("{}…", &q[..40]) } else { q.to_string() };
+            format!("search {}", short)
+        },
+        _ => {
+            let preview = if args_str.len() > 50 { format!("{}…", &args_str[..50]) } else { args_str.to_string() };
+            if preview == "null" || preview == "{}" { name.to_string() } else { format!("{} {}", name, preview) }
+        }
+    }
+}
+
 fn sanitize_display_content(s: &str) -> String {
     // Replace base64 image markers with short placeholder for display (keep LLM data but don't render it)
     let mut out = s.to_string();
@@ -338,21 +411,11 @@ impl Msg {
         let header_title = if timer_str.is_empty() { name.clone() } else { format!("{} · {}", name, timer_str) };
         let mut inner: Vec<Line<'static>> = Vec::new();
         if !args_str.is_empty() && args_str != "{}" {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&args_str) {
-                if let Some(path) = v.get("path").and_then(|p| p.as_str()) {
-                    let home = std::env::var("HOME").unwrap_or_default();
-                    let display = if let Some(rest) = path.strip_prefix(&home) { format!("~{}", rest) } else { path.to_string() };
-                    inner.push(Line::from(Span::styled(display, Style::default().fg(ASHEN.smoke))));
-                } else if let Some(cmd) = v.get("command").and_then(|c| c.as_str()) {
-                    inner.push(Line::from(Span::styled(format!("$ {}", cmd), Style::default().fg(ASHEN.whisper))));
-                } else if let Some(q) = v.get("query").and_then(|q| q.as_str()) {
-                    inner.push(Line::from(Span::styled(format!("\"{}\"", q), Style::default().fg(ASHEN.smoke))));
-                } else {
-                    inner.push(Line::from(Span::styled(args_str.clone(), Style::default().fg(ASHEN.smoke))));
-                }
-            } else {
-                inner.push(Line::from(Span::styled(args_str.clone(), Style::default().fg(ASHEN.smoke))));
-            }
+            let preview = format_tool_preview(&name, &args_str);
+            inner.push(Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(preview, Style::default().fg(ASHEN.smoke)),
+            ]));
         }
         if has_result {
             inner.push(Line::from(Span::styled("─".repeat(28), Style::default().fg(ASHEN.charcoal))));
@@ -947,6 +1010,129 @@ fn format_context_label(est: usize, window: usize) -> String {
     // Show pct as integer, but keep one decimal if <10%
     let pct_str = if pct < 10.0 { format!("{:.1}%", pct) } else { format!("{:.0}%", pct) };
     format!("{} / {}", pct_str, window_str)
+}
+
+
+fn draw_subagent_summary(f: &mut Frame, area: Rect, tick: usize) {
+    let subs = crate::agents::list_subagents();
+    if subs.is_empty() { return; }
+    let running = subs.iter().filter(|s| s.status == "running").count();
+    let total = subs.len();
+    let spinner = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"][tick % 10];
+    let txt = if running > 0 {
+        format!(" {}  ⬢ {} agents • {} running  {}", spinner, total, running, spinner)
+    } else {
+        format!(" ⬢ {} agents • all done ", total)
+    };
+    let style = if running > 0 { Style::default().fg(ASHEN.frost).bg(THEME.page_bg) } else { Style::default().fg(ASHEN.moss).bg(THEME.page_bg) };
+    let para = Paragraph::new(Line::from(Span::styled(txt, style)));
+    f.render_widget(para, area);
+}
+
+fn wrap_task_preview(task: &str, width: usize, max_lines: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for raw in task.lines() {
+        let mut cur = String::new();
+        for word in raw.split_whitespace() {
+            if cur.len() + word.len() + 1 > width {
+                lines.push(cur);
+                cur = word.to_string();
+                if lines.len() >= max_lines { break; }
+            } else {
+                if !cur.is_empty() { cur.push(' '); }
+                cur.push_str(word);
+            }
+        }
+        if !cur.is_empty() { lines.push(cur); }
+        if lines.len() >= max_lines { break; }
+    }
+    if lines.len() > max_lines { lines.truncate(max_lines); }
+    if task.lines().count() > max_lines || task.len() > width * max_lines {
+        if let Some(last) = lines.last_mut() { *last = format!("{}…", last); }
+    }
+    lines
+}
+
+fn draw_subagent_list(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
+    let mut subs = crate::agents::list_subagents();
+    // running on top, then done/error, then by start time
+    subs.sort_by(|a,b| {
+        let rank = |s: &str| if s=="running" {0} else if s=="done" {1} else {2};
+        rank(&a.status).cmp(&rank(&b.status)).then_with(|| a.started_at.cmp(&b.started_at))
+    });
+    let area = centered_rect(70, 60, area);
+    f.render_widget(Clear, area);
+    let block = Block::default().borders(Borders::ALL).title(format!(" Subagents ({}) — Enter: view  Esc: close  Shift+K: kill ", subs.len())).style(Style::default().bg(THEME.page_bg)).border_style(Style::default().fg(ASHEN.frost));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if subs.is_empty() {
+        let para = Paragraph::new(Line::from(Span::styled("  No subagents — spawn via worker", Style::default().fg(ASHEN.charcoal))));
+        f.render_widget(para, inner);
+        return;
+    }
+    let row_h = 7u16; // 1 header + 5 preview + 1 gap
+    let visible = (inner.height / row_h) as usize;
+    let start = scroll.min(subs.len().saturating_sub(1));
+    let end = (start + visible).min(subs.len());
+    let mut y = inner.y;
+    for (idx, sub) in subs[start..end].iter().enumerate() {
+        let abs_idx = start + idx;
+        let is_sel = abs_idx == selected;
+        let bg = if is_sel { THEME.input_bg } else { THEME.page_bg };
+        let row_area = Rect { x: inner.x, y, width: inner.width, height: row_h };
+        let icon = if sub.status=="running" { "●" } else if sub.status=="done" { "✓" } else if sub.status=="killed" { "✕" } else { "✗" };
+        let status_style = if sub.status=="running" { Style::default().fg(ASHEN.frost).add_modifier(Modifier::BOLD) } else if sub.status=="done" { Style::default().fg(ASHEN.moss) } else { Style::default().fg(ASHEN.ember) };
+        let style = if is_sel { Style::default().fg(ASHEN.bone).bg(bg).add_modifier(Modifier::BOLD) } else { Style::default().fg(ASHEN.smoke).bg(bg) };
+        let header = Line::from(vec![
+            Span::styled(format!(" {} ", icon), status_style.bg(bg)),
+            Span::styled(sub.agent.clone(), Style::default().fg(ASHEN.frost).bg(bg).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  [{}]", sub.status), status_style.bg(bg)),
+            Span::styled(format!("  {}", if is_sel {"◀"} else {""}), Style::default().fg(ASHEN.charcoal).bg(bg)),
+        ]);
+        f.render_widget(Paragraph::new(header).style(style), Rect { x: row_area.x, y: row_area.y, width: row_area.width, height: 1 });
+        let previews = wrap_task_preview(&sub.task, (inner.width as usize).saturating_sub(4), 5);
+        for (i, line) in previews.iter().enumerate() {
+            let para = Paragraph::new(Line::from(Span::styled(format!("  {}", line), Style::default().fg(ASHEN.deep_ash).bg(bg))));
+            f.render_widget(para, Rect { x: row_area.x, y: row_area.y + 1 + i as u16, width: row_area.width, height: 1 });
+        }
+        y += row_h;
+    }
+}
+
+fn draw_subagent_detail(f: &mut Frame, area: Rect, idx: usize, scroll: u16) {
+    let subs = crate::agents::list_subagents();
+    if idx >= subs.len() { return; }
+    let sub = &subs[idx];
+    f.render_widget(Clear, area);
+    let block = Block::default().borders(Borders::ALL).title(format!(" {} — {} [{}] — Esc: back  Shift+K: kill ", sub.agent, &sub.id[..8.min(sub.id.len())], sub.status)).style(Style::default().bg(THEME.page_bg)).border_style(Style::default().fg(ASHEN.frost));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(vec![Span::styled("Task: ", Style::default().fg(ASHEN.charcoal)), Span::styled(sub.task.clone(), Style::default().fg(ASHEN.bone))]));
+    lines.push(Line::from(Span::styled(format!("Status: {}  Started: {:?}", sub.status, sub.started_at), Style::default().fg(ASHEN.deep_ash))));
+    lines.push(Line::from(Span::styled("─".repeat(inner.width as usize), Style::default().fg(ASHEN.charcoal))));
+    if sub.transcript.is_empty() {
+        lines.push(Line::from(Span::styled("(no transcript yet — waiting for updates…)", Style::default().fg(ASHEN.charcoal).add_modifier(Modifier::ITALIC))));
+    } else {
+        for l in sub.transcript.iter().rev().take(100).rev() {
+            for part in l.lines() {
+                let s = if part.len() > inner.width as usize { format!("{}…", &part[..inner.width as usize -1]) } else { part.to_string() };
+                lines.push(Line::from(Span::styled(s, Style::default().fg(ASHEN.smoke))));
+            }
+        }
+    }
+    let total = lines.len();
+    let para = Paragraph::new(lines).scroll((scroll, 0));
+    f.render_widget(para, inner);
+    // scrollbar if needed
+    if total > inner.height as usize {
+        draw_scrollbar(f, inner, total, inner.height as usize, scroll);
+    }
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default().direction(Direction::Vertical).constraints([Constraint::Percentage((100 - percent_y)/2), Constraint::Percentage(percent_y), Constraint::Percentage((100 - percent_y)/2)]).split(r);
+    Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage((100 - percent_x)/2), Constraint::Percentage(percent_x), Constraint::Percentage((100 - percent_x)/2)]).split(popup_layout[1])[1]
 }
 
 fn draw_footer(
@@ -2288,6 +2474,12 @@ async fn app_loop(
     let mut show_mcp = false;
     let mut mcp_selected: usize = 0;
     let mut mcp_scroll: usize = 0;
+    let mut show_subagents = false;
+    let mut subagent_selected: usize = 0;
+    let mut subagent_scroll: usize = 0;
+    let mut subagent_detail: Option<usize> = None;
+    let mut subagent_detail_scroll: u16 = 0;
+    let mut subagent_kill_confirm = false;
     // Eager MCP init (background)
     tokio::spawn(async move { crate::mcp::init().await; });
 
@@ -2323,7 +2515,7 @@ async fn app_loop(
         let queue_rows = msg_queue.len().min(2) as u16;
         // Dynamic input height 1..6 (auto-grow like pi/jcode, clamped)
         let input_height = (textarea.lines().len() as u16).clamp(1, 6);
-        let overhead = 6 + queue_rows + input_height; // indicator(1, always reserved) + header + sep + sep + queue + input + footer(2 rows)
+        let overhead = 7 + queue_rows + input_height; // indicator(1) + header + sep + sep + queue + summary(1) + input + footer(2 rows)
                                        // Content area: starts after indicator + header + sep
         let content_area = Rect {
             x: 0,
@@ -2343,6 +2535,7 @@ async fn app_loop(
                     Constraint::Min(1),                 // content
                     Constraint::Length(1),              // separator
                     Constraint::Length(queue_rows),     // queue (0-2)
+                    Constraint::Length(1),              // subagent summary bar (always reserved, empty when none)
                     Constraint::Length(input_height),   // input (auto-grow 1..5)
                     Constraint::Length(2),              // footer (2 rows: main + context)
                 ])
@@ -2412,12 +2605,15 @@ async fn app_loop(
                 // Queue
                 draw_queue(f, chunks[5], &msg_queue);
 
+                // Subagent summary bar (above input, visible when subagents exist)
+                draw_subagent_summary(f, chunks[6], spinner_tick);
+
                 // Input (textarea renders with cursor)
-                draw_input(f, chunks[6], &mut textarea);
+                draw_input(f, chunks[7], &mut textarea);
 
                 // Autocomplete popup
                 if !ac_matches.is_empty() {
-                    draw_autocomplete(f, chunks[6], &ac_matches, ac_idx, ac_scroll);
+                    draw_autocomplete(f, chunks[7], &ac_matches, ac_idx, ac_scroll);
                 }
                 // Bash guard approval overlay (suppressed while auto-accept ON)
                 if !crate::approval::is_auto_accept() {
@@ -2439,11 +2635,28 @@ async fn app_loop(
                 if show_mcp {
                     draw_mcp(f, f.area(), mcp_selected, mcp_scroll);
                 }
+                if show_subagents {
+                    if let Some(idx) = subagent_detail {
+                        draw_subagent_detail(f, f.area(), idx, subagent_detail_scroll);
+                        if subagent_kill_confirm {
+                            let area = centered_rect(50, 20, f.area());
+                            f.render_widget(Clear, area);
+                            let block = Block::default().borders(Borders::ALL).title(" Confirm Kill ").border_style(Style::default().fg(ASHEN.ember));
+                            let para = Paragraph::new(vec![
+                                Line::from(Span::styled("Kill this subagent? (y/n)", Style::default().fg(ASHEN.bone).add_modifier(Modifier::BOLD))),
+                                Line::from(Span::styled("This will mark it as killed (no process kill yet).", Style::default().fg(ASHEN.charcoal))),
+                            ]).block(block).style(Style::default().bg(THEME.page_bg));
+                            f.render_widget(para, area);
+                        }
+                    } else {
+                        draw_subagent_list(f, f.area(), subagent_selected, subagent_scroll);
+                    }
+                }
 
                 // Footer (2 rows)
                 draw_footer(
                     f,
-                    chunks[7],
+                    chunks[8],
                     &model,
                     &messages,
                     &cwd,
@@ -2463,7 +2676,7 @@ async fn app_loop(
             match term_event {
                 Event::Paste(data) => {
                     crate::telemetry::record("paste");
-                    let max_cols = (chunks[6].width as usize).saturating_sub(1);
+                    let max_cols = (chunks[7].width as usize).saturating_sub(1);
                     textarea.insert_str(hard_wrap_str(&data, max_cols));
                     wrap_cursor_line(&mut textarea, max_cols);
                     ac_matches = current_completions(&textarea);
@@ -2515,6 +2728,76 @@ async fn app_loop(
                             crate::agent::Mode::Norm => {
                                 crate::telemetry::record("mode_norm");
                             },
+                        }
+                        continue;
+                    }
+                    // Subagent overlay: hijack keys (highest priority after Shift+Tab)
+                    if show_subagents {
+                        if subagent_kill_confirm {
+                            match k.code {
+                                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                    if let Some(idx) = subagent_detail {
+                                        let subs = crate::agents::list_subagents();
+                                        if let Some(sub) = subs.get(idx) {
+                                            crate::agents::kill_subagent(&sub.id);
+                                        }
+                                    }
+                                    subagent_kill_confirm = false;
+                                },
+                                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                                    subagent_kill_confirm = false;
+                                },
+                                _ => {}
+                            }
+                            continue;
+                        }
+                        if let Some(idx) = subagent_detail {
+                            match k.code {
+                                KeyCode::Esc => {
+                                    // back to list, not close entirely
+                                    subagent_detail = None;
+                                    subagent_detail_scroll = 0;
+                                },
+                                KeyCode::Char('K') if k.modifiers.contains(KeyModifiers::SHIFT) => {
+                                    subagent_kill_confirm = true;
+                                },
+                                KeyCode::Char('k') if k.modifiers.contains(KeyModifiers::SHIFT) => {
+                                    subagent_kill_confirm = true;
+                                },
+                                KeyCode::Up | KeyCode::Char('k') => {
+                                    subagent_detail_scroll = subagent_detail_scroll.saturating_sub(1);
+                                },
+                                KeyCode::Down | KeyCode::Char('j') => {
+                                    subagent_detail_scroll = subagent_detail_scroll.saturating_add(1);
+                                },
+                                KeyCode::PageUp => {
+                                    subagent_detail_scroll = subagent_detail_scroll.saturating_sub(10);
+                                },
+                                KeyCode::PageDown => {
+                                    subagent_detail_scroll = subagent_detail_scroll.saturating_add(10);
+                                },
+                                _ => {}
+                            }
+                            continue;
+                        }
+                        // List mode
+                        match k.code {
+                            KeyCode::Esc => {
+                                show_subagents = false;
+                                subagent_detail = None;
+                            },
+                            KeyCode::Up => {
+                                if subagent_selected > 0 { subagent_selected -= 1; if subagent_selected < subagent_scroll { subagent_scroll = subagent_selected; } }
+                            },
+                            KeyCode::Down => {
+                                let len = crate::agents::list_subagents().len();
+                                if subagent_selected + 1 < len { subagent_selected += 1; if subagent_selected >= subagent_scroll + 8 { subagent_scroll += 1; } }
+                            },
+                            KeyCode::Enter => {
+                                subagent_detail = Some(subagent_selected);
+                                subagent_detail_scroll = 0;
+                            },
+                            _ => {}
                         }
                         continue;
                     }
@@ -2854,6 +3137,14 @@ async fn app_loop(
                             }
                         }
                         KeyCode::Char('d') if ctrl => break,
+                        KeyCode::Char('o') if ctrl => {
+                            if !crate::agents::list_subagents().is_empty() {
+                                show_subagents = true;
+                                subagent_selected = 0;
+                                subagent_scroll = 0;
+                                subagent_detail = None;
+                            }
+                        },
                         KeyCode::Char('c') if ctrl => {
                             // Ctrl+C: clear current input (Emacs kill) — keep textarea undo
                             if !textarea.is_empty() {
@@ -3191,7 +3482,7 @@ async fn app_loop(
                     }
                     // Hard-wrap the input line when typing reached the right edge
                     if textarea.lines() != lines_before.as_slice() {
-                        let max_cols = (chunks[6].width as usize).saturating_sub(1);
+                        let max_cols = (chunks[7].width as usize).saturating_sub(1);
                         wrap_cursor_line(&mut textarea, max_cols);
                         ac_matches = current_completions(&textarea);
                         ac_idx = 0;
@@ -3744,8 +4035,9 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENT.md (p
             persist(&messages, &mut session, &model);
             last_persist_fingerprint = persist_fp;
         }
-        // Advance spinner; force a redraw while it is animating — now 10fps not 60fps
-        if agent_busy {
+        // Advance spinner; force a redraw while it or any subagent is animating — now 10fps not 60fps
+        let has_running_subagent = crate::agents::list_subagents().iter().any(|s| s.status == "running");
+        if agent_busy || has_running_subagent || show_subagents {
             spinner_tick = spinner_tick.wrapping_add(1);
             dirty = true;
         }
