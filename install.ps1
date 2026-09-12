@@ -1,7 +1,7 @@
 # lean installer — Windows (PowerShell)
 # Usage:
 #   irm https://raw.githubusercontent.com/naiih001/lean/main/install.ps1 | iex
-#   $env:LEAN_VERSION="v0.2.0"; irm ... | iex
+#   $env:LEAN_VERSION="v0.5.0"; irm ... | iex
 param(
   [string]$Version = $env:LEAN_VERSION,
   [string]$InstallDir = $env:LEAN_INSTALL_DIR
@@ -17,17 +17,23 @@ function Resolve-Version {
     if (-not $v.StartsWith("v")) { return "v$v" }
     return $v
   }
+  # 1. Try GitHub API /releases/latest
   try {
     $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers @{ "User-Agent"="lean-installer" } -TimeoutSec 10
     if ($rel.tag_name) { return $rel.tag_name }
   } catch {}
-  # fallback: follow redirect
+  # 2. Fallback: follow redirect
   try {
     $req = Invoke-WebRequest -Uri "https://github.com/$Repo/releases/latest" -MaximumRedirection 0 -ErrorAction SilentlyContinue
     $loc = $req.Headers.Location
     if ($loc -match "/tag/(v[^/]+)") { return $Matches[1] }
   } catch {}
-  throw "Could not resolve latest version — set `$env:LEAN_VERSION = 'v0.2.0'` and retry."
+  # 3. Fallback: GitHub API /tags (latest tag)
+  try {
+    $tags = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/tags?per_page=1" -Headers @{ "User-Agent"="lean-installer" } -TimeoutSec 10
+    if ($tags -and $tags.Count -gt 0 -and $tags[0].name) { return $tags[0].name }
+  } catch {}
+  throw "Could not resolve latest version from GitHub. No releases or tags found for $Repo. Set `$env:LEAN_VERSION = 'v0.5.0' or use -Version v0.5.0 and retry."
 }
 
 $Version = Resolve-Version $Version

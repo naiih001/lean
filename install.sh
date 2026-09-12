@@ -2,7 +2,7 @@
 # lean installer — Linux / macOS
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/naiih001/lean/main/install.sh | bash
-#   LEAN_VERSION=v0.2.0 curl -fsSL ... | bash
+#   LEAN_VERSION=v0.5.0 curl -fsSL ... | bash
 #   ./install.sh --help
 set -euo pipefail
 
@@ -16,7 +16,7 @@ usage() {
 lean installer (linux/macos)
 
 Env:
-  LEAN_VERSION   tag to install, e.g. v0.2.0 (default: latest release)
+  LEAN_VERSION   tag to install, e.g. v0.5.0 (default: latest release)
   LEAN_INSTALL_DIR  directory to install to (default: \$HOME/.local/bin)
 
 Options:
@@ -26,8 +26,8 @@ Options:
 
 Examples:
   curl -fsSL https://raw.githubusercontent.com/naiih001/lean/main/install.sh | bash
-  LEAN_VERSION=v0.2.0 curl -fsSL ... | bash
-  ./install.sh --dir /usr/local/bin --version v0.2.0
+  LEAN_VERSION=v0.5.0 curl -fsSL ... | bash
+  ./install.sh --dir /usr/local/bin --version v0.5.0
 EOF
 }
 
@@ -66,21 +66,30 @@ resolve_version() {
     echo "$VERSION"
     return
   fi
-  # Try GitHub API (needs jq, but fallback to redirect)
   if command -v curl >/dev/null 2>&1; then
+    # 1. Try GitHub API /releases/latest (with jq)
     if command -v jq >/dev/null 2>&1; then
       local v
       v="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | jq -r .tag_name 2>/dev/null || true)"
       if [[ -n "$v" && "$v" != "null" ]]; then echo "$v"; return; fi
     fi
-    # fallback: follow redirect on /releases/latest
+    # 2. Fallback: follow redirect on /releases/latest
     local loc
     loc="$(curl -fsSI "https://github.com/${REPO}/releases/latest" 2>/dev/null | tr -d '\r' | awk -F': ' '/^Location:/{print $2}' | tail -1 || true)"
     if [[ "$loc" =~ /tag/(v[^/]+) ]]; then
       echo "${BASH_REMATCH[1]}"; return
     fi
+    # 3. Fallback: GitHub API /tags (latest tag)
+    if command -v jq >/dev/null 2>&1; then
+      local tag
+      tag="$(curl -fsSL "https://api.github.com/repos/${REPO}/tags?per_page=1" 2>/dev/null | jq -r '.[0].name' 2>/dev/null || true)"
+      if [[ -n "$tag" && "$tag" != "null" ]]; then echo "$tag"; return; fi
+    fi
   fi
-  echo "latest tag not found — set LEAN_VERSION=v0.2.0" >&2; exit 1
+  echo "error: could not resolve latest version from GitHub" >&2
+  echo "  No releases or tags found for ${REPO}." >&2
+  echo "  Set LEAN_VERSION=v0.5.0 or use --version v0.5.0 and retry." >&2
+  exit 1
 }
 
 if [[ -z "$VERSION" ]]; then
