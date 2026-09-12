@@ -48,7 +48,7 @@ Works with any OpenAI-compatible API.
 - **Single binary** — no runtime dependencies, fast startup
 - **TUI** — chat history, tool trace, and streaming output with multiline input, history navigation, and slash commands
 - **Agent loop** — SSE streaming, tool-call routing, and up to 100 steps per turn with memory and skills integration
-- **Guards** — bash allowlist with glob matching and working-directory confinement, both with approval UI — `Shift+Tab` / `/auto-accept` enables session-only `AUTO` bypass (silent, full bypass for bash/dir/MCP)
+- **Guards** — bash allowlist with glob matching and working-directory confinement, both with approval UI — `Shift+Tab` cycles `NORM→PLAN→AUTO` (`/plan` = PLAN, `/auto-accept` = AUTO); `AUTO` is session-only silent full bypass for bash/dir/MCP
 - **Sessions** — per-directory persisted sessions with resume support
 - **Memory** — persistent memory with search, recall, and automatic deduplication
 - **Skills** — extensible `SKILL.md` system for custom capabilities
@@ -65,7 +65,7 @@ Works with any OpenAI-compatible API.
 ```bash
 curl -fsSL https://raw.githubusercontent.com/naiih001/lean/main/install.sh | bash
 # pin to a version:
-LEAN_VERSION=v0.4.0 curl -fsSL https://raw.githubusercontent.com/naiih001/lean/main/install.sh | bash
+LEAN_VERSION=v0.5.0 curl -fsSL https://raw.githubusercontent.com/naiih001/lean/main/install.sh | bash
 ```
 
 **Windows (PowerShell):**
@@ -73,7 +73,7 @@ LEAN_VERSION=v0.4.0 curl -fsSL https://raw.githubusercontent.com/naiih001/lean/m
 ```powershell
 irm https://raw.githubusercontent.com/naiih001/lean/main/install.ps1 | iex
 # pin to a version:
-$env:LEAN_VERSION="v0.4.0"; irm https://raw.githubusercontent.com/naiih001/lean/main/install.ps1 | iex
+$env:LEAN_VERSION="v0.5.0"; irm https://raw.githubusercontent.com/naiih001/lean/main/install.ps1 | iex
 ```
 
 ### Prebuilt binaries
@@ -133,11 +133,11 @@ lean --no-session            # run without persistence
 | Area | Description |
 |------|-------------|
 | **Chat** | Conversation history, tool calls with results, and streaming output |
-| **Input** | Auto-wrapping multiline editing (`Enter` send, `Shift+Enter` newline, `Shift+Tab` auto-accept, `Ctrl+C` clear), history with `↑`/`↓`, slash commands, `Esc` to quit |
+| **Input** | Auto-wrapping multiline editing (`Enter` send, `Shift+Enter` newline, `Shift+Tab` cycles `NORM/PLAN/AUTO`, `Ctrl+C` clear), history with `↑`/`↓`, slash commands, `Esc` to quit |
 | **Overlays** | Approval prompts, session picker, and allowlist editor |
-| **Footer** | Current model, working directory, and token usage |
+| **Footer** | Top: mode badge (`NORM`/`PLAN`/`AUTO`), model + api (`chat`/`responses`/`anthropic`), cwd, spinner — Bottom: context-window bar (`X% / 1.0M`) + token usage |
 
-**Slash commands:** `/help` `/new` `/clear` `/exit` `/model` `/sessions` `/resume` `/allowlist` `/mcp` `/memory` `/auto-accept` — `Shift+Tab` toggles session-only auto-accept (`AUTO` badge)
+**Slash commands:** `/help` `/new` `/clear` `/exit` `/model` `/sessions` `/resume` `/allowlist` `/mcp` `/memory` `/auto-accept` `/plan` — `Shift+Tab` cycles `NORM→PLAN→AUTO` (`PLAN` = read-only planning, `AUTO` = session-only silent bypass)
 
 Sessions are persisted to `~/.lean/sessions/*.json`.
 
@@ -214,9 +214,10 @@ lean --dir-guard-disabled      # disable directory confinement guard
 ```
 - `provider` — `openai` (default), `anthropic`, `ollama`/`local`, `generic`. Inferred from `base_url`/`api` if missing — old configs stay compatible.
 - `model` — real model id sent to the API
-- `base_url` — optional override. Defaults: `openai` → `https://api.openai.com/v1`, `anthropic` → `https://api.anthropic.com`, `ollama` → `http://localhost:11434/v1` (auto-detected via `http://localhost:11434/api/tags`)
+- `base_url` — optional override. Defaults: `openai` → `https://api.openai.com/v1`, `anthropic` → `https://api.anthropic.com`, `ollama` → `OLLAMA_HOST` or `http://localhost:11434/v1` (auto-detected via `$OLLAMA_HOST/api/tags`)
 - `api_key_env` / `api_key` — env var name or inline key. `ollama`/`local` requires no key (`"ollama"` placeholder ok).
 - `api` — `"chat_completions"` (default, `POST /v1/chat/completions`), `"responses"` (`POST /v1/responses`), or `"anthropic"` (`POST /v1/messages` with `x-api-key`). Existing configs without `api`/`provider` keep working as chat completions.
+- `vision` — optional `bool` (default `true`). Set `false` for text-only models to strip pasted images (`[image omitted — model does not support vision]`, max 5 images/turn).
 
 ---
 
@@ -224,7 +225,7 @@ lean --dir-guard-disabled      # disable directory confinement guard
 
 | Tool | Description |
 |------|-------------|
-| `read_file` | Read file contents (with size limits and truncation) |
+| `read_file` | Read file contents (with size limits/truncation); images return `<<IMAGE:mime:base64>>` and are sent as multimodal `image_url` (max 5/turn, non-vision models strip with notice) |
 | `write_file` | Write or create files (auto-creates parent directories) |
 | `edit_file` | Targeted text replacement via unique `oldText` matching |
 | `bash` | Execute shell commands (approval-gated) |
@@ -232,6 +233,8 @@ lean --dir-guard-disabled      # disable directory confinement guard
 | `ask_user` | Ask clarifying questions with options via an interactive modal (single- or multi-select, always with an "Other…" free-text row) |
 | `read_skill` | Load a `SKILL.md` by name |
 | `remember` / `search_memory` / `recall_memory` / `list_memories` / `forget_memory` / `consolidate_memory` / `memory_stats` | Persistent memory management |
+
+> **Images:** Paste with `Ctrl+V`/`Cmd+V` (Wayland/X11/macOS/Windows — `wl-paste`/`xclip`/`pngpaste`/`powershell`), capped `4 MB` / 5 images, shown as `[[IMAGE #N]]` and sanitized from sessions. Use `vision: false` per-model to disable.
 
 ---
 
@@ -342,7 +345,7 @@ Per working directory, persisted as `~/.lean/sessions/*.json` (pruned to 50 mess
 `@` autocompletes project files and expands contents inline on submit. `$` forces a skill (`SKILL.md`) into context. Both complete with `Tab`/`Enter`.
 
 **How do I disable approval prompts?**
-Press `Shift+Tab` (or `/auto-accept on`) to enable session-only `AUTO` (footer badge) — all guards bypassed silently until `Shift+Tab` again or session ends. Use `/auto-accept off` to re-enable.
+`Shift+Tab` cycles `NORM→PLAN→AUTO`. Press `Shift+Tab` twice from `NORM` (or `/auto-accept on`) to reach `AUTO` (footer `AUTO` badge, ember) — all guards bypassed silently. `Shift+Tab` again returns to `NORM`, or `/auto-accept off` / `/plan off` to exit. `PLAN` (`Shift+Tab` once, frost badge) is read-only planning (only `.lean/plans` writes allowed).
 
 ## Troubleshooting
 
@@ -353,7 +356,7 @@ Press `Shift+Tab` (or `/auto-accept on`) to enable session-only `AUTO` (footer b
 | `401 / 403` from API | Key is invalid or base URL mismatched. Confirm `OPENAI_BASE_URL` has `/v1` suffix and matches provider. |
 | Linux build/run: `libssl` / `ca-certificates` errors | `sudo apt-get install libssl-dev pkg-config` (build) and `libssl3 ca-certificates` (run). Release binaries are linked against `libssl3`. |
 | MCP stdio server fails to start | Requires Node 20+ and `npx` on `PATH`. HTTP MCP (`url`) needs no Node. Check `/mcp` overlay for `error` state and tool counts; verify `${VAR}` env expansion. |
-| `bash` always asks for approval | Expected — `bash` and MCP tools are approval-gated (`[a]`/`[A]`/`Esc`). Add glob patterns to `~/.lean/allowlist.json` to allowlist safe commands, or press `Shift+Tab` / `/auto-accept` for session-only bypass (`AUTO` badge). |
+| `bash` always asks for approval | Expected — `bash` and MCP tools are approval-gated (`[a]`/`[A]`/`Esc`). Add glob patterns to `~/.lean/allowlist.json` to allowlist safe commands, or `Shift+Tab`→`AUTO` / `/auto-accept on` for session-only bypass (`AUTO` badge). |
 | File edits outside project blocked | `dir_guard` confines to CWD. Use `[a]` to approve once or `[A]` to allowlist, or run with `lean --dir-guard-disabled`. |
 | Empty or missing sessions | Sessions are per-CWD and pruned to 50 messages. Check `~/.lean/sessions/` and current directory. |
 
@@ -388,7 +391,7 @@ For general bugs, use the issue tracker.
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for release notes. `v0.4.0` adds dual-stack `/v1/responses` support, interactive `ask_user` wizard, and prompt/behavior overhaul — `v0.3.0` added input auto-wrap, `Shift+Enter` newline, `Shift+Tab` auto-accept (`/auto-accept` + `AUTO` badge), and a markdown parser fix.
+See [CHANGELOG.md](CHANGELOG.md) for release notes. `v0.5.0` adds `anthropic`/`ollama` providers with auto-detect, `PLAN` mode + `NORM/PLAN/AUTO` cycle, image paste + `vision` stripping, retries + 2-row context bar/scrollbar — `v0.4.0` added dual-stack `/v1/responses` and `ask_user` wizard.
 
 ---
 

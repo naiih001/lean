@@ -59,7 +59,7 @@ impl Provider {
         match self {
             Self::OpenAI => "https://api.openai.com/v1".to_string(),
             Self::Anthropic => "https://api.anthropic.com".to_string(),
-            Self::Ollama => "http://localhost:11434/v1".to_string(),
+            Self::Ollama => ollama_base_url_from_env(),
             Self::Generic => default_env_base_url(),
         }
     }
@@ -166,23 +166,51 @@ fn default_anthropic_api_key() -> String {
     std::env::var("ANTHROPIC_API_KEY").unwrap_or_else(|_| "sk-test".to_string())
 }
 
-/// Check if Ollama is reachable at localhost:11434 and return model names. Sync best-effort with timeout.
+fn ollama_base_url_from_env() -> String {
+    let raw = std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".to_string());
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return "http://localhost:11434/v1".to_string();
+    }
+    if trimmed.ends_with("/v1") {
+        trimmed.to_string()
+    } else {
+        format!("{}/v1", trimmed)
+    }
+}
+
+fn ollama_host_for_probe() -> String {
+    std::env::var("OLLAMA_HOST")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .unwrap_or_else(|| "http://localhost:11434".to_string())
+}
+
+/// Check if Ollama is reachable and return model names. Sync best-effort with timeout.
+/// Honors OLLAMA_HOST env var; falls back to localhost/127.0.0.1 for compat.
 fn ollama_detect_sync() -> Vec<String> {
-    // Use blocking reqwest with short timeout to avoid hanging
     let try_client = reqwest::blocking::Client::builder().timeout(std::time::Duration::from_millis(400)).build();
     if let Ok(client) = try_client {
-        if let Ok(resp) = client.get("http://localhost:11434/api/tags").send() {
-            if let Ok(json) = resp.json::<serde_json::Value>() {
-                if let Some(models) = json.get("models").and_then(|m| m.as_array()) {
-                    return models.iter().filter_map(|m| m.get("name").and_then(|n| n.as_str()).map(|s| s.to_string())).collect();
-                }
+        let mut tried = Vec::new();
+        let primary = ollama_host_for_probe();
+        tried.push(format!("{}/api/tags", primary.trim_end_matches('/')));
+        // Fallbacks for compat when OLLAMA_HOST is default — avoid duplicate probes
+        for host in ["http://localhost:11434", "http://127.0.0.1:11434"] {
+            let url = format!("{}/api/tags", host);
+            if !tried.contains(&url) {
+                tried.push(url);
             }
         }
-        // Also try 127.0.0.1:11434 as fallback (same, but be explicit)
-        if let Ok(resp) = client.get("http://127.0.0.1:11434/api/tags").send() {
-            if let Ok(json) = resp.json::<serde_json::Value>() {
-                if let Some(models) = json.get("models").and_then(|m| m.as_array()) {
-                    return models.iter().filter_map(|m| m.get("name").and_then(|n| n.as_str()).map(|s| s.to_string())).collect();
+        for url in tried {
+            if let Ok(resp) = client.get(&url).send() {
+                if let Ok(json) = resp.json::<serde_json::Value>() {
+                    if let Some(models) = json.get("models").and_then(|m| m.as_array()) {
+                        let names: Vec<String> = models.iter().filter_map(|m| m.get("name").and_then(|n| n.as_str()).map(|s| s.to_string())).collect();
+                        if !names.is_empty() {
+                            return names;
+                        }
+                    }
                 }
             }
         }
