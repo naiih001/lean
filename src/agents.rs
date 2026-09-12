@@ -263,6 +263,26 @@ pub fn get_subagent(id: &str) -> Option<SubagentStatus> {
     subagents_lock().lock().unwrap().iter().find(|s| s.id == id).cloned()
 }
 
+
+static WAKE_QUEUE: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+fn wake_lock() -> &'static Mutex<Vec<String>> {
+    WAKE_QUEUE.get_or_init(|| Mutex::new(Vec::new()))
+}
+pub fn push_wake_message(msg: String) {
+    wake_lock().lock().unwrap().push(msg);
+}
+pub fn take_wake_messages() -> Vec<String> {
+    let mut lock = wake_lock().lock().unwrap();
+    let out = lock.clone();
+    lock.clear();
+    out
+}
+pub fn remove_subagent(id: &str) {
+    let mut lock = subagents_lock().lock().unwrap();
+    lock.retain(|s| s.id != id);
+}
+
+
 pub fn update_subagent(id: &str, status: &str) {
     let mut lock = subagents_lock().lock().unwrap();
     if let Some(s) = lock.iter_mut().find(|s| s.id == id) {

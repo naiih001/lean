@@ -1014,10 +1014,10 @@ fn format_context_label(est: usize, window: usize) -> String {
 
 
 fn draw_subagent_summary(f: &mut Frame, area: Rect, tick: usize) {
-    let subs = crate::agents::list_subagents();
+    let subs: Vec<_> = crate::agents::list_subagents().into_iter().filter(|s| s.status == "running").collect();
     if subs.is_empty() { return; }
-    let running = subs.iter().filter(|s| s.status == "running").count();
-    let total = subs.len();
+    let running = subs.len();
+    let total = running;
     let spinner = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"][tick % 10];
     let txt = if running > 0 {
         format!(" {}  ⬢ {} agents • {} running  {}", spinner, total, running, spinner)
@@ -1054,12 +1054,9 @@ fn wrap_task_preview(task: &str, width: usize, max_lines: usize) -> Vec<String> 
 }
 
 fn draw_subagent_list(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
-    let mut subs = crate::agents::list_subagents();
-    // running on top, then done/error, then by start time
-    subs.sort_by(|a,b| {
-        let rank = |s: &str| if s=="running" {0} else if s=="done" {1} else {2};
-        rank(&a.status).cmp(&rank(&b.status)).then_with(|| a.started_at.cmp(&b.started_at))
-    });
+    let mut subs: Vec<_> = crate::agents::list_subagents().into_iter().filter(|s| s.status == "running").collect();
+    // only running shown — done/killed are out of current session
+    subs.sort_by(|a,b| a.started_at.cmp(&b.started_at));
     let area = centered_rect(70, 60, area);
     f.render_widget(Clear, area);
     let block = Block::default().borders(Borders::ALL).title(format!(" Subagents ({}) — Enter: view  Esc: close  Shift+K: kill ", subs.len())).style(Style::default().bg(THEME.page_bg)).border_style(Style::default().fg(ASHEN.frost));
@@ -1100,7 +1097,7 @@ fn draw_subagent_list(f: &mut Frame, area: Rect, selected: usize, scroll: usize)
 }
 
 fn draw_subagent_detail(f: &mut Frame, area: Rect, idx: usize, scroll: u16) {
-    let subs = crate::agents::list_subagents();
+    let subs: Vec<_> = crate::agents::list_subagents().into_iter().filter(|s| s.status == "running").collect();
     if idx >= subs.len() { return; }
     let sub = &subs[idx];
     f.render_widget(Clear, area);
@@ -1587,7 +1584,7 @@ fn parse_all_forced_agents(input: &str) -> Vec<(String, String)> {
     let chars: Vec<char> = input.chars().collect();
     while i < chars.len() {
         if chars[i] == '#' {
-            let prev_ok = if i==0 { true } else { let pc = chars[i-1]; pc.is_whitespace() || "("'`".contains(pc) };
+            let prev_ok = if i==0 { true } else { let pc = chars[i-1]; pc.is_whitespace() || "(\"'`".contains(pc) };
             if prev_ok {
                 let mut j = i+1;
                 while j < chars.len() && (chars[j].is_ascii_alphanumeric() || chars[j]=='-' || chars[j]=='_') { j+=1; }
@@ -2638,6 +2635,14 @@ async fn app_loop(
                 pending_question = Some(req);
                 dirty = true;
             }
+        }
+        // Poll for subagent wake messages (pi-style: master keeps working, woken when subagent returns)
+        let wakes = crate::agents::take_wake_messages();
+        if !wakes.is_empty() {
+            for w in wakes {
+                messages.push(Msg { role: "system".into(), content: w, tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None });
+            }
+            dirty = true;
         }
         let term_size = terminal.size()?;
         let queue_rows = msg_queue.len().min(2) as u16;
