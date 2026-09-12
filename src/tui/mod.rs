@@ -541,6 +541,64 @@ fn merge_thinking(messages: &[Msg]) -> Vec<Msg> {
 
 // ── Rendering helpers ──────────────────────────────────────────
 
+fn draw_running_indicator(f: &mut Frame, area: Rect, busy: bool, tick: usize) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let w = area.width as usize;
+    if !busy {
+        // Reserved 1-row slot but blank when idle — no layout jump
+        let blank = " ".repeat(w);
+        let para = Paragraph::new(Line::from(Span::styled(
+            blank,
+            Style::default().bg(THEME.page_bg),
+        )));
+        f.render_widget(para, area);
+        return;
+    }
+    // Busy: "━" line with ping-pong pulse sliding left→right→left
+    let seg = 8usize.min(w);
+    if w <= seg {
+        let line = "━".repeat(w);
+        let para = Paragraph::new(Line::from(Span::styled(
+            line,
+            Style::default()
+                .fg(THEME.accent)
+                .bg(THEME.page_bg)
+                .add_modifier(Modifier::BOLD),
+        )));
+        f.render_widget(para, area);
+        return;
+    }
+    let cycle = (w - seg) * 2;
+    let pos = tick % cycle.max(1);
+    let offset = if pos < w - seg { pos } else { cycle - pos };
+    let before = offset;
+    let after = w - offset - seg;
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(3);
+    if before > 0 {
+        spans.push(Span::styled(
+            "━".repeat(before),
+            Style::default().fg(ASHEN.charcoal).bg(THEME.page_bg),
+        ));
+    }
+    spans.push(Span::styled(
+        "━".repeat(seg),
+        Style::default()
+            .fg(THEME.accent)
+            .bg(THEME.page_bg)
+            .add_modifier(Modifier::BOLD),
+    ));
+    if after > 0 {
+        spans.push(Span::styled(
+            "━".repeat(after),
+            Style::default().fg(ASHEN.charcoal).bg(THEME.page_bg),
+        ));
+    }
+    let para = Paragraph::new(Line::from(spans));
+    f.render_widget(para, area);
+}
+
 fn draw_header(f: &mut Frame, area: Rect, _model: &str, step_info: &str) {
     let inner = area;
     let width = inner.width as usize;
@@ -2238,20 +2296,21 @@ async fn app_loop(
         let queue_rows = msg_queue.len().min(2) as u16;
         // Dynamic input height 1..6 (auto-grow like pi/jcode, clamped)
         let input_height = (textarea.lines().len() as u16).clamp(1, 6);
-        let overhead = 5 + queue_rows + input_height; // header + sep + sep + queue + input + footer(2 rows)
-                                       // Content area: starts at row 2 (after header + sep), height is the rest
+        let overhead = 6 + queue_rows + input_height; // indicator(1, always reserved) + header + sep + sep + queue + input + footer(2 rows)
+                                       // Content area: starts after indicator + header + sep
         let content_area = Rect {
             x: 0,
-            y: 2,
+            y: 3,
             width: term_size.width,
             height: term_size.height.saturating_sub(overhead).max(1),
         };
 
-        // Pre-compute layout so we know content area dimensions
+        // Pre-compute layout so we know content area dimensions — indicator always reserved (blank when idle, "━" + pulse when busy)
         let chunks = {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
+                    Constraint::Length(1),              // running indicator (top, touches borders, always reserved)
                     Constraint::Length(1),              // header
                     Constraint::Length(1),              // separator
                     Constraint::Min(1),                 // content
@@ -2268,11 +2327,11 @@ async fn app_loop(
                 });
             chunks
         };
-        let content_height = chunks[2].height as usize;
+        let content_height = chunks[3].height as usize;
 
         // Build content lines once, wrap once, use for both counting and rendering
         let content_lines = build_content_lines(&messages);
-        let wrapped_content = wrap_lines(content_lines, chunks[2].width as usize);
+        let wrapped_content = wrap_lines(content_lines, chunks[3].width as usize);
         let total_lines = wrapped_content.len();
         if auto_scroll {
             scroll = total_lines.saturating_sub(content_height) as u16;
@@ -2284,28 +2343,31 @@ async fn app_loop(
                 let bg_block = Block::default().style(Style::default().bg(THEME.page_bg));
                 f.render_widget(bg_block, f.area());
 
+                // Running indicator — top row, touches borders, always reserved (blank when idle, "━" pulse when busy)
+                draw_running_indicator(f, chunks[0], agent_busy, spinner_tick);
+
                 // Header
-                draw_header(f, chunks[0], &model, &step_info);
+                draw_header(f, chunks[1], &model, &step_info);
 
                 // Separator
-                draw_separator(f, chunks[1]);
+                draw_separator(f, chunks[2]);
 
                 // Content — use pre-wrapped lines
                 let para = Paragraph::new(wrapped_content.clone()).scroll((scroll, 0));
-                f.render_widget(para, chunks[2]);
+                f.render_widget(para, chunks[3]);
 
                 // Separator
-                draw_separator(f, chunks[3]);
+                draw_separator(f, chunks[4]);
 
                 // Queue
-                draw_queue(f, chunks[4], &msg_queue);
+                draw_queue(f, chunks[5], &msg_queue);
 
                 // Input (textarea renders with cursor)
-                draw_input(f, chunks[5], &mut textarea);
+                draw_input(f, chunks[6], &mut textarea);
 
                 // Autocomplete popup
                 if !ac_matches.is_empty() {
-                    draw_autocomplete(f, chunks[5], &ac_matches, ac_idx, ac_scroll);
+                    draw_autocomplete(f, chunks[6], &ac_matches, ac_idx, ac_scroll);
                 }
                 // Bash guard approval overlay (suppressed while auto-accept ON)
                 if !crate::approval::is_auto_accept() {
@@ -2331,7 +2393,7 @@ async fn app_loop(
                 // Footer (2 rows)
                 draw_footer(
                     f,
-                    chunks[6],
+                    chunks[7],
                     &model,
                     &messages,
                     &cwd,
@@ -2351,7 +2413,7 @@ async fn app_loop(
             match term_event {
                 Event::Paste(data) => {
                     crate::telemetry::record("paste");
-                    let max_cols = (chunks[5].width as usize).saturating_sub(1);
+                    let max_cols = (chunks[6].width as usize).saturating_sub(1);
                     textarea.insert_str(hard_wrap_str(&data, max_cols));
                     wrap_cursor_line(&mut textarea, max_cols);
                     ac_matches = current_completions(&textarea);
@@ -3076,7 +3138,7 @@ async fn app_loop(
                     }
                     // Hard-wrap the input line when typing reached the right edge
                     if textarea.lines() != lines_before.as_slice() {
-                        let max_cols = (chunks[5].width as usize).saturating_sub(1);
+                        let max_cols = (chunks[6].width as usize).saturating_sub(1);
                         wrap_cursor_line(&mut textarea, max_cols);
                         ac_matches = current_completions(&textarea);
                         ac_idx = 0;
