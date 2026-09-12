@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-12
+
+### Added
+
+- **Providers — anthropic + ollama/local with auto-detect** — `src/models.rs` `Provider` enum (`openai|anthropic|ollama|generic`, `serde` aliases, inference from `base_url`/`api` for backward compat), `ApiMode::Anthropic`, `ModelEntry.provider`, `ResolvedModel.provider`, `ollama_detect_sync` (`GET http://localhost:11434/api/tags` 400 ms, `http://127.0.0.1` fallback) + `ollama_available`/`ollama_model_names`, `Client` `provider/api_mode` + `is_anthropic()` (`api_mode==Anthropic && base_url.contains("api.anthropic.com")` to keep `zen` proxy OpenAI-compatible), `chat_url()` (`/v1/messages` for native Anthropic else `/chat/completions`), `auth_headers()`/`apply_auth()` (`x-api-key` + `anthropic-version` vs `Bearer`), `30s` (ollama) vs `60s` (cloud) timeouts. `Cargo.toml` `reqwest` `blocking` feature. `README` `ANTHROPIC_API_KEY`/`OLLAMA_HOST` + `provider`/`base_url` per-provider defaults + example `models.json` with `claude`/`qwen-local`.
+- **PLAN mode + regular doing split** — `src/agent.rs` `REGULAR_SYSTEM_PROMPT` (doing: `Understand→Act→Verify→Summarize`, ask only when genuinely ambiguous) vs `PLAN_SYSTEM_PROMPT` (strict 5-phase `Discover→Clarify→Propose→Wait→Leave` with `.lean/plans` writes only), `Mode` enum `Norm|Plan|Auto` (`~/.lean/mode.json` persistence, `current_mode()`/`set_mode()`/`cycle_mode()`), `is_plan_exempt_write` (`.lean/plans`), `is_readonly_bash` + `is_mcp_read` heuristics, `PlanTracker` gating (`is_plan_mode() && !conversational`) with `leave PLAN?` flow.
+- **Shift+Tab cycles `NORM/PLAN/AUTO`** — `src/tui/mod.rs` `Shift+Tab` (`BackTab` or `Tab+SHIFT`) now cycles `NORM→PLAN→AUTO→NORM` exclusive (never both), wins before any modal (including question wizard `BackTab`), `AUTO` drains pending approvals immediately (`PLAN` deferred), `draw_footer` single badge (`NORM` slate / `PLAN` frost / `AUTO` ember) + `PERSIST` via `mode.json`, `placeholder`/`/help` updated, `/plan` and `/auto-accept` now exclusive via `set_mode`, `/plan <task>` one-shot.
+- **Require `ask_user` permission to leave `PLAN` before building** — `src/agent.rs` `is_permission_to_leave_plan`/`is_stay_in_plan`, `PlanTracker.note_ask_result` (`leave PLAN and implement` → `set_mode(Norm)` + clear gating), `GATING BLOCKED` now instructs `header="Leave PLAN?"` `question="Leave PLAN mode and start building?"` `options=["✓ Yes, leave PLAN and implement", "Stay in PLAN"]` (no `Other`), manual `Shift+Tab`/`/plan` leave stays silent.
+- **Network retries + better errors, inline TUI display** — `src/llm.rs` `Client` timeouts, `src/agent.rs` `post_with_retry` (`cloud 3× 500/1000/2000ms`, `ollama 2× 300/600ms`, exponential + `Retry-After` capped 30s, `is_retryable_status 429/500-599`, `is_retryable_error` timeout/connect, `30s/60s` timeouts), `Ollama is not running` hint (`ollama serve`/`pull`), `401/403` key hint, `429` rate-limit hint, `Failed` vs `Success` handling, inline `[LLM HTTP ...] (provider: ..., url: ...)` via `yield Text` (no footer badge).
+- **Media: image handling, clipboard paste, session sanitization** — `src/tui/mod.rs` `clipboard_image_marker()` (`wl-paste`/`xclip`/`xsel`/`pngpaste`/`powershell` with `WAYLAND_DISPLAY` fallback, `4MB/5` caps), `[[IMAGE #N]]` placeholder via `PASTED_IMAGES` store expanded in `expand_at_mentions`, `sanitize_display_content` hides base64, `src/tools.rs` `pub(crate)` helpers, `src/session.rs::sanitize_history` strips `<<IMAGE` base64 before persist.
+- **TUI: second footer row for context window** — `src/tui/mod.rs` `context_window_for_model` (`1.0M` default, `128k/200k/32k` variants), `estimate_tokens` (`~4 chars/token` + system overhead), `format_context_label` (`X% / 1.0M`), footer `1→2` rows (`overhead 4→5`, `chunks[6]→chunks[7]`), top `mode/model/cwd/msgs/spinner` + bottom `█░` bar + `X% / 1.0M` (moss<60, frost 60-85, ember>85), narrow `<15` cols handling, `draw_footer(&messages)`.
+- **TUI: thin scrollbar overlay + perf** — `src/tui/mod.rs` `draw_scrollbar` (1-char `░` track + `█` thumb frost, only when `total_lines > viewport && !auto_scroll`, hide at bottom), `f5b59b6`, `7b91da3` idle CPU `20%→<1%` (poll throttling + render cache), `99cc9e7` top running `━` indicator with ping-pong pulse.
+
+### Changed
+
+- Footer layout `1→2` rows and `overhead` accounting; `draw_footer` now takes `&[Msg]` and splits `top_area`/`bottom_area`.
+- `Client::from_resolved` now provider-aware (timeout, headers, url); `agent.rs` both stacks now use `client.apply_auth()`.
+- `tui` placeholder/help updated to `Shift+Tab NORM/PLAN/AUTO`.
+
+### Fixed
+
+- `fix(ui): route spacebar in ask_user wizard` (`d7ecc63`) — `Space` now inserts when `on_other` else toggles.
+- `fix(tui): don't snap to bottom when scrolled up` (`4661894`).
+- `fix(tui): silence mode-switch messages` (`5fa0f2d`) — `Shift+Tab`/`/plan`/`/auto-accept` no longer push system `Msg`, only badge + telemetry.
+
 ## [0.4.0] - 2026-09-10
 
 ### Added
@@ -110,7 +135,8 @@ Initial release. Light, fast autonomous coding assistant — single native binar
 - Tools: `read_file` (2000 lines/50 KB cap), `write_file`, `edit_file`, `bash` (50 KB tail), `web_search` (Exa → DuckDuckGo), memory tools
 - Config: CLI flags > env vars > `.env` > defaults; `OPENCODE_*`/`OPENAI_*`/`EXA_*` via `dotenvy`
 
-[Unreleased]: https://github.com/naiih001/lean/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/naiih001/lean/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/naiih001/lean/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/naiih001/lean/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/naiih001/lean/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/naiih001/lean/compare/v0.2.0...v0.2.1
