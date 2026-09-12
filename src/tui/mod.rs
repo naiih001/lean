@@ -1128,11 +1128,26 @@ fn draw_subagent_detail(f: &mut Frame, area: Rect, idx: usize, scroll: u16) {
     }
     let wrapped = wrap_lines(all_lines, inner.width as usize);
     let total = wrapped.len();
-    let para = Paragraph::new(wrapped).scroll((scroll, 0));
+    let clamped = (scroll as usize).min(total.saturating_sub(inner.height as usize)) as u16;
+    let para = Paragraph::new(wrapped).scroll((clamped, 0));
     f.render_widget(para, inner);
     if total > inner.height as usize {
-        draw_scrollbar(f, inner, total, inner.height as usize, scroll);
+        draw_scrollbar(f, inner, total, inner.height as usize, clamped);
     }
+}
+
+fn detail_total_for_width(sub: &crate::agents::SubagentStatus, width: usize) -> usize {
+    let mut header = 3usize; // task/status/separator
+    if sub.transcript.is_empty() { return header + 1; }
+    let msgs: Vec<Msg> = sub.transcript.iter().map(|m| Msg { role: m.role.clone(), content: m.content.clone(), tool_id: m.tool_id.clone(), tool_name: m.tool_name.clone(), tool_args: m.tool_args.clone(), elapsed_ms: m.elapsed_ms }).collect();
+    let lines = build_content_lines(&msgs);
+    // header + content
+    let mut all: Vec<Line> = Vec::with_capacity(header + lines.len());
+    all.push(Line::from(vec![Span::styled("Task: ", Style::default().fg(ASHEN.charcoal)), Span::styled(sub.task.clone(), Style::default().fg(ASHEN.bone))]));
+    all.push(Line::from(Span::styled(format!("Status: {}  Started: {:?}", sub.status, sub.started_at), Style::default().fg(ASHEN.deep_ash))));
+    all.push(Line::from(Span::styled("─".repeat(width), Style::default().fg(ASHEN.charcoal))));
+    all.extend(lines);
+    wrap_lines(all, width).len()
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
@@ -2604,6 +2619,10 @@ async fn app_loop(
     let mut subagent_scroll: usize = 0;
     let mut subagent_detail: Option<usize> = None;
     let mut subagent_detail_scroll: u16 = 0;
+    let mut subagent_detail_auto_scroll = true;
+    let mut subagent_detail_total: usize = 0;
+    let mut subagent_detail_viewport_h: usize = 0;
+    let mut subagent_list_auto_scroll = true;
     let mut subagent_kill_confirm = false;
     // Eager MCP init (background)
     tokio::spawn(async move { crate::mcp::init().await; });
@@ -2707,6 +2726,34 @@ async fn app_loop(
         };
         if auto_scroll {
             scroll = total_lines.saturating_sub(content_height) as u16;
+        }
+        // Subagent detail/list auto-tail — exact regular behavior
+        if subagent_detail.is_some() {
+            if let Some(idx) = subagent_detail {
+                let subs = crate::agents::list_subagents();
+                if let Some(sub) = subs.get(idx) {
+                    let inner_w = (term_size.width as usize).saturating_sub(4).max(10);
+                    let inner_h = (term_size.height as usize).saturating_sub(6).max(5);
+                    let total = detail_total_for_width(sub, inner_w);
+                    subagent_detail_total = total;
+                    subagent_detail_viewport_h = inner_h;
+                    if subagent_detail_auto_scroll {
+                        subagent_detail_scroll = total.saturating_sub(inner_h) as u16;
+                    } else {
+                        // clamp if content shrank
+                        let max = total.saturating_sub(inner_h) as u16;
+                        if subagent_detail_scroll > max { subagent_detail_scroll = max; }
+                    }
+                }
+            }
+        } else if show_subagents {
+            // list auto-tail when new agents appear and user hasn't scrolled up
+            if subagent_list_auto_scroll {
+                let total = crate::agents::list_subagents().len();
+                let vis = ((term_size.height as usize).saturating_sub(10) / 7).max(1);
+                let max = total.saturating_sub(vis);
+                subagent_scroll = max;
+            }
         }
 
         // Single render pass with correct scroll (only when state changed)
@@ -2816,6 +2863,36 @@ async fn app_loop(
                     ac_idx = 0;
                 }
                 Event::Mouse(m) => {
+                    // When subagent overlay is visible, wheel scrolls the overlay (not background chat) — exact regular behavior
+                    if show_subagents {
+                        match m.kind {
+                            MouseEventKind::ScrollUp => {
+                                if let Some(_) = subagent_detail {
+                                    subagent_detail_scroll = subagent_detail_scroll.saturating_sub(3);
+                                    subagent_detail_auto_scroll = false;
+                                } else {
+                                    // list: scroll by 1 row (7 lines per card)
+                                    if subagent_scroll > 0 { subagent_scroll = subagent_scroll.saturating_sub(1); }
+                                    subagent_list_auto_scroll = false;
+                                }
+                            },
+                            MouseEventKind::ScrollDown => {
+                                if let Some(_) = subagent_detail {
+                                    let max = subagent_detail_total.saturating_sub(subagent_detail_viewport_h) as u16;
+                                    subagent_detail_scroll = (subagent_detail_scroll + 3).min(max);
+                                    if subagent_detail_scroll >= max { subagent_detail_auto_scroll = true; }
+                                } else {
+                                    let total = crate::agents::list_subagents().len();
+                                    let vis_rows = (cached_content_height / 7).max(1).min(total.max(1));
+                                    let max = total.saturating_sub(vis_rows);
+                                    subagent_scroll = (subagent_scroll + 1).min(max);
+                                    if subagent_scroll >= max { subagent_list_auto_scroll = true; }
+                                }
+                            },
+                            _ => {}
+                        }
+                        continue;
+                    }
                     let in_content =
                         m.row >= content_area.y && m.row < content_area.y + content_area.height;
                     if in_content {
@@ -2885,11 +2962,13 @@ async fn app_loop(
                             continue;
                         }
                         if let Some(idx) = subagent_detail {
+                            let max = subagent_detail_total.saturating_sub(subagent_detail_viewport_h) as u16;
                             match k.code {
                                 KeyCode::Esc => {
                                     // back to list, not close entirely
                                     subagent_detail = None;
                                     subagent_detail_scroll = 0;
+                                    subagent_detail_auto_scroll = true;
                                 },
                                 KeyCode::Char('K') if k.modifiers.contains(KeyModifiers::SHIFT) => {
                                     subagent_kill_confirm = true;
@@ -2899,36 +2978,85 @@ async fn app_loop(
                                 },
                                 KeyCode::Up | KeyCode::Char('k') => {
                                     subagent_detail_scroll = subagent_detail_scroll.saturating_sub(1);
+                                    subagent_detail_auto_scroll = false;
                                 },
                                 KeyCode::Down | KeyCode::Char('j') => {
-                                    subagent_detail_scroll = subagent_detail_scroll.saturating_add(1);
+                                    subagent_detail_scroll = (subagent_detail_scroll + 1).min(max);
+                                    if subagent_detail_scroll >= max { subagent_detail_auto_scroll = true; } else { subagent_detail_auto_scroll = false; }
                                 },
                                 KeyCode::PageUp => {
                                     subagent_detail_scroll = subagent_detail_scroll.saturating_sub(10);
+                                    subagent_detail_auto_scroll = false;
                                 },
                                 KeyCode::PageDown => {
-                                    subagent_detail_scroll = subagent_detail_scroll.saturating_add(10);
+                                    subagent_detail_scroll = (subagent_detail_scroll + 10).min(max);
+                                    if subagent_detail_scroll >= max { subagent_detail_auto_scroll = true; } else { subagent_detail_auto_scroll = false; }
+                                },
+                                KeyCode::Home => {
+                                    subagent_detail_scroll = 0;
+                                    subagent_detail_auto_scroll = false;
+                                },
+                                KeyCode::End => {
+                                    subagent_detail_scroll = max;
+                                    subagent_detail_auto_scroll = true;
                                 },
                                 _ => {}
                             }
                             continue;
                         }
-                        // List mode
+                        // List mode — exact regular scroll (clamped, Home/End, Page, wheel)
                         match k.code {
                             KeyCode::Esc => {
                                 show_subagents = false;
                                 subagent_detail = None;
+                                subagent_list_auto_scroll = true;
                             },
                             KeyCode::Up => {
                                 if subagent_selected > 0 { subagent_selected -= 1; if subagent_selected < subagent_scroll { subagent_scroll = subagent_selected; } }
+                                subagent_list_auto_scroll = false;
                             },
                             KeyCode::Down => {
                                 let len = crate::agents::list_subagents().len();
                                 if subagent_selected + 1 < len { subagent_selected += 1; if subagent_selected >= subagent_scroll + 8 { subagent_scroll += 1; } }
+                                let total = crate::agents::list_subagents().len();
+                                let vis = 8usize;
+                                let max = total.saturating_sub(vis);
+                                if subagent_scroll >= max { subagent_list_auto_scroll = true; } else { subagent_list_auto_scroll = false; }
+                            },
+                            KeyCode::PageUp => {
+                                let step = 8usize;
+                                subagent_selected = subagent_selected.saturating_sub(step);
+                                subagent_scroll = subagent_scroll.saturating_sub(step);
+                                subagent_list_auto_scroll = false;
+                            },
+                            KeyCode::PageDown => {
+                                let step = 8usize;
+                                let len = crate::agents::list_subagents().len();
+                                subagent_selected = (subagent_selected + step).min(len.saturating_sub(1));
+                                let total = len;
+                                let vis = 8usize;
+                                let max = total.saturating_sub(vis);
+                                subagent_scroll = (subagent_scroll + step).min(max);
+                                if subagent_scroll >= max { subagent_list_auto_scroll = true; }
+                            },
+                            KeyCode::Home => {
+                                subagent_selected = 0;
+                                subagent_scroll = 0;
+                                subagent_list_auto_scroll = false;
+                            },
+                            KeyCode::End => {
+                                let len = crate::agents::list_subagents().len();
+                                if len > 0 { subagent_selected = len - 1; }
+                                let total = len;
+                                let vis = 8usize;
+                                let max = total.saturating_sub(vis);
+                                subagent_scroll = max;
+                                subagent_list_auto_scroll = true;
                             },
                             KeyCode::Enter => {
                                 subagent_detail = Some(subagent_selected);
                                 subagent_detail_scroll = 0;
+                                subagent_detail_auto_scroll = true;
                             },
                             _ => {}
                         }

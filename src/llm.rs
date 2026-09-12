@@ -277,7 +277,7 @@ pub fn native_tool_definitions() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "subagents_list",
-                "description": "List available subagents",
+                "description": "List live background subagents still running (id, agent, task, status, elapsed)",
                 "parameters": {
                     "type": "object",
                     "properties": {}

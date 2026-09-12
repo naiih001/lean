@@ -653,7 +653,21 @@ pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
             }
         }
         "subagents_list" => {
-            Ok(crate::agents::get_agent_catalog().await)
+            let subs = crate::agents::list_subagents();
+            let running: Vec<_> = subs.into_iter().filter(|s| s.status == "running").collect();
+            if running.is_empty() {
+                Ok("No live background subagents — all done or none spawned.".to_string())
+            } else {
+                let mut lines = Vec::new();
+                for s in running {
+                    let elapsed = std::time::SystemTime::now().duration_since(s.started_at).unwrap_or_default();
+                    let secs = elapsed.as_secs();
+                    let task_preview = if s.task.len() > 80 { format!("{}…", &s.task[..80]) } else { s.task.clone() };
+                    let short_id = &s.id[..8.min(s.id.len())];
+                    lines.push(format!("- {} [{}] {} — \"{}\" ({}s, {} transcript lines)", short_id, s.status, s.agent, task_preview, secs, s.transcript.len()));
+                }
+                Ok(lines.join("\n"))
+            }
         }
         "subagent" => {
             let agent = args.get("agent").and_then(|v| v.as_str()).unwrap_or("");
