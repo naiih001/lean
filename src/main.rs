@@ -14,6 +14,7 @@ mod theme;
 mod tools;
 mod mcp;
 mod tui;
+mod context;
 
 use clap::Parser;
 

@@ -12,3 +12,4 @@ pub mod question;
 pub mod session;
 pub mod tools;
 pub mod mcp;
+pub mod context;

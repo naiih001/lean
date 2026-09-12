@@ -1097,7 +1097,7 @@ fn draw_scrollbar(f: &mut Frame, area: Rect, total_lines: usize, viewport_h: usi
 
 // ── Autocomplete + @-mentions ─────────────────────────────────
 
-const COMMANDS: &[&str] = &["/help", "/new", "/clear", "/exit", "/quit", "/model", "/sessions", "/resume", "/allowlist", "/allowlist clear", "/mcp", "/memory", "/memory stats", "/memory consolidate", "/auto-accept", "/plan"];
+const COMMANDS: &[&str] = &["/help", "/new", "/clear", "/exit", "/quit", "/model", "/sessions", "/resume", "/allowlist", "/allowlist clear", "/mcp", "/memory", "/memory stats", "/memory consolidate", "/auto-accept", "/plan", "/init"];
 
 /// Filter commands matching the current input prefix.
 /// Also completes model aliases after `/model `.
@@ -2219,6 +2219,7 @@ async fn app_loop(
                 content: format!("[warn: session model '{}' not in {} — use /model to switch]", sess.model, crate::models::path_display()), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
         }
     }
+
     // helper to persist (cur_model passed explicitly to avoid borrow across mutation)
     let persist = |msgs: &Vec<Msg>, sess: &mut Option<crate::session::Session>, cur_model: &str| {
         if let Some(s) = sess {
@@ -3235,7 +3236,7 @@ async fn app_loop(
                                 "/help" => {
                                     messages.push(Msg {
                                         role: "system".into(),
-                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /mcp /memory stats|consolidate /model <name> /clear /exit /auto-accept /plan  ·  Enter send · Shift+Enter newline · Shift+Tab NORM/PLAN/ASK/AUTO · @file $skill · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll — /plan toggles PLAN, /auto-accept toggles AUTO, Shift+Tab cycles".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /mcp /memory stats|consolidate /model <name> /clear /exit /auto-accept /plan /init  ·  Enter send · Shift+Enter newline · Shift+Tab NORM/PLAN/ASK/AUTO · @file $skill · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll — /plan toggles PLAN, /auto-accept toggles AUTO, Shift+Tab cycles — /init creates AGENT.md (+CLAUDE.md mirror) and MEMORY.md".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                 }
                                 "/plan" => {
                                     let next = if crate::agent::current_mode() == crate::agent::Mode::Plan { crate::agent::Mode::Norm } else { crate::agent::Mode::Plan };
@@ -3244,6 +3245,83 @@ async fn app_loop(
                                         crate::agent::Mode::Plan => crate::telemetry::record("mode_plan"),
                                         _ => crate::telemetry::record("mode_norm"),
                                     }
+                                }
+                                "/init" => {
+                                    // Fast deterministic fallback + LLM enrichment
+                                    let created = crate::context::ensure_init_files();
+                                    if !created.is_empty() {
+                                        messages.push(Msg { role: "system".into(), content: format!("init: created {} — now enriching with project analysis…", created.join(", ")), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                    } else {
+                                        messages.push(Msg { role: "system".into(), content: "init: AGENT.md / MEMORY.md already exist — refreshing via agent…".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                    }
+                                    let cwd = crate::dir_guard::project_root().display().to_string();
+                                    let init_prompt = format!(r#"Initialize project memory for lean. Current directory: {cwd}
+
+Tasks:
+1. Explore the codebase: run `ls -la`, read README.md, Cargo.toml / package.json / pyproject.toml / go.mod if present, and list src/ structure. Use read_file and bash (read-only) to gather facts.
+2. Create or update AGENT.md at ./AGENT.md. Include: Project Overview (what it does), Tech Stack, Commands (build/run/test/lint exactly as found), Project Structure (key dirs), Conventions (style, commits), Architecture Notes, Gotchas. Keep concise, actionable, 1-2 pages. Use only facts you found — don't invent.
+3. Ensure CLAUDE.md mirrors AGENT.md for Claude Code compatibility: if ./CLAUDE.md is missing, copy AGENT.md to CLAUDE.md (or symlink on Unix via `ln -sf AGENT.md CLAUDE.md`). If it exists and differs, update it to match AGENT.md unless difference looks intentional — keep them in sync.
+4. For MEMORY.md (user persona, 3-5 short sections about who the user is so the agent can personalize): check ./MEMORY.md — if missing, use ask_user to ask the user about their role, preferences, goals, working style, then write ./MEMORY.md with template + answers. If it exists, preserve content and only fill gaps. Also check ~/.lean/MEMORY.md for global persona — note it but prefer project file.
+5. After writing, verify by reading the created files with read_file and summarize what was created/updated. End with "All done."
+
+Be thorough but concise. Read before write; use unique oldText for edits."#);
+                                    let hist = llm_history_for_spawn(&session, &messages);
+                                    let expanded = expand_at_mentions(&init_prompt);
+                                    history.push("/init".to_string());
+                                    hist_idx = None;
+                                    step_info = "...".into();
+                                    auto_scroll = true;
+                                    ac_matches.clear();
+                                    ac_idx = 0;
+                                    if agent_busy {
+                                        msg_queue.push("/init".to_string());
+                                    } else {
+                                        messages.push(Msg { role: "user".into(), content: "/init (initialize AGENT.md + MEMORY.md)".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        persist(&messages, &mut session, &model);
+                                        agent_busy = true;
+                                        agent_handle = Some(spawn_agent_with_history(expanded, model.clone(), hist, tx.clone(), done_tx.clone()));
+                                    }
+                                    crate::telemetry::record("init");
+                                    // already handled textarea clear below; mark so we don't double-clear
+                                    textarea.select_all();
+                                    textarea.cut();
+                                    hist_idx = None;
+                                    ac_matches.clear();
+                                    ac_idx = 0;
+                                    continue;
+                                }
+                                _ if prompt.starts_with("/init") => {
+                                    let rest = prompt.strip_prefix("/init").unwrap_or("").trim();
+                                    if rest == "--help" || rest == "-h" || rest == "help" {
+                                        messages.push(Msg { role: "system".into(), content: "usage: /init — analyze project and create/update AGENT.md (+ CLAUDE.md mirror) and MEMORY.md (user persona, 3-5 sections). Files are auto-loaded on startup (project + global ~/.lean/ is handled automatically behind the scenes). AGENT.md is preferred; CLAUDE.md is kept for Claude Code compatibility.".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                    } else if !rest.is_empty() {
+                                        // /init with extra text — treat as note for the agent
+                                        let created = crate::context::ensure_init_files();
+                                        if !created.is_empty() {
+                                            messages.push(Msg { role: "system".into(), content: format!("init: created {} — enriching…", created.join(", ")), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        }
+                                        let cwd2 = crate::dir_guard::project_root().display().to_string();
+                                        let extra = format!("\nAdditional user note: {}", rest);
+                                        let init_prompt2 = format!(r#"Initialize project memory for lean. CWD: {cwd2}{extra}
+
+Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENT.md (project: overview, stack, commands, structure, conventions, architecture, gotchas — concise) and ensure ./CLAUDE.md mirrors it. For ./MEMORY.md (3-5 sections about the user), use ask_user if missing. Also ensure global ~/.lean/MEMORY.md exists behind the scenes if missing. Verify by reading files."#);
+                                        let hist = llm_history_for_spawn(&session, &messages);
+                                        let expanded = expand_at_mentions(&init_prompt2);
+                                        if agent_busy { msg_queue.push(prompt.clone()); } else {
+                                            messages.push(Msg { role: "user".into(), content: prompt.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                            persist(&messages, &mut session, &model);
+                                            agent_busy = true;
+                                            agent_handle = Some(spawn_agent_with_history(expanded, model.clone(), hist, tx.clone(), done_tx.clone()));
+                                        }
+                                        crate::telemetry::record("init");
+                                    } else {
+                                        messages.push(Msg { role: "system".into(), content: format!("unknown command: {}", prompt), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                    }
+                                    textarea.select_all();
+                                    textarea.cut();
+                                    hist_idx = None;
+                                    ac_matches.clear();
+                                    ac_idx = 0;
                                 }
                                 "/mcp" => {
                                     show_mcp = true;

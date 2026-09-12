@@ -137,7 +137,7 @@ lean --no-session            # run without persistence
 | **Overlays** | Approval prompts, session picker, and allowlist editor |
 | **Footer** | Top: mode badge (`NORM`/`PLAN`/`AUTO`), model + api (`chat`/`responses`/`anthropic`), cwd, spinner — Bottom: context-window bar (`X% / 1.0M`) + token usage |
 
-**Slash commands:** `/help` `/new` `/clear` `/exit` `/model` `/sessions` `/resume` `/allowlist` `/mcp` `/memory` `/auto-accept` `/plan` — `Shift+Tab` cycles `NORM→PLAN→AUTO` (`PLAN` = read-only planning, `AUTO` = session-only silent bypass)
+**Slash commands:** `/help` `/new` `/clear` `/exit` `/model` `/sessions` `/resume` `/allowlist` `/mcp` `/memory` `/auto-accept` `/plan` `/init` — `Shift+Tab` cycles `NORM→PLAN→AUTO` (`PLAN` = read-only planning, `AUTO` = session-only silent bypass). `/init` analyzes the project and creates `AGENT.md` (+ `CLAUDE.md` mirror) and `MEMORY.md` (user persona, 3-5 short sections); files are auto-loaded on startup (project + global `~/.lean/`).
 
 Sessions are persisted to `~/.lean/sessions/*.json`.
 
@@ -179,6 +179,9 @@ lean --dir-guard-disabled      # disable directory confinement guard
 | `~/.lean/memory.json` | Persistent memories |
 | `~/.lean/sessions/` | Persisted session history (pruned to 50 messages) |
 | `~/.lean/models.json` | Model aliases + provider config (see `api` field below) |
+| `./AGENT.md` / `./CLAUDE.md` | Project context (auto-loaded on startup, `CLAUDE.md` is a mirror for Claude Code compat) |
+| `./MEMORY.md` | User persona — 3-5 short sections about who you are (auto-loaded) |
+| `~/.lean/AGENT.md`, `~/.lean/CLAUDE.md`, `~/.lean/MEMORY.md` | Global context (also `~/.claude/CLAUDE.md` for compat) |
 | `./.env` | Project-local environment variables |
 
 ### Model Config (`~/.lean/models.json`)

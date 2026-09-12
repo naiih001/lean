@@ -124,7 +124,7 @@ fn current_system_prompt() -> &'static str {
     if is_plan_mode() { PLAN_SYSTEM_PROMPT } else if is_ask_mode() { ASK_SYSTEM_PROMPT } else { REGULAR_SYSTEM_PROMPT }
 }
 
-const TOTAL_BUDGET: usize = 4000;
+const TOTAL_BUDGET: usize = 12000;
 const SKILL_MAX_COUNT: usize = 8;
 const SKILL_LINE_MAX: usize = 120;
 
@@ -206,6 +206,10 @@ fn confinement_section() -> Option<String> {
     ))
 }
 
+fn context_section() -> Option<String> {
+    crate::context::load_context_section().map(|s| format!("\n\n{}", s))
+}
+
 fn mcp_section() -> String {
     let mcp_snap = crate::mcp::snapshot();
     if mcp_snap.is_empty() {
@@ -231,23 +235,31 @@ fn mcp_section() -> String {
 
 /// Assemble the full system prompt within `TOTAL_BUDGET`.
 ///
-/// Priority order: the base prompt (regular or plan) is never truncated, the confinement
-/// guard is kept when enabled, the skill catalog is shrunk line by line, and the
-/// MCP section is dropped first when the budget is exceeded.
+/// Priority order: the base prompt (regular or plan) is never truncated, the
+/// context files (AGENT.md / CLAUDE.md / MEMORY.md) are next (truncated if needed),
+/// the confinement guard is kept when enabled, the skill catalog is shrunk line by
+/// line, and the MCP section is dropped first when the budget is exceeded.
 pub async fn build_system_prompt() -> String {
     let base = current_system_prompt();
     let raw_catalog = skills::get_skill_catalog().await;
     let confinement = confinement_section();
+    let context = context_section();
 
-    let assemble = |catalog: &str| {
-        let mut prompt = format!("{}{}", base, skills_section(catalog));
+    let assemble = |catalog: &str, ctx: Option<&str>| {
+        let mut prompt = String::from(base);
+        if let Some(c) = ctx {
+            prompt.push_str(c);
+        }
+        prompt.push_str(&skills_section(catalog));
         if let Some(note) = &confinement {
             prompt.push_str(note);
         }
         prompt
     };
 
-    let prompt = assemble(&render_skill_catalog(&raw_catalog, SKILL_MAX_COUNT));
+    // Try with full context, full skills, and MCP.
+    let full_catalog = render_skill_catalog(&raw_catalog, SKILL_MAX_COUNT);
+    let prompt = assemble(&full_catalog, context.as_deref());
     if prompt.len() <= TOTAL_BUDGET {
         let with_mcp = format!("{}{}", prompt, mcp_section());
         if with_mcp.len() <= TOTAL_BUDGET {
@@ -255,11 +267,34 @@ pub async fn build_system_prompt() -> String {
         }
     }
 
-    // Over budget: shrink the skill catalog a line at a time, dropping MCP first.
+    // Over budget: first shrink the skill catalog a line at a time (keep context + confinement).
     for lines in (1..SKILL_MAX_COUNT).rev() {
-        let candidate = assemble(&render_skill_catalog(&raw_catalog, lines));
+        let catalog = render_skill_catalog(&raw_catalog, lines);
+        let candidate = assemble(&catalog, context.as_deref());
         if candidate.len() <= TOTAL_BUDGET {
             return candidate;
+        }
+    }
+
+    // Still over: truncate context to fit (keep at least base + confinement).
+    if let Some(ctx) = &context {
+        let mut minimal_ctx = truncate_to_bytes(ctx, TOTAL_BUDGET.saturating_sub(base.len() + confinement.as_ref().map(|s| s.len()).unwrap_or(0) + 500));
+        // If context was truncated, ensure we still have a marker
+        if minimal_ctx.len() < ctx.len() {
+            minimal_ctx.push_str("\n… [context truncated for budget]");
+        }
+        let candidate = assemble(&render_skill_catalog(&raw_catalog, 1), Some(&minimal_ctx));
+        if candidate.len() <= TOTAL_BUDGET {
+            return candidate;
+        }
+        // Drop skills entirely, keep truncated context
+        let mut no_skills = String::from(base);
+        no_skills.push_str(&minimal_ctx);
+        if let Some(note) = &confinement {
+            no_skills.push_str(note);
+        }
+        if no_skills.len() <= TOTAL_BUDGET {
+            return no_skills;
         }
     }
 
@@ -1262,7 +1297,7 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
 mod prompt_tests {
     use super::*;
     const BASE_BUDGET: usize = 3600;
-    const TOTAL_BUDGET: usize = 4000;
+    const TOTAL_BUDGET: usize = 12000;
 
     #[test]
     fn system_prompt_within_base_budget() {
