@@ -198,13 +198,23 @@ use std::sync::Mutex;
 use std::time::SystemTime;
 
 #[derive(Debug, Clone)]
+pub struct SubagentMsg {
+    pub role: String, // assistant, tool, thinking, system, user
+    pub content: String,
+    pub tool_name: Option<String>,
+    pub tool_args: Option<String>,
+    pub tool_id: Option<String>,
+    pub elapsed_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
 pub struct SubagentStatus {
     pub id: String,
     pub agent: String,
     pub task: String,
     pub status: String, // running, done, error
     pub started_at: SystemTime,
-    pub transcript: Vec<String>,
+    pub transcript: Vec<SubagentMsg>,
 }
 
 static SUBAGENTS: OnceLock<Mutex<Vec<SubagentStatus>>> = OnceLock::new();
@@ -223,9 +233,13 @@ pub fn register_subagent(id: String, agent: String, task: String) {
 
 
 pub fn append_subagent_transcript(id: &str, line: String) {
+    append_subagent_msg(id, SubagentMsg { role: "system".to_string(), content: line, tool_name: None, tool_args: None, tool_id: None, elapsed_ms: None });
+}
+
+pub fn append_subagent_msg(id: &str, msg: SubagentMsg) {
     let mut lock = subagents_lock().lock().unwrap();
     if let Some(s) = lock.iter_mut().find(|s| s.id == id) {
-        s.transcript.push(line);
+        s.transcript.push(msg);
         if s.transcript.len() > 200 {
             let excess = s.transcript.len() - 200;
             s.transcript.drain(0..excess);
@@ -238,7 +252,7 @@ pub fn kill_subagent(id: &str) -> bool {
     if let Some(s) = lock.iter_mut().find(|s| s.id == id) {
         if s.status == "running" {
             s.status = "killed".to_string();
-            s.transcript.push("[killed by user]".to_string());
+            s.transcript.push(SubagentMsg { role: "system".to_string(), content: "[killed by user]".to_string(), tool_name: None, tool_args: None, tool_id: None, elapsed_ms: None });
             return true;
         }
     }

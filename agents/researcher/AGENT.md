@@ -2,7 +2,7 @@
 name: researcher
 description: Web researcher — searches the web and synthesizes findings
 tools: web_search, web_fetch, read
-model: opencode/muse-spark-1.2-contributor-free
+model: local/mimo-v2.5-free
 thinking: medium
 auto-exit: true
 ---

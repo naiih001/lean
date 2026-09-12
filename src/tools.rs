@@ -525,28 +525,32 @@ async fn run_subagent(agent_name: &str, task: &str, label: &str) -> String {
     futures::pin_mut!(stream);
     let mut final_text = String::new();
     let mut last_error = None;
-    crate::agents::append_subagent_transcript(&id, format!("[{}] started: {}", agent_name, task));
+    let mut tool_start_times: std::collections::HashMap<String, std::time::Instant> = std::collections::HashMap::new();
+    crate::agents::append_subagent_msg(&id, crate::agents::SubagentMsg { role: "system".to_string(), content: format!("[{}] started: {}", agent_name, task), tool_name: None, tool_args: None, tool_id: None, elapsed_ms: None });
     while let Some(ev) = stream.next().await {
         match ev {
             crate::agent::AgentEvent::Text { delta } => {
                 final_text.push_str(&delta);
-                // push first 200 chars of delta as transcript line to keep lean
-                let preview = delta.chars().take(200).collect::<String>();
-                if !preview.trim().is_empty() {
-                    crate::agents::append_subagent_transcript(&id, preview);
+                if !delta.trim().is_empty() {
+                    crate::agents::append_subagent_msg(&id, crate::agents::SubagentMsg { role: "assistant".to_string(), content: delta.clone(), tool_name: None, tool_args: None, tool_id: None, elapsed_ms: None });
                 }
             },
-            crate::agent::AgentEvent::ToolStart { name, args, .. } => {
-                let args_str = format!("{:?}", args);
-                let preview = args_str.chars().take(80).collect::<String>();
-                crate::agents::append_subagent_transcript(&id, format!("{} {}", name, preview));
+            crate::agent::AgentEvent::Reasoning { delta } => {
+                if !delta.trim().is_empty() {
+                    crate::agents::append_subagent_msg(&id, crate::agents::SubagentMsg { role: "thinking".to_string(), content: delta.clone(), tool_name: None, tool_args: None, tool_id: None, elapsed_ms: None });
+                }
             },
-            crate::agent::AgentEvent::ToolResult { name, result, .. } => {
+            crate::agent::AgentEvent::ToolStart { name, args, id: tool_id } => {
+                let args_str = serde_json::to_string(&args).unwrap_or_else(|_| format!("{:?}", args));
+                tool_start_times.insert(tool_id.clone(), std::time::Instant::now());
+                crate::agents::append_subagent_msg(&id, crate::agents::SubagentMsg { role: "tool".to_string(), content: format!("{} {}", name, args_str), tool_name: Some(name.clone()), tool_args: Some(args_str), tool_id: Some(tool_id), elapsed_ms: None });
+            },
+            crate::agent::AgentEvent::ToolResult { name, result, id: tool_id, elapsed_ms } => {
                 if result.contains("Error") && name == "subagent" {
                     last_error = Some(result.clone());
                 }
-                let preview = result.chars().take(120).collect::<String>();
-                crate::agents::append_subagent_transcript(&id, format!("{} → {}", name, preview));
+                let elapsed = if elapsed_ms > 0 { elapsed_ms } else if let Some(start) = tool_start_times.remove(&tool_id) { start.elapsed().as_millis() as u64 } else { 0 };
+                crate::agents::append_subagent_msg(&id, crate::agents::SubagentMsg { role: "tool".to_string(), content: format!("{} → {}", name, result), tool_name: Some(name.clone()), tool_args: None, tool_id: Some(tool_id), elapsed_ms: Some(elapsed) });
             },
             crate::agent::AgentEvent::Done { text, .. } => { final_text = text; break; },
             _ => {}

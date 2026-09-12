@@ -2,7 +2,7 @@
 name: debugger
 description: Systematic debugger — 4-phase root-cause investigation before fixes
 tools: read, grep, find, ls, bash, web_search, web_fetch
-model: opencode/mimo-v2.5-free
+model: local/mimo-v2.5-free
 thinking: high
 subagent_agents: scout, researcher
 auto-exit: true

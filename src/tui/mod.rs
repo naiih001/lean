@@ -1107,24 +1107,32 @@ fn draw_subagent_detail(f: &mut Frame, area: Rect, idx: usize, scroll: u16) {
     let block = Block::default().borders(Borders::ALL).title(format!(" {} — {} [{}] — Esc: back  Shift+K: kill ", sub.agent, &sub.id[..8.min(sub.id.len())], sub.status)).style(Style::default().bg(THEME.page_bg)).border_style(Style::default().fg(ASHEN.frost));
     let inner = block.inner(area);
     f.render_widget(block, area);
-    let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(vec![Span::styled("Task: ", Style::default().fg(ASHEN.charcoal)), Span::styled(sub.task.clone(), Style::default().fg(ASHEN.bone))]));
-    lines.push(Line::from(Span::styled(format!("Status: {}  Started: {:?}", sub.status, sub.started_at), Style::default().fg(ASHEN.deep_ash))));
-    lines.push(Line::from(Span::styled("─".repeat(inner.width as usize), Style::default().fg(ASHEN.charcoal))));
+    // Header lines (task/status) rendered above transcript
+    let mut header_lines: Vec<Line> = Vec::new();
+    header_lines.push(Line::from(vec![Span::styled("Task: ", Style::default().fg(ASHEN.charcoal)), Span::styled(sub.task.clone(), Style::default().fg(ASHEN.bone))]));
+    header_lines.push(Line::from(Span::styled(format!("Status: {}  Started: {:?}", sub.status, sub.started_at), Style::default().fg(ASHEN.deep_ash))));
+    header_lines.push(Line::from(Span::styled("─".repeat(inner.width as usize), Style::default().fg(ASHEN.charcoal))));
+    let mut all_lines: Vec<Line> = Vec::new();
+    all_lines.extend(header_lines);
     if sub.transcript.is_empty() {
-        lines.push(Line::from(Span::styled("(no transcript yet — waiting for updates…)", Style::default().fg(ASHEN.charcoal).add_modifier(Modifier::ITALIC))));
+        all_lines.push(Line::from(Span::styled("(no transcript yet — waiting for updates…)", Style::default().fg(ASHEN.charcoal).add_modifier(Modifier::ITALIC))));
     } else {
-        for l in sub.transcript.iter().rev().take(100).rev() {
-            for part in l.lines() {
-                let s = if part.len() > inner.width as usize { format!("{}…", &part[..inner.width as usize -1]) } else { part.to_string() };
-                lines.push(Line::from(Span::styled(s, Style::default().fg(ASHEN.smoke))));
-            }
-        }
+        // Convert SubagentMsg -> Msg and reuse regular message rendering pipeline
+        let msgs: Vec<Msg> = sub.transcript.iter().map(|m| Msg {
+            role: m.role.clone(),
+            content: m.content.clone(),
+            tool_id: m.tool_id.clone(),
+            tool_name: m.tool_name.clone(),
+            tool_args: m.tool_args.clone(),
+            elapsed_ms: m.elapsed_ms,
+        }).collect();
+        let content_lines = build_content_lines(&msgs);
+        all_lines.extend(content_lines);
     }
-    let total = lines.len();
-    let para = Paragraph::new(lines).scroll((scroll, 0));
+    let wrapped = wrap_lines(all_lines, inner.width as usize);
+    let total = wrapped.len();
+    let para = Paragraph::new(wrapped).scroll((scroll, 0));
     f.render_widget(para, inner);
-    // scrollbar if needed
     if total > inner.height as usize {
         draw_scrollbar(f, inner, total, inner.height as usize, scroll);
     }
@@ -1568,36 +1576,35 @@ fn detect_agent_mention(textarea: &TextArea<'_>) -> Option<AtMention> {
 }
 
 fn parse_forced_agent(input: &str) -> Option<(String, String)> {
-    // Find first #<name> in input
-    let mut search = input;
-    let mut offset = 0usize;
-    while let Some(idx) = search.find("#") {
-        let start = offset + idx;
-        let rest = &input[start + "#".len()..];
-        // extract agent name: alnum, -, _
-        let mut name_end = 0usize;
-        for c in rest.chars() {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                name_end += c.len_utf8();
-            } else { break; }
+    // kept for backward compat — use parse_all_forced_agents
+    parse_all_forced_agents(input).into_iter().next()
+}
+
+fn parse_all_forced_agents(input: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let known: std::collections::HashSet<String> = collect_agent_names_sync().into_iter().map(|(n,_)| n).collect();
+    let mut i = 0usize;
+    let chars: Vec<char> = input.chars().collect();
+    while i < chars.len() {
+        if chars[i] == '#' {
+            let prev_ok = if i==0 { true } else { let pc = chars[i-1]; pc.is_whitespace() || "("'`".contains(pc) };
+            if prev_ok {
+                let mut j = i+1;
+                while j < chars.len() && (chars[j].is_ascii_alphanumeric() || chars[j]=='-' || chars[j]=='_') { j+=1; }
+                if j > i+1 {
+                    let name: String = chars[i+1..j].iter().collect();
+                    if known.contains(&name) {
+                        // task is the rest of the sentence after name, but for inline hint we just want name
+                        out.push((name, String::new()));
+                        i = j;
+                        continue;
+                    }
+                }
+            }
         }
-        if name_end == 0 {
-            // invalid, continue searching after this @
-            search = &search[idx+1..];
-            offset = start + 1;
-            continue;
-        }
-        let name = rest[..name_end].to_string();
-        let task = rest[name_end..].trim().trim_start_matches(|c| c=='-' || c==':' || c==' ').to_string();
-        // Also check if input has more before # — task is remainder after name, but if task empty, use whole input without @agent prefix? Use remainder
-        let final_task = if task.is_empty() {
-            // if no task after name, use everything after #<name> if empty, fallback to input without the @agent part
-            // If input was exactly "#scout do X", task is "do X". If input was "#scout" alone, use "continue" or empty
-            "".to_string()
-        } else { task };
-        return Some((name, final_task));
+        i+=1;
     }
-    None
+    out
 }
 
 fn skill_autocomplete_matches(prefix: &str) -> Vec<String> {
@@ -3668,65 +3675,19 @@ async fn app_loop(
                     if submit_pending {
                         let raw = textarea.lines().join("\n");
                         let prompt_raw = raw.trim().to_string();
-                        // --- Forced # intercept (skill-like) ---
-                        if let Some((agent_name, task)) = parse_forced_agent(&prompt_raw) {
-                            let display_task = if task.is_empty() { prompt_raw.clone() } else { task.clone() };
-                            // Validate agent exists (sync check via blocking)
-                            let agent_exists = {
-                                // Use sync file check for quick validation before async load
-                                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-                                let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("~"));
-                                let bases = vec![ cwd.join("agents"), cwd.join(".lean").join("agents"), home.join(".lean").join("agents") ];
-                                let mut found = false;
-                                for base in &bases {
-                                    if base.join(&agent_name).join("AGENT.md").exists() { found = true; break; }
-                                    // also check if name matches frontmatter name in any AGENT.md
-                                }
-                                found
-                            };
-                            // Clear input immediately
-                            textarea.select_all();
-                            textarea.cut();
-                            ac_matches.clear();
-                            submit_pending = false;
-                            if !agent_exists {
-                                // Try async load to get available list for error
-                                let available = {
-                                    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-                                    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("~"));
-                                    let bases = vec![ cwd.join("agents"), cwd.join(".lean").join("agents"), home.join(".lean").join("agents") ];
-                                    let mut names = Vec::new();
-                                    for base in &bases {
-                                        if let Ok(rd) = std::fs::read_dir(base) {
-                                            for e in rd.filter_map(|e| e.ok()) {
-                                                if let Ok(ft) = e.file_type() { if !ft.is_dir() { continue; } } else { continue; }
-                                                names.push(e.file_name().to_string_lossy().to_string());
-                                            }
-                                        }
-                                    }
-                                    names.sort();
-                                    names.dedup();
-                                    if names.is_empty() { "none".to_string() } else { names.join(", ") }
-                                };
-                                messages.push(Msg { role: "system".into(), content: format!("Unknown agent \"{}\" — available: {}", agent_name, available), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None });
-                                dirty = true;
-                                continue;
-                            }
-                            let placeholder = if display_task.is_empty() { format!("#{} (forced)", agent_name) } else { format!("#{} {}", agent_name, display_task) };
-                            messages.push(Msg { role: "user".into(), content: placeholder.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None });
-                            messages.push(Msg { role: "system".into(), content: format!("→ forced subagent `{}` spawned — see summary bar / Ctrl+O", agent_name), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None });
-                            // Spawn subagent in background (don't block UI)
-                            let agent_clone = agent_name.clone();
-                            let task_clone = if display_task.is_empty() { placeholder.clone() } else { display_task.clone() };
-                            tokio::spawn(async move {
-                                let _ = crate::tools::execute_tool("subagent", serde_json::json!({"agent": agent_clone, "task": task_clone})).await;
-                            });
-                            dirty = true;
-                            continue;
+                        // --- Inline # hint: keep text + add system hint, let main agent delegate via subagent tool ---
+                        let forced_agents = parse_all_forced_agents(&prompt_raw);
+                        let mut inline_hint = String::new();
+                        if !forced_agents.is_empty() {
+                            let names: Vec<String> = forced_agents.iter().map(|(n,_)| n.clone()).collect();
+                            inline_hint = format!("\n\n[hint: user included #{} — please delegate relevant subtasks to those agents via `subagent` tool (agent field). You may run them in parallel and keep working; you will be woken when they return.]", names.join(", #"));
                         }
-                        // Keep display as raw, but expand @files for LLM
+                        // Keep display as raw, but expand @files for LLM and append inline # hint
                         let prompt = prompt_raw.clone();
-                        let expanded = expand_at_mentions(&prompt_raw);
+                        let mut expanded = expand_at_mentions(&prompt_raw);
+                        if !inline_hint.is_empty() {
+                            expanded.push_str(&inline_hint);
+                        }
                         if prompt.is_empty() {
                             // skip
                         } else if prompt.starts_with('/') {

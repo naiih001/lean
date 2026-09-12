@@ -3,7 +3,7 @@ name: worker
 description: General-purpose worker — reads, writes, and edits code
 tools: read, write, edit, bash, grep, find, ls, web_search, web_fetch
 subagent_agents: scout, researcher
-model: opencode/mimo-v2.5-free
+model: local/mimo-v2.5-free
 thinking: high
 auto-exit: true
 ---
