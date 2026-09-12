@@ -29,7 +29,6 @@ pub async fn run(opts: RunOpts) -> anyhow::Result<()> {
     crate::dir_guard::set_disabled(opts.dir_guard_disabled);
     crate::dir_guard::init(None);
     crate::question::set_interactive(true);
-    crate::agent::load_persisted_mode();
     let _model = opts.model.clone();
 
     crossterm::terminal::enable_raw_mode()?;
@@ -892,7 +891,7 @@ fn draw_input(f: &mut Frame, area: Rect, textarea: &mut TextArea<'_>) {
     );
     textarea.set_cursor_line_style(Style::default().bg(THEME.input_bg));
     textarea.set_placeholder_text(
-        "  ▸  type a message…  (/help • Enter send • Shift+Enter newline • Shift+Tab NORM/PLAN/AUTO)",
+        "  ▸  type a message…  (/help • Enter send • Shift+Enter newline • Shift+Tab NORM/PLAN/ASK/AUTO)",
     );
     textarea.set_placeholder_style(Style::default().fg(ASHEN.charcoal).bg(THEME.input_bg));
     // prompt gutter: we prepend via block title style instead of manual truncation
@@ -993,6 +992,7 @@ fn draw_footer(
     let (mode_badge, mode_style) = match crate::agent::current_mode() {
         crate::agent::Mode::Norm => (format!(" NORM "), Style::default().fg(ASHEN.slate).bg(THEME.header_bg).add_modifier(Modifier::BOLD)),
         crate::agent::Mode::Plan => (format!(" PLAN "), Style::default().fg(ASHEN.bone).bg(ASHEN.frost).add_modifier(Modifier::BOLD)),
+        crate::agent::Mode::Ask => (format!(" ASK "), Style::default().fg(ASHEN.bone).bg(ASHEN.moss).add_modifier(Modifier::BOLD)),
         crate::agent::Mode::Auto => (format!(" AUTO "), Style::default().fg(ASHEN.bone).bg(ASHEN.ember).add_modifier(Modifier::BOLD)),
     };
     let spinner_char = if agent_busy {
@@ -2251,7 +2251,7 @@ async fn app_loop(
         );
         ta.set_cursor_line_style(Style::default().bg(THEME.input_bg));
         ta.set_placeholder_text(
-            "  ▸  type a message…  (/help • Enter send • Shift+Enter newline • Shift+Tab NORM/PLAN/AUTO)",
+            "  ▸  type a message…  (/help • Enter send • Shift+Enter newline • Shift+Tab NORM/PLAN/ASK/AUTO)",
         );
         ta.set_placeholder_style(Style::default().fg(ASHEN.charcoal).bg(THEME.input_bg));
         ta.set_block(
@@ -2489,7 +2489,7 @@ async fn app_loop(
                     }
                 }
                 Event::Key(k) => {
-                    // Global mode cycle: Shift+Tab circles NORM → PLAN → AUTO → NORM — must be before any modal hijack, wins over wizard BackTab
+                    // Global mode cycle: Shift+Tab circles NORM → PLAN → ASK → AUTO → NORM — must be before any modal hijack, wins over wizard BackTab
                     let is_shift_tab = k.code == KeyCode::BackTab
                         || (k.code == KeyCode::Tab && k.modifiers.contains(KeyModifiers::SHIFT));
                     if is_shift_tab {
@@ -2507,6 +2507,9 @@ async fn app_loop(
                             },
                             crate::agent::Mode::Plan => {
                                 crate::telemetry::record("mode_plan");
+                            },
+                            crate::agent::Mode::Ask => {
+                                crate::telemetry::record("mode_ask");
                             },
                             crate::agent::Mode::Norm => {
                                 crate::telemetry::record("mode_norm");
@@ -3232,7 +3235,7 @@ async fn app_loop(
                                 "/help" => {
                                     messages.push(Msg {
                                         role: "system".into(),
-                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /mcp /memory stats|consolidate /model <name> /clear /exit /auto-accept /plan  ·  Enter send · Shift+Enter newline · Shift+Tab NORM/PLAN/AUTO · @file $skill · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll — /plan toggles PLAN, /auto-accept toggles AUTO, Shift+Tab cycles".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /mcp /memory stats|consolidate /model <name> /clear /exit /auto-accept /plan  ·  Enter send · Shift+Enter newline · Shift+Tab NORM/PLAN/ASK/AUTO · @file $skill · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll — /plan toggles PLAN, /auto-accept toggles AUTO, Shift+Tab cycles".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                 }
                                 "/plan" => {
                                     let next = if crate::agent::current_mode() == crate::agent::Mode::Plan { crate::agent::Mode::Norm } else { crate::agent::Mode::Plan };
