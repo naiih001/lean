@@ -2275,6 +2275,15 @@ async fn app_loop(
 
     // Redraw only when something changed; the spinner forces redraws while busy.
     let mut dirty = true;
+    // CPU fix: cache rendered content so idle ticks (250ms) don't rebuild markdown 20×/sec
+    let mut cached_wrapped_content: Vec<Line<'static>> = Vec::new();
+    let mut cached_total_lines: usize = 0;
+    let mut cached_content_height: usize = 0;
+    let mut cached_chunks: Vec<Rect> = Vec::new();
+    let mut cached_content_area: Rect = Rect { x: 0, y: 3, width: 80, height: 10 };
+    let mut cached_term_size_width: u16 = 0;
+    let mut cached_content_fingerprint: usize = 0; // sum of content lens + msg count
+    let mut last_persist_fingerprint: usize = 0;
 
     loop {
         // Poll for approval requests — suppressed while auto-accept is ON
@@ -2329,10 +2338,29 @@ async fn app_loop(
         };
         let content_height = chunks[3].height as usize;
 
-        // Build content lines once, wrap once, use for both counting and rendering
-        let content_lines = build_content_lines(&messages);
-        let wrapped_content = wrap_lines(content_lines, chunks[3].width as usize);
-        let total_lines = wrapped_content.len();
+        // Only rebuild wrapped content when dirty and fingerprint/size changed; reuse cached otherwise
+        let fingerprint: usize = messages.len().wrapping_add(messages.iter().map(|m| m.content.len()).sum::<usize>());
+        let needs_rebuild = dirty
+            && (cached_wrapped_content.is_empty()
+                || fingerprint != cached_content_fingerprint
+                || cached_term_size_width != term_size.width
+                || cached_content_height != content_height
+                || cached_chunks.len() != chunks.len());
+        let (wrapped_content, total_lines) = if needs_rebuild {
+            let content_lines = build_content_lines(&messages);
+            let wrapped = wrap_lines(content_lines, chunks[3].width as usize);
+            let total = wrapped.len();
+            cached_wrapped_content = wrapped.clone();
+            cached_total_lines = total;
+            cached_content_height = content_height;
+            cached_term_size_width = term_size.width;
+            cached_chunks = chunks.to_vec();
+            cached_content_area = content_area;
+            cached_content_fingerprint = fingerprint;
+            (wrapped, total)
+        } else {
+            (cached_wrapped_content.clone(), cached_total_lines)
+        };
         if auto_scroll {
             scroll = total_lines.saturating_sub(content_height) as u16;
         }
@@ -2405,8 +2433,8 @@ async fn app_loop(
         }
 
         // Handle keyboard and mouse events
-        // Poll fast while the spinner is animating, slower when idle.
-        let poll_ms = if agent_busy { 16 } else { 50 };
+        // Poll fast while the spinner is animating (10fps), slower when idle (4fps) — saves ~75% CPU idle
+        let poll_ms = if agent_busy { 100 } else { 250 };
         if event::poll(std::time::Duration::from_millis(poll_ms))? {
             let term_event = event::read()?;
             dirty = true;
@@ -3608,9 +3636,13 @@ async fn app_loop(
             }
         }
 
-        // Persist session (fire-and-forget, cheap json write)
-        persist(&messages, &mut session, &model);
-        // Advance spinner; force a redraw while it is animating.
+        // Persist session only when content changed (was every tick ~20Hz)
+        let persist_fp: usize = messages.len().wrapping_add(messages.iter().map(|m| m.content.len()).sum::<usize>());
+        if persist_fp != last_persist_fingerprint {
+            persist(&messages, &mut session, &model);
+            last_persist_fingerprint = persist_fp;
+        }
+        // Advance spinner; force a redraw while it is animating — now 10fps not 60fps
         if agent_busy {
             spinner_tick = spinner_tick.wrapping_add(1);
             dirty = true;
