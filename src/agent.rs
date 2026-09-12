@@ -975,13 +975,32 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
                 let tool_calls_json: Vec<Value> = ordered.iter().map(|(_, acc)| json!({"id": acc.id, "type": "function", "function": {"name": acc.name, "arguments": acc.args}})).collect();
                 messages.push(json!({"role": "assistant", "content": accum_text, "tool_calls": tool_calls_json}));
                 for (id, _name, result, _) in tool_results {
+                    // Option A: keep tool content string-only, send image as follow-up user message
+                    if let Some(img_start) = result.find("<<IMAGE:") {
+                        let meta = result[..img_start].trim_end();
+                        let after = &result[img_start+8..];
+                        if let Some(colon_pos) = after.find(':') {
+                            let mime = &after[..colon_pos];
+                            let b64_raw = after[colon_pos+1..].trim_end_matches(">>");
+                            const MAX_B64_LEN: usize = 68_000; // ~50KB
+                            let tool_text = if meta.is_empty() { "Image read follows in next message." } else { meta };
+                            let truncated_tool = truncate_for_llm(tool_text);
+                            messages.push(json!({"role": "tool", "tool_call_id": id, "content": truncated_tool}));
+                            if b64_raw.len() > MAX_B64_LEN {
+                                messages.push(json!({"role": "user", "content": format!("[image from tool {} omitted — {:.1} KB too large, max 50KB]", _name, b64_raw.len() as f64 * 0.75 / 1024.0)}));
+                            } else {
+                                let is_valid = b64_raw.chars().all(|c| c.is_ascii_alphanumeric() || c=='+' || c=='/' || c=='=');
+                                if !is_valid {
+                                    messages.push(json!({"role": "user", "content": "[image data invalid — omitted]"}));
+                                } else {
+                                    messages.push(json!({"role": "user", "content": [{"type":"text","text": format!("[image from {}: {}]", _name, mime)},{"type":"image_url","image_url":{"url": format!("data:{};base64,{}", mime, b64_raw)}}]}));
+                                }
+                            }
+                            continue;
+                        }
+                    }
                     let truncated = truncate_for_llm(&result);
-                    let content: Value = if let Some(img_start) = result.find("<<IMAGE:") {
-                        let meta_line = result[..img_start].trim_end();
-                        let after_marker = &result[img_start+8..];
-                        if let Some(colon_pos) = after_marker.find(':') { let mime=&after_marker[..colon_pos]; let b64=after_marker[colon_pos+1..].trim_end_matches(">>"); json!([{"type":"text","text":meta_line},{"type":"image_url","image_url":{"url":format!("data:{};base64,{}",mime,b64)}}]) } else { json!(truncated) }
-                    } else { json!(truncated) };
-                    messages.push(json!({"role": "tool", "tool_call_id": id, "content": content}));
+                    messages.push(json!({"role": "tool", "tool_call_id": id, "content": truncated}));
                 }
                 let _ = usage;
             }
@@ -1136,17 +1155,31 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
             let tool_calls_json: Vec<Value> = ordered.iter().map(|(_, acc)| json!({"id": acc.id, "type": "function", "function": {"name": acc.name, "arguments": acc.args}})).collect();
             messages.push(json!({"role": "assistant", "content": accum_text, "tool_calls": tool_calls_json}));
             for (id, _name, result, _) in tool_results {
+                if let Some(img_start) = result.find("<<IMAGE:") {
+                    let meta = result[..img_start].trim_end();
+                    let after = &result[img_start + 8..];
+                    if let Some(colon_pos) = after.find(':') {
+                        let mime = &after[..colon_pos];
+                        let b64_raw = after[colon_pos + 1..].trim_end_matches(">>");
+                        const MAX_B64_LEN: usize = 68_000;
+                        let tool_text = if meta.is_empty() { "Image read follows in next message." } else { meta };
+                        let truncated_tool = truncate_for_llm(tool_text);
+                        messages.push(json!({"role": "tool", "tool_call_id": id, "content": truncated_tool}));
+                        if b64_raw.len() > MAX_B64_LEN {
+                            messages.push(json!({"role": "user", "content": format!("[image from tool {} omitted — {:.1} KB too large, max 50KB]", _name, b64_raw.len() as f64 * 0.75 / 1024.0)}));
+                        } else {
+                            let is_valid = b64_raw.chars().all(|c| c.is_ascii_alphanumeric() || c=='+' || c=='/' || c=='=');
+                            if !is_valid {
+                                messages.push(json!({"role": "user", "content": "[image data invalid — omitted]"}));
+                            } else {
+                                messages.push(json!({"role": "user", "content": [{"type":"text","text": format!("[image from {}: {}]", _name, mime)},{"type":"image_url","image_url":{"url": format!("data:{};base64,{}", mime, b64_raw)}}]}));
+                            }
+                        }
+                        continue;
+                    }
+                }
                 let truncated = truncate_for_llm(&result);
-                let content: Value = if let Some(img_start) = result.find("<<IMAGE:") {
-                    let meta_line = result[..img_start].trim_end();
-                    let after_marker = &result[img_start + 8..];
-                    if let Some(colon_pos) = after_marker.find(':') {
-                        let mime = &after_marker[..colon_pos];
-                        let b64 = after_marker[colon_pos + 1..].trim_end_matches(">>");
-                        json!([{"type": "text", "text": meta_line},{"type": "image_url", "image_url": {"url": format!("data:{};base64,{}", mime, b64)}}])
-                    } else { json!(truncated) }
-                } else { json!(truncated) };
-                messages.push(json!({"role": "tool", "tool_call_id": id, "content": content}));
+                messages.push(json!({"role": "tool", "tool_call_id": id, "content": truncated}));
             }
             let _ = usage;
         }
