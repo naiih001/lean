@@ -1482,6 +1482,124 @@ fn list_skill_names_sync() -> Vec<String> {
     v
 }
 
+fn collect_agent_names_sync() -> Vec<(String,String)> {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+    let bases = vec![ cwd.join("agents"), cwd.join(".lean").join("agents"), home.join(".lean").join("agents") ];
+    let mut map: HashMap<String, String> = HashMap::new();
+    for base in &bases {
+        if let Ok(rd) = std::fs::read_dir(base) {
+            for entry in rd.filter_map(|e| e.ok()) {
+                let ft = match entry.file_type() { Ok(ft) => ft, Err(_) => continue };
+                if !ft.is_dir() { continue; }
+                let ag = entry.path().join("AGENT.md");
+                if !ag.exists() { continue; }
+                let raw = std::fs::read_to_string(&ag).unwrap_or_default();
+                let mut name = entry.file_name().to_string_lossy().to_string();
+                let mut desc = String::new();
+                for line in raw.lines() {
+                    if let Some((k,v)) = line.split_once(':') {
+                        let k = k.trim();
+                        let v = v.trim().trim_matches('"').trim_matches('\'');
+                        if k=="name" && !v.is_empty() { name = v.to_string(); }
+                        if k=="description" && !v.is_empty() && desc.is_empty() { desc = v.to_string(); }
+                    }
+                }
+                if !map.contains_key(&name) {
+                    map.insert(name.clone(), desc);
+                }
+            }
+        }
+    }
+    let mut v: Vec<(String,String)> = map.into_iter().collect();
+    v.sort_by(|a,b| a.0.cmp(&b.0));
+    v
+}
+
+fn agent_autocomplete_matches(prefix: &str) -> Vec<String> {
+    let all = collect_agent_names_sync();
+    let lower = prefix.to_lowercase();
+    let mut out = Vec::new();
+    for (name, desc) in all {
+        if lower.is_empty() || name.to_lowercase().starts_with(&lower) || name.to_lowercase().contains(&lower) {
+            let display = if desc.is_empty() { format!("@agent:{}", name) } else {
+                let d = if desc.len() > 40 { format!("{}…", &desc[..40]) } else { desc };
+                format!("@agent:{} — {}", name, d)
+            };
+            out.push(display);
+            if out.len() >= 20 { break; }
+        }
+    }
+    out
+}
+
+fn detect_agent_mention(textarea: &TextArea<'_>) -> Option<AtMention> {
+    let c = textarea.cursor();
+    let row = c.0;
+    let col = c.1;
+    let lines = textarea.lines();
+    if row >= lines.len() { return None; }
+    let line = &lines[row];
+    let chars: Vec<char> = line.chars().collect();
+    if col > chars.len() { return None; }
+    let target = "@agent:";
+    let mut at_col: Option<usize> = None;
+    for i in (0..col).rev() {
+        if i + target.len() <= chars.len() {
+            let slice: String = chars[i..i+target.len()].iter().collect();
+            if slice == target {
+                let prev_ok = if i==0 { true } else { let pc = chars[i-1]; pc.is_whitespace() || "(\"'`".contains(pc) };
+                if prev_ok {
+                    at_col = Some(i);
+                    break;
+                }
+            }
+        }
+    }
+    let at = at_col?;
+    let prefix_start = at + target.len();
+    if prefix_start > col { return None; }
+    let prefix_chars = &chars[prefix_start..col];
+    if prefix_chars.iter().any(|c| c.is_whitespace()) { return None; }
+    let prefix: String = prefix_chars.iter().collect();
+    Some(AtMention { prefix, row, col, at_col: at })
+}
+
+fn parse_forced_agent(input: &str) -> Option<(String, String)> {
+    // Find first @agent:<name> in input
+    let mut search = input;
+    let mut offset = 0usize;
+    while let Some(idx) = search.find("@agent:") {
+        let start = offset + idx;
+        let rest = &input[start + "@agent:".len()..];
+        // extract agent name: alnum, -, _
+        let mut name_end = 0usize;
+        for c in rest.chars() {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                name_end += c.len_utf8();
+            } else { break; }
+        }
+        if name_end == 0 {
+            // invalid, continue searching after this @
+            search = &search[idx+1..];
+            offset = start + 1;
+            continue;
+        }
+        let name = rest[..name_end].to_string();
+        let task = rest[name_end..].trim().trim_start_matches(|c| c=='-' || c==':' || c==' ').to_string();
+        // Also check if input has more before @agent: — task is remainder after name, but if task empty, use whole input without @agent prefix? Use remainder
+        let final_task = if task.is_empty() {
+            // if no task after name, use everything after @agent:<name> if empty, fallback to input without the @agent part
+            // If input was exactly "@agent:scout do X", task is "do X". If input was "@agent:scout" alone, use "continue" or empty
+            "".to_string()
+        } else { task };
+        return Some((name, final_task));
+    }
+    None
+}
+
 fn skill_autocomplete_matches(prefix: &str) -> Vec<String> {
     let all = list_skill_names_sync();
     if prefix.is_empty() {
@@ -1717,13 +1835,16 @@ fn clipboard_image_marker() -> Option<String> {
 }
 
 fn current_completions(textarea: &TextArea<'_>) -> Vec<String> {
+    if let Some(m) = detect_agent_mention(textarea) {
+        return agent_autocomplete_matches(&m.prefix);
+    }
     if let Some(m) = detect_skill_mention(textarea) {
         return skill_autocomplete_matches(&m.prefix);
     }
     if let Some(m) = detect_at_mention(textarea) {
         return file_autocomplete_matches(&m.prefix);
     }
-    let cur = textarea.lines().join("\n");
+    let cur = textarea.lines().get(textarea.cursor().0).cloned().unwrap_or_default();
     autocomplete_matches(&cur)
 }
 
@@ -3232,7 +3353,30 @@ async fn app_loop(
                             // Enter: if autocomplete visible, accept it first
                             if !ac_matches.is_empty() {
                                 let chosen = ac_matches[ac_idx].clone();
-                                if let Some(m) = detect_skill_mention(&textarea) {
+                                if let Some(m) = detect_agent_mention(&textarea) {
+                                    // @agent: completion — chosen is like "@agent:scout — desc"
+                                    let agent_name = chosen.split('—').next().unwrap_or(&chosen).trim().trim_start_matches("@agent:").trim().to_string();
+                                    let full = format!("@agent:{}", agent_name);
+                                    let mut lines = textarea.lines().to_vec();
+                                    if m.row < lines.len() {
+                                        let line = &lines[m.row];
+                                        let chars: Vec<char> = line.chars().collect();
+                                        let before: String = chars[..m.at_col].iter().collect();
+                                        let after: String = chars[m.col..].iter().collect();
+                                        let new_line2 = format!("{}{} {}", before, full, after);
+                                        lines[m.row] = new_line2;
+                                        let new_text = lines.join("\n");
+                                        let new_col = m.at_col + full.len() + 1;
+                                        textarea.select_all();
+                                        textarea.cut();
+                                        textarea.insert_str(new_text);
+                                        textarea.move_cursor(CursorMove::Jump(m.row as u16, new_col as u16));
+                                    } else {
+                                        textarea.select_all();
+                                        textarea.cut();
+                                        textarea.insert_str(full);
+                                    }
+                                } else if let Some(m) = detect_skill_mention(&textarea) {
                                     let mut lines = textarea.lines().to_vec();
                                     if m.row < lines.len() {
                                         let line = &lines[m.row];
@@ -3349,7 +3493,30 @@ async fn app_loop(
                         KeyCode::Tab => {
                             if !ac_matches.is_empty() {
                                 let chosen = ac_matches[ac_idx].clone();
-                                if let Some(m) = detect_skill_mention(&textarea) {
+                                if let Some(m) = detect_agent_mention(&textarea) {
+                                    // @agent: completion — chosen is like "@agent:scout — desc"
+                                    let agent_name = chosen.split('—').next().unwrap_or(&chosen).trim().trim_start_matches("@agent:").trim().to_string();
+                                    let full = format!("@agent:{}", agent_name);
+                                    let mut lines = textarea.lines().to_vec();
+                                    if m.row < lines.len() {
+                                        let line = &lines[m.row];
+                                        let chars: Vec<char> = line.chars().collect();
+                                        let before: String = chars[..m.at_col].iter().collect();
+                                        let after: String = chars[m.col..].iter().collect();
+                                        let new_line2 = format!("{}{} {}", before, full, after);
+                                        lines[m.row] = new_line2;
+                                        let new_text = lines.join("\n");
+                                        let new_col = m.at_col + full.len() + 1;
+                                        textarea.select_all();
+                                        textarea.cut();
+                                        textarea.insert_str(new_text);
+                                        textarea.move_cursor(CursorMove::Jump(m.row as u16, new_col as u16));
+                                    } else {
+                                        textarea.select_all();
+                                        textarea.cut();
+                                        textarea.insert_str(full);
+                                    }
+                                } else if let Some(m) = detect_skill_mention(&textarea) {
                                     let mut lines = textarea.lines().to_vec();
                                     if m.row < lines.len() {
                                         let line = &lines[m.row];
@@ -3501,6 +3668,62 @@ async fn app_loop(
                     if submit_pending {
                         let raw = textarea.lines().join("\n");
                         let prompt_raw = raw.trim().to_string();
+                        // --- Forced @agent: intercept (skill-like) ---
+                        if let Some((agent_name, task)) = parse_forced_agent(&prompt_raw) {
+                            let display_task = if task.is_empty() { prompt_raw.clone() } else { task.clone() };
+                            // Validate agent exists (sync check via blocking)
+                            let agent_exists = {
+                                // Use sync file check for quick validation before async load
+                                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                                let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("~"));
+                                let bases = vec![ cwd.join("agents"), cwd.join(".lean").join("agents"), home.join(".lean").join("agents") ];
+                                let mut found = false;
+                                for base in &bases {
+                                    if base.join(&agent_name).join("AGENT.md").exists() { found = true; break; }
+                                    // also check if name matches frontmatter name in any AGENT.md
+                                }
+                                found
+                            };
+                            // Clear input immediately
+                            textarea.select_all();
+                            textarea.cut();
+                            ac_matches.clear();
+                            submit_pending = false;
+                            if !agent_exists {
+                                // Try async load to get available list for error
+                                let available = {
+                                    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                                    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("~"));
+                                    let bases = vec![ cwd.join("agents"), cwd.join(".lean").join("agents"), home.join(".lean").join("agents") ];
+                                    let mut names = Vec::new();
+                                    for base in &bases {
+                                        if let Ok(rd) = std::fs::read_dir(base) {
+                                            for e in rd.filter_map(|e| e.ok()) {
+                                                if let Ok(ft) = e.file_type() { if !ft.is_dir() { continue; } } else { continue; }
+                                                names.push(e.file_name().to_string_lossy().to_string());
+                                            }
+                                        }
+                                    }
+                                    names.sort();
+                                    names.dedup();
+                                    if names.is_empty() { "none".to_string() } else { names.join(", ") }
+                                };
+                                messages.push(Msg { role: "system".into(), content: format!("Unknown agent \"{}\" — available: {}", agent_name, available), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None });
+                                dirty = true;
+                                continue;
+                            }
+                            let placeholder = if display_task.is_empty() { format!("@agent:{} (forced)", agent_name) } else { format!("@agent:{} {}", agent_name, display_task) };
+                            messages.push(Msg { role: "user".into(), content: placeholder.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None });
+                            messages.push(Msg { role: "system".into(), content: format!("→ forced subagent `{}` spawned — see summary bar / Ctrl+O", agent_name), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None });
+                            // Spawn subagent in background (don't block UI)
+                            let agent_clone = agent_name.clone();
+                            let task_clone = if display_task.is_empty() { placeholder.clone() } else { display_task.clone() };
+                            tokio::spawn(async move {
+                                let _ = crate::tools::execute_tool("subagent", serde_json::json!({"agent": agent_clone, "task": task_clone})).await;
+                            });
+                            dirty = true;
+                            continue;
+                        }
                         // Keep display as raw, but expand @files for LLM
                         let prompt = prompt_raw.clone();
                         let expanded = expand_at_mentions(&prompt_raw);
