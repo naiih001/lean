@@ -2,7 +2,7 @@
 name: scout
 description: Fast codebase recon — explores files, finds patterns, maps architecture
 tools: read, grep, find, ls
-model: opencode/muse-spark-1.2-contributor-free
+model: opencode/mimo-v2.5-free
 thinking: low
 subagent_agents:
 auto-exit: true
