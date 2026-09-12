@@ -675,6 +675,33 @@ fn build_user_content(prompt: &str) -> Value {
     }
 }
 
+/// Strip image content from messages for models that don't support vision.
+/// Replaces image_url parts with a text placeholder, preserving text parts.
+fn strip_images_for_non_vision(messages: &[Value]) -> Vec<Value> {
+    messages.iter().map(|m| {
+        let mut out = m.clone();
+        if let Some(content) = out.get("content") {
+            if let Some(arr) = content.as_array() {
+                let has_image = arr.iter().any(|p| p.get("type").and_then(|t| t.as_str()) == Some("image_url"));
+                if has_image {
+                    let text_parts: Vec<String> = arr.iter()
+                        .filter_map(|p| {
+                            let tp = p.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                            match tp {
+                                "text" => p.get("text").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                                "image_url" => Some("[image omitted — model does not support vision]".to_string()),
+                                _ => None,
+                            }
+                        })
+                        .collect();
+                    out["content"] = json!(text_parts.join("\n"));
+                }
+            }
+        }
+        out
+    }).collect()
+}
+
 pub fn run_agent(user_prompt: String, model: String, max_steps: usize) -> impl Stream<Item = AgentEvent> {
     run_agent_with_history(user_prompt, model, max_steps, Vec::new())
 }
@@ -690,6 +717,7 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
             }
         };
         let api_mode = resolved.api_mode.clone();
+        let supports_vision = resolved.vision;
         if api_mode == crate::models::ApiMode::Responses {
             // Responses branch keeps a chat-shaped history for persistence, translating to input each turn
             let model_id = resolved.model.clone();
@@ -728,6 +756,16 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
                 // Re-inject focus each turn from a history with stale injected context removed,
                 // so instructions stay bounded instead of accumulating across steps.
                 let pruned = prune_context_messages(&messages);
+                let pruned = if supports_vision { pruned } else {
+                    if step == 0 && pruned.iter().any(|m| {
+                        m.get("content").and_then(|c| c.as_array()).map(|arr|
+                            arr.iter().any(|p| p.get("type").and_then(|t| t.as_str()) == Some("image_url"))
+                        ).unwrap_or(false)
+                    }) {
+                        yield AgentEvent::Text { delta: "\n[image(s) omitted — model does not support vision]\n".to_string() };
+                    }
+                    strip_images_for_non_vision(&pruned)
+                };
                 let (mut instructions, input) = llm::chat_messages_to_responses_input(&pruned, &system);
                 instructions = format!("{}\n\n{}", instructions, focus);
                 // Build tools for responses
@@ -1045,7 +1083,18 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
             let focus_msg = json!({"role": "system", "content": tracker.focus_context(step + 1)});
             if messages.len() > 1 { messages.insert(1, focus_msg); } else { messages.push(focus_msg); }
             let tools = llm::tool_definitions().await;
-            let body = json!({"model": model_id, "messages": messages, "tools": tools, "tool_choice": "auto", "stream": true});
+            let send_messages = if supports_vision { messages.clone() } else {
+                // Warn once on first step if images are present
+                if step == 0 && messages.iter().any(|m| {
+                    m.get("content").and_then(|c| c.as_array()).map(|arr|
+                        arr.iter().any(|p| p.get("type").and_then(|t| t.as_str()) == Some("image_url"))
+                    ).unwrap_or(false)
+                }) {
+                    yield AgentEvent::Text { delta: "\n[image(s) omitted — model does not support vision]\n".to_string() };
+                }
+                strip_images_for_non_vision(&messages)
+            };
+            let body = json!({"model": model_id, "messages": send_messages, "tools": tools, "tool_choice": "auto", "stream": true});
             let resp = match post_with_retry(&client, client.chat_url(), &body).await {
                 Ok(r) => r,
                 Err(e) => { yield AgentEvent::Text { delta: format!("\n{}", e) }; break; }

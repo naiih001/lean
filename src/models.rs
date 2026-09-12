@@ -95,6 +95,11 @@ pub struct ModelEntry {
     /// Aliases: "chat"/"completions" -> chat, "responses" -> responses, "anthropic" -> anthropic.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api: Option<ApiMode>,
+    /// Whether this model supports multimodal (vision) input.
+    /// When missing, defaults to true. Set to false for text-only models
+    /// to prevent sending images that trigger API errors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision: Option<bool>,
 }
 
 impl ModelEntry {
@@ -135,6 +140,8 @@ pub struct ResolvedModel {
     pub api_key: String,
     pub api_mode: ApiMode,
     pub provider: Provider,
+    /// Whether the model supports vision/multimodal input (defaults to true).
+    pub vision: bool,
 }
 
 fn models_path() -> PathBuf {
@@ -199,6 +206,7 @@ fn template_config() -> ModelsConfig {
             api_key: None,
             api_key_env: Some("OPENAI_API_KEY".to_string()),
             api: None,
+            vision: None,
         },
     );
     // Examples are intentionally NOT added to fresh template — they are documented in README and can be added via `lean --provider` helpers.
@@ -210,11 +218,11 @@ fn template_config() -> ModelsConfig {
 }
 
 fn example_ollama_entry(model: &str) -> ModelEntry {
-    ModelEntry { model: model.to_string(), provider: Some(Provider::Ollama), base_url: Some(Provider::Ollama.default_base_url()), api_key: Some("ollama".to_string()), api_key_env: None, api: None }
+    ModelEntry { model: model.to_string(), provider: Some(Provider::Ollama), base_url: Some(Provider::Ollama.default_base_url()), api_key: Some("ollama".to_string()), api_key_env: None, api: None, vision: None }
 }
 
 fn example_anthropic_entry(model: &str) -> ModelEntry {
-    ModelEntry { model: model.to_string(), provider: Some(Provider::Anthropic), base_url: Some(Provider::Anthropic.default_base_url()), api_key: None, api_key_env: Some("ANTHROPIC_API_KEY".to_string()), api: Some(ApiMode::Anthropic) }
+    ModelEntry { model: model.to_string(), provider: Some(Provider::Anthropic), base_url: Some(Provider::Anthropic.default_base_url()), api_key: None, api_key_env: Some("ANTHROPIC_API_KEY".to_string()), api: Some(ApiMode::Anthropic), vision: None }
 }
 
 /// Ensure ~/.lean/models.json exists, creating a template if missing.
@@ -314,6 +322,7 @@ pub fn resolve(alias_opt: Option<&str>) -> Result<ResolvedModel> {
         api_key,
         api_mode,
         provider,
+        vision: entry.vision.unwrap_or(true),
     })
 }
 
@@ -435,6 +444,7 @@ mod tests {
             api_key: None,
             api_key_env: Some("OPENAI_API_KEY".into()),
             api: None,
+            vision: None,
         };
         let err = resolve_api_key_env(&entry, None).unwrap_err();
         assert!(err.to_string().contains("OPENAI_API_KEY"));
@@ -453,7 +463,7 @@ mod tests {
 
     #[test]
     fn provider_ollama_no_key() {
-        let entry = ModelEntry { provider: Some(Provider::Ollama), model: "qwen2".into(), base_url: None, api_key: None, api_key_env: None, api: None };
+        let entry = ModelEntry { provider: Some(Provider::Ollama), model: "qwen2".into(), base_url: None, api_key: None, api_key_env: None, api: None, vision: None };
         // Ollama should not fail even without env keys
         let key = resolve_api_key_env(&entry, None).unwrap();
         assert_eq!(key, "ollama");
