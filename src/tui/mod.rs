@@ -1078,6 +1078,23 @@ fn draw_footer(
     }
 }
 
+fn draw_scrollbar(f: &mut Frame, area: Rect, total_lines: usize, viewport_h: usize, scroll: u16) {
+    if total_lines <= viewport_h { return; }
+    let max_scroll = total_lines.saturating_sub(viewport_h);
+    if scroll as usize >= max_scroll { return; } // hide when at bottom — only while not at bottom per spec
+    let track_h = area.height as usize;
+    if track_h == 0 { return; }
+    let thumb_h = (((viewport_h as f64 / total_lines as f64) * track_h as f64).max(1.0).min(track_h as f64)).round() as usize;
+    let thumb_y = if max_scroll == 0 { 0 } else { ((scroll as f64 / max_scroll as f64) * (track_h.saturating_sub(thumb_h)) as f64).round() as usize };
+    for y in 0..track_h {
+        let is_thumb = y >= thumb_y && y < thumb_y + thumb_h;
+        let ch = if is_thumb { "█" } else { "░" };
+        let style = if is_thumb { Style::default().fg(ASHEN.frost).bg(THEME.page_bg) } else { Style::default().fg(ASHEN.charcoal).bg(THEME.page_bg) };
+        let cell = Rect { x: area.x + area.width.saturating_sub(1), y: area.y + y as u16, width: 1, height: 1 };
+        f.render_widget(Paragraph::new(ch).style(style), cell);
+    }
+}
+
 // ── Autocomplete + @-mentions ─────────────────────────────────
 
 const COMMANDS: &[&str] = &["/help", "/new", "/clear", "/exit", "/quit", "/model", "/sessions", "/resume", "/allowlist", "/allowlist clear", "/mcp", "/memory", "/memory stats", "/memory consolidate", "/auto-accept", "/plan"];
@@ -2383,6 +2400,10 @@ async fn app_loop(
                 // Content — use pre-wrapped lines
                 let para = Paragraph::new(wrapped_content.clone()).scroll((scroll, 0));
                 f.render_widget(para, chunks[3]);
+                // Scrollbar overlay — thin, read-only, only while not at bottom (A + #2), thumb encodes % (no footer text)
+                if cached_total_lines > cached_content_height && !auto_scroll {
+                    draw_scrollbar(f, chunks[3], cached_total_lines, cached_content_height, scroll);
+                }
 
                 // Separator
                 draw_separator(f, chunks[4]);
