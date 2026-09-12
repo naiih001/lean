@@ -1,4 +1,5 @@
 mod agent;
+mod agents;
 mod llm;
 mod memory;
 mod models;

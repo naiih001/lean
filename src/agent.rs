@@ -11,13 +11,13 @@ pub const REGULAR_SYSTEM_PROMPT: &str = "You are lean, a coding assistant in the
 - Otherwise → task mode (doing).\n\n\
 ## Task mode (regular — doing)\n\
 1. Understand: read the relevant files before editing — one pass, don't re-read the same file.\n\
-2. Act: use tools (read_file, edit_file, write_file, bash, web_search). Make the smallest change that solves the problem. Don't edit the same file twice.\n\
+2. Act: use tools (read, edit, write, bash, grep, find, ls, web_search, web_fetch). Make the smallest change that solves the problem. Don't edit the same file twice.\n\
 3. Verify (only if you mutated files): run ONE minimal check that covers the change (e.g. cargo check) — once only. If it passes, stop. Don't re-run, don't verify read-only tasks.\n\
 4. Summarize: state what changed and end with \"All done.\"\n\
 Continue while steps remain but don't loop or over-verify. Stop when the goal is met — if you already verified once and it passed, end immediately. If a tool fails, read the error and adjust; don't repeat a call that already succeeded.\n\n\
 ## Tools\n\
 - Read before edit; use a unique oldText for precise edits.\n\
-- If you need a file, call read_file now instead of saying you will. Don't re-read files you already read.\n\
+- If you need a file, call read now instead of saying you will. Don't re-read files you already read.\n\
 - Only respond as the assistant. Never write a user \"thanks\" or \"you're welcome\" on the user's behalf.\n\n\
 ## Asking the user\n\
 - If a request is genuinely ambiguous (unclear target, scope, or preference) and you can't discover the answer from the repo, call ask_user with concrete options instead of guessing.\n\
@@ -37,7 +37,7 @@ Classify the request:\n\
 - `search` — needs web lookup.\n\
 If unsure, treat as `write`.\n\n\
 ## Plan mode — 5-phase gate (MANDATORY)\n\
-You MUST NOT call write_file, edit_file, bash (mutating), or any MCP write tool on project files until you have completed Phases 1-4, received `✓ Proceed as proposed`, AND received explicit permission to leave PLAN mode via ask_user. Read-only tools (read_file, read_skill, web_search, search_memory, etc., plus read-only bash like ls/cat/grep/find and MCP reads) are always allowed. In plan mode, the ONLY write allowed before leaving is `write_file` to `.lean/plans/` for the deliverable plan. All other mutations are BLOCKED until you leave PLAN.\n\n\
+You MUST NOT call write, edit, bash (mutating), or any MCP write tool on project files until you have completed Phases 1-4, received `✓ Proceed as proposed`, AND received explicit permission to leave PLAN mode via ask_user. Read-only tools (read, read_skill, web_search, search_memory, etc., plus read-only bash like ls/cat/grep/find and MCP reads) are always allowed. In plan mode, the ONLY write allowed before leaving is `write` to `.lean/plans/` for the deliverable plan. All other mutations are BLOCKED until you leave PLAN.\n\n\
 Phase 1 — DISCOVER (read-only): read relevant files, search memory/skills, gather context. No mutations.\n\
 Phase 2 — CLARIFY: call ask_user with concrete options until scope is 100% clear. For each ambiguity present 2-3 options with pros/cons. Cover: goal, non-goals, files/modules in scope, UX/constraints, edge cases. Keep asking — do not assume.\n\n\
 Phase 3 — PROPOSE: write a concrete plan markdown to `.lean/plans/YYYY-MM-DD_HHMMSS-<slug>.md` (see plan skill for template: goal, context, approach, steps, files, tests, risks). Then summarize Shared Understanding (scope + chosen approach + files + verification) and ask a final ask_user question that MUST contain an option exactly labeled `✓ Proceed as proposed` (and `Needs changes` / Other).\n\n\
@@ -48,7 +48,7 @@ Phase 5 — (only after Leave permission granted): switch to NORM and execute th
 Continue while steps remain but don't loop or over-verify. If a tool fails, read the error and adjust; don't repeat a call that already succeeded. Do not act on inferred intent before Phase 4 approval.\n\n\
 ## Tools\n\
 - Read before edit; use a unique oldText for precise edits.\n\
-- If you need a file, call read_file now instead of saying you will.\n\
+- If you need a file, call read now instead of saying you will.\n\
 - Only respond as the assistant. Never write a user \"thanks\" or \"you're welcome\" on the user's behalf.\n\n\
 ## Asking the user\n\
 - In plan mode, you MUST use ask_user in Phases 2-3 — to confirm scope, constraints, and approach and to get explicit `✓ Proceed as proposed` approval. Iterate until no assumptions remain. Ask until you are 100% sure.\n\n\
@@ -62,12 +62,12 @@ pub const ASK_SYSTEM_PROMPT: &str = "You are lean, a coding assistant in the ter
 - Otherwise → read-only task mode.\n\n\
 ## Task mode (ASK — read-only)\n\
 1. Understand: read relevant files, search memory/skills, gather context. No mutations.\n\
-2. Answer: use only read-only tools: read_file, read_skill, web_search, search_memory/recall_memory/list_memories, ask_user, readonly bash (ls/cat/grep/find/rg/git log|status|diff|show, plus stderr redirects 2>/dev/null and 2>&1 and pipes), and MCP reads (tools with read/list/get/search/query/fetch). Make no file writes or edits.\n\
+2. Answer: use only read-only tools: read, read_skill, web_search, search_memory/recall_memory/list_memories, ask_user, readonly bash (ls/cat/grep/find/rg/git log|status|diff|show, plus stderr redirects 2>/dev/null and 2>&1 and pipes), and MCP reads (tools with read/list/get/search/query/fetch). Make no file writes or edits.\n\
 3. Summarize: state what you found and how to proceed. If the user wants you to build/edit, tell them: \"ASK is read-only — switch to Norm (Shift+Tab) or Plan to build.\"\n\
-Don't loop or re-read the same file. Continue while steps remain but stop when answered — no verification needed in ASK. If a tool fails, read the error and adjust; don't repeat a succeeded call. Never call write_file, edit_file, mutating bash (rm/mv/cp/mkdir/touch/chmod/chown/sed -i/tee/rmdir/unlink/shred, cargo build/test/run, npm run/install/publish, git commit/push/checkout/merge, or any > file / >> file redirection), or MCP writes — they are BLOCKED.\n\n\
+Don't loop or re-read the same file. Continue while steps remain but stop when answered — no verification needed in ASK. If a tool fails, read the error and adjust; don't repeat a succeeded call. Never call write, edit, mutating bash (rm/mv/cp/mkdir/touch/chmod/chown/sed -i/tee/rmdir/unlink/shred, cargo build/test/run, npm run/install/publish, git commit/push/checkout/merge, or any > file / >> file redirection), or MCP writes — they are BLOCKED.\n\n\
 ## Tools\n\
 - Read before edit would be in Norm; in Ask just read and search.\n\
-- If you need a file, call read_file now instead of saying you will.\n\
+- If you need a file, call read now instead of saying you will.\n\
 - Only respond as the assistant. Never write a user \"thanks\" or \"you're welcome\" on the user's behalf.\n\n\
 ## Asking the user\n\
 - If genuinely ambiguous and you can't discover the answer, call ask_user with concrete options. Otherwise answer directly; don't over-ask.\n\n\
@@ -206,6 +206,26 @@ fn confinement_section() -> Option<String> {
     ))
 }
 
+async fn agents_section() -> Option<String> {
+    let catalog = crate::agents::get_agent_catalog().await;
+    if catalog.starts_with("No agents") {
+        return None;
+    }
+    // Keep it lean: first 6 agents, truncate descriptions
+    let lines: Vec<&str> = catalog.lines().collect();
+    let take = 6.min(lines.len());
+    let mut out = String::from("\n\n## Available Agents (subagents)\n");
+    out.push_str("You can delegate via `subagent` tool. Use scout for recon, researcher for web, worker for general tasks. Users can add agents via agents/<name>/AGENT.md\n");
+    for line in lines.iter().take(take) {
+        out.push_str(line);
+        out.push_str("\n");
+    }
+    if lines.len() > take {
+        out.push_str(&format!("... +{} more (use read_agent or subagents_list)\n", lines.len() - take));
+    }
+    Some(truncate_str(&out, 800))
+}
+
 fn context_section() -> Option<String> {
     crate::context::load_context_section().map(|s| format!("\n\n{}", s))
 }
@@ -245,12 +265,15 @@ pub async fn build_system_prompt() -> String {
     let confinement = confinement_section();
     let context = context_section();
 
-    let assemble = |catalog: &str, ctx: Option<&str>| {
+    let assemble = |catalog: &str, ctx: Option<&str>, agents: Option<&str>| {
         let mut prompt = String::from(base);
         if let Some(c) = ctx {
             prompt.push_str(c);
         }
         prompt.push_str(&skills_section(catalog));
+        if let Some(a) = agents {
+            prompt.push_str(a);
+        }
         if let Some(note) = &confinement {
             prompt.push_str(note);
         }
@@ -258,8 +281,9 @@ pub async fn build_system_prompt() -> String {
     };
 
     // Try with full context, full skills, and MCP.
+    let agents = agents_section().await;
     let full_catalog = render_skill_catalog(&raw_catalog, SKILL_MAX_COUNT);
-    let prompt = assemble(&full_catalog, context.as_deref());
+    let prompt = assemble(&full_catalog, context.as_deref(), agents.as_deref());
     if prompt.len() <= TOTAL_BUDGET {
         let with_mcp = format!("{}{}", prompt, mcp_section());
         if with_mcp.len() <= TOTAL_BUDGET {
@@ -270,7 +294,7 @@ pub async fn build_system_prompt() -> String {
     // Over budget: first shrink the skill catalog a line at a time (keep context + confinement).
     for lines in (1..SKILL_MAX_COUNT).rev() {
         let catalog = render_skill_catalog(&raw_catalog, lines);
-        let candidate = assemble(&catalog, context.as_deref());
+        let candidate = assemble(&catalog, context.as_deref(), agents.as_deref());
         if candidate.len() <= TOTAL_BUDGET {
             return candidate;
         }
@@ -283,7 +307,7 @@ pub async fn build_system_prompt() -> String {
         if minimal_ctx.len() < ctx.len() {
             minimal_ctx.push_str("\n… [context truncated for budget]");
         }
-        let candidate = assemble(&render_skill_catalog(&raw_catalog, 1), Some(&minimal_ctx));
+        let candidate = assemble(&render_skill_catalog(&raw_catalog, 1), Some(&minimal_ctx), agents.as_deref());
         if candidate.len() <= TOTAL_BUDGET {
             return candidate;
         }
@@ -339,12 +363,12 @@ struct ToolAccum {
 }
 
 pub(crate) fn is_mutating_tool(name: &str) -> bool {
-    matches!(name, "write_file" | "edit_file" | "bash") || name.contains("__")
+    matches!(name, "write" | "write_file" | "edit" | "edit_file" | "bash") || name.contains("__")
 }
 
 pub(crate) fn is_plan_exempt_write(name: &str, args: &Value) -> bool {
     if !is_plan_mode() { return false; }
-    if name != "write_file" { return false; }
+    if name != "write" && name != "write_file" { return false; }
     if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
         return p.starts_with(".lean/plans") || p.starts_with("./.lean/plans") || p.contains("/.lean/plans");
     }
@@ -478,7 +502,7 @@ impl PlanTracker {
         if crate::agent::is_ask_mode() {
             let mut out = String::from("[Focus — ASK read-only]\n");
             out.push_str(&format!("Goal: {}\n", self.goal));
-            out.push_str("ASK is read-only: Allowed: read_file, read_skill, web_search, search_memory/recall_memory/list_memories, ask_user, readonly bash (ls/cat/grep/find/rg/git log|status|diff|show, 2>/dev/null, 2>&1, pipes), MCP reads (read/list/get/search/query/fetch). BLOCKED: write_file/edit_file/mutating bash (> file, rm/mv/cp/mkdir, cargo build/test/run, npm install, git commit/push) and MCP writes — reply with \"ASK is read-only — switch to Norm (Shift+Tab) or Plan to build.\" if asked to build. Do not over-verify; answer directly.\n");
+            out.push_str("ASK is read-only: Allowed: read, read_skill, web_search, search_memory/recall_memory/list_memories, ask_user, readonly bash (ls/cat/grep/find/rg/git log|status|diff|show, 2>/dev/null, 2>&1, pipes), MCP reads (read/list/get/search/query/fetch). BLOCKED: write/edit/mutating bash (> file, rm/mv/cp/mkdir, cargo build/test/run, npm install, git commit/push) and MCP writes — reply with \"ASK is read-only — switch to Norm (Shift+Tab) or Plan to build.\" if asked to build. Do not over-verify; answer directly.\n");
             if !self.steps_done.is_empty() {
                 out.push_str(&format!("Progress ({}):\n", self.steps_done.len()));
                 for (i, s) in self.steps_done.iter().enumerate() { out.push_str(&format!("  {}. {}\n", i+1, s)); }
@@ -491,8 +515,8 @@ impl PlanTracker {
         if self.requires_approval && !self.approved {
             let mut out = String::from("[Focus — REAL-TASK GATING ACTIVE]\n");
             out.push_str(&format!("Goal: {}\n", self.goal));
-            out.push_str("Phase: you are in Phases 1-4 (Discover → Clarify → Propose → Wait). MUTATING tools (write_file, edit_file, bash with > file, any MCP write) are BLOCKED until user selects \"\u{2713} Proceed as proposed\" via ask_user.\n");
-            out.push_str("Allowed now: read_file (read-only), read_skill, web_search, search_memory/recall_memory/list_memories, ask_user, readonly bash (ls/cat/grep/find/rg/git log|status|diff|show, 2>/dev/null, 2>&1, pipes) and MCP reads — they auto-run without approval.\n");
+            out.push_str("Phase: you are in Phases 1-4 (Discover → Clarify → Propose → Wait). MUTATING tools (write, edit, bash with > file, any MCP write) are BLOCKED until user selects \"\u{2713} Proceed as proposed\" via ask_user.\n");
+            out.push_str("Allowed now: read (read-only), read_skill, web_search, search_memory/recall_memory/list_memories, ask_user, readonly bash (ls/cat/grep/find/rg/git log|status|diff|show, 2>/dev/null, 2>&1, pipes) and MCP reads — they auto-run without approval.\n");
             out.push_str("You MUST call ask_user now to clarify scope/approach. Cover goal, non-goals, files in scope, constraints, edge cases. Iterate until 100% sure. Final gating question MUST contain option exactly `\u{2713} Proceed as proposed`. Do NOT call mutating tools.\n");
             if !self.steps_done.is_empty() {
                 out.push_str(&format!("Progress ({}):\n", self.steps_done.len()));
@@ -1054,7 +1078,7 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
                 }
                 let gate_active = tracker.requires_approval() && !tracker.has_approval();
                 let is_ask = is_ask_mode();
-                let futs: Vec<_> = ordered.iter().map(|(_, acc)| { let name=acc.name.clone(); let id=acc.id.clone(); let args_val: Value=serde_json::from_str(&acc.args).unwrap_or(Value::String(acc.args.clone())); let is_bash_readonly = name == "bash" && is_readonly_bash(args_val.get("command").and_then(|v| v.as_str()).unwrap_or("")); let is_mcp_readonly = name.contains("__") && is_mcp_read(&name); let ask_blocked = is_ask && is_mutating_tool(&name) && !is_bash_readonly && !is_mcp_readonly; let plan_blocked = gate_active && is_mutating_tool(&name) && !is_plan_exempt_write(&name, &args_val) && !is_bash_readonly && !is_mcp_readonly && !crate::approval::is_auto_accept(); async move { let start=std::time::Instant::now(); let result = if ask_blocked { format!("[ASK BLOCKED] '{}' is blocked — {}. Allowed: read_file, web_search, readonly bash (ls/cat/grep/find/rg/git log|status|diff|show, 2>/dev/null), MCP reads. (Shift+Tab to cycle NORM/PLAN/ASK/AUTO)", name, ASK_READONLY_DENY_MSG) } else if plan_blocked { format!("[GATING BLOCKED — plan mode] Mutating tool '{}' is blocked until you complete Phases 1-4 and get explicit user approval via ask_user with '\\u{{2713}} Proceed as proposed'. Call ask_user now to clarify scope/approach. In plan mode only .lean/plans writes + read-only bash (2>/dev/null, pipes) + MCP reads are allowed before approval; all other mutations blocked. (Shift+Tab to cycle NORM/PLAN/ASK/AUTO or /plan to toggle.)", name) } else { crate::tools::execute_tool(&name, args_val.clone()).await }; let elapsed_ms=start.elapsed().as_millis() as u64; (id,name,result,args_val,elapsed_ms) }}).collect();
+                let futs: Vec<_> = ordered.iter().map(|(_, acc)| { let name=acc.name.clone(); let id=acc.id.clone(); let args_val: Value=serde_json::from_str(&acc.args).unwrap_or(Value::String(acc.args.clone())); let is_bash_readonly = name == "bash" && is_readonly_bash(args_val.get("command").and_then(|v| v.as_str()).unwrap_or("")); let is_mcp_readonly = name.contains("__") && is_mcp_read(&name); let ask_blocked = is_ask && is_mutating_tool(&name) && !is_bash_readonly && !is_mcp_readonly; let plan_blocked = gate_active && is_mutating_tool(&name) && !is_plan_exempt_write(&name, &args_val) && !is_bash_readonly && !is_mcp_readonly && !crate::approval::is_auto_accept(); async move { let start=std::time::Instant::now(); let result = if ask_blocked { format!("[ASK BLOCKED] '{}' is blocked — {}. Allowed: read, web_search, grep, find, ls, readonly bash (ls/cat/grep/find/rg/git log|status|diff|show, 2>/dev/null), MCP reads. (Shift+Tab to cycle NORM/PLAN/ASK/AUTO)", name, ASK_READONLY_DENY_MSG) } else if plan_blocked { format!("[GATING BLOCKED — plan mode] Mutating tool '{}' is blocked until you complete Phases 1-4 and get explicit user approval via ask_user with '\\u{{2713}} Proceed as proposed'. Call ask_user now to clarify scope/approach. In plan mode only .lean/plans writes + read-only bash (2>/dev/null, pipes) + MCP reads are allowed before approval; all other mutations blocked. (Shift+Tab to cycle NORM/PLAN/ASK/AUTO or /plan to toggle.)", name) } else { crate::tools::execute_tool(&name, args_val.clone()).await }; let elapsed_ms=start.elapsed().as_millis() as u64; (id,name,result,args_val,elapsed_ms) }}).collect();
                 let results = futures::future::join_all(futs).await;
                 for (id, name, result, args_val, elapsed_ms) in results {
                     let display = result.find("<<IMAGE:").map_or_else(|| result.clone(), |pos| format!("{}[image data omitted for display]", result[..pos].trim_end()));
@@ -1244,7 +1268,7 @@ pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usi
                 let plan_blocked = gate_active && is_mutating_tool(&name) && !is_plan_exempt_write(&name, &args_val) && !is_bash_readonly && !is_mcp_readonly && !crate::approval::is_auto_accept();
                 async move {
                     let start = std::time::Instant::now();
-                    let result = if ask_blocked { format!("[ASK BLOCKED] '{}' is blocked — {}. Allowed: read_file, web_search, readonly bash (ls/cat/grep/find/rg/git log|status|diff|show, 2>/dev/null), MCP reads. (Shift+Tab to cycle NORM/PLAN/ASK/AUTO)", name, ASK_READONLY_DENY_MSG) } else if plan_blocked { format!("[GATING BLOCKED — plan mode] Mutating tool '{}' is blocked until you complete Phases 1-4 and get explicit user approval via ask_user with '\\u{{2713}} Proceed as proposed'. Call ask_user now to clarify scope/approach. In plan mode only .lean/plans writes + read-only bash (2>/dev/null, pipes) + MCP reads are allowed before approval; all other mutations blocked. (Shift+Tab to cycle NORM/PLAN/ASK/AUTO or /plan to toggle.)", name) } else { crate::tools::execute_tool(&name, args_val.clone()).await };
+                    let result = if ask_blocked { format!("[ASK BLOCKED] '{}' is blocked — {}. Allowed: read, web_search, grep, find, ls, readonly bash (ls/cat/grep/find/rg/git log|status|diff|show, 2>/dev/null), MCP reads. (Shift+Tab to cycle NORM/PLAN/ASK/AUTO)", name, ASK_READONLY_DENY_MSG) } else if plan_blocked { format!("[GATING BLOCKED — plan mode] Mutating tool '{}' is blocked until you complete Phases 1-4 and get explicit user approval via ask_user with '\\u{{2713}} Proceed as proposed'. Call ask_user now to clarify scope/approach. In plan mode only .lean/plans writes + read-only bash (2>/dev/null, pipes) + MCP reads are allowed before approval; all other mutations blocked. (Shift+Tab to cycle NORM/PLAN/ASK/AUTO or /plan to toggle.)", name) } else { crate::tools::execute_tool(&name, args_val.clone()).await };
                     let elapsed_ms = start.elapsed().as_millis() as u64;
                     (id, name, result, args_val, elapsed_ms)
                 }

@@ -101,7 +101,7 @@ pub fn native_tool_definitions() -> Vec<Value> {
         json!({
             "type": "function",
             "function": {
-                "name": "read_file",
+                "name": "read",
                 "description": "Read a file from disk",
                 "parameters": {
                     "type": "object",
@@ -115,7 +115,7 @@ pub fn native_tool_definitions() -> Vec<Value> {
         json!({
             "type": "function",
             "function": {
-                "name": "write_file",
+                "name": "write",
                 "description": "Write content to a file (creates parent dirs)",
                 "parameters": {
                     "type": "object",
@@ -130,7 +130,7 @@ pub fn native_tool_definitions() -> Vec<Value> {
         json!({
             "type": "function",
             "function": {
-                "name": "edit_file",
+                "name": "edit",
                 "description": "Edit a file by replacing unique oldText with newText",
                 "parameters": {
                     "type": "object",
@@ -160,6 +160,50 @@ pub fn native_tool_definitions() -> Vec<Value> {
         json!({
             "type": "function",
             "function": {
+                "name": "grep",
+                "description": "Search for pattern in files (like grep -r)",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {"type": "string", "description": "Regex or string to search"},
+                        "path": {"type": "string", "description": "Directory or file to search (default cwd)"}
+                    },
+                    "required": ["pattern"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "find",
+                "description": "Find files by name pattern",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {"type": "string", "description": "Glob pattern e.g. *.rs"},
+                        "path": {"type": "string", "description": "Directory to search (default cwd)"}
+                    },
+                    "required": ["pattern"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "ls",
+                "description": "List files in a directory",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Directory to list (default cwd)"}
+                    },
+                    "required": []
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
                 "name": "web_search",
                 "description": "Search the web",
                 "parameters": {
@@ -174,6 +218,20 @@ pub fn native_tool_definitions() -> Vec<Value> {
         json!({
             "type": "function",
             "function": {
+                "name": "web_fetch",
+                "description": "Fetch a web page by URL",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "URL to fetch"}
+                    },
+                    "required": ["url"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
                 "name": "read_skill",
                 "description": "Load a skill by name",
                 "parameters": {
@@ -182,6 +240,47 @@ pub fn native_tool_definitions() -> Vec<Value> {
                         "name": {"type": "string"}
                     },
                     "required": ["name"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "read_agent",
+                "description": "Load an agent definition by name",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"}
+                    },
+                    "required": ["name"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "subagent",
+                "description": "Spawn a subagent (scout, researcher, worker) with a task. Returns summary. Use for delegation.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "agent": {"type": "string", "description": "Agent to spawn (e.g. scout, researcher)"},
+                        "task": {"type": "string", "description": "Task/prompt for subagent"},
+                        "name": {"type": "string", "description": "Optional cosmetic label"}
+                    },
+                    "required": ["agent", "task"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "subagents_list",
+                "description": "List available subagents",
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
                 }
             }
         }),

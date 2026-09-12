@@ -289,6 +289,91 @@ pub async fn web_search(query: &str) -> Result<String, String> {
     Ok(truncate_output(&text, TruncateStrategy::Head))
 }
 
+pub async fn web_fetch(url: &str) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let resp = client.get(url).send().await.map_err(|e| format!("fetch error: {}", e))?;
+    let text = resp.text().await.map_err(|e| format!("fetch read error: {}", e))?;
+    Ok(truncate_output(&text, TruncateStrategy::Head))
+}
+
+pub async fn grep(pattern: &str, path: Option<&str>) -> Result<String, String> {
+    let base = path.unwrap_or(".");
+    let base_path = Path::new(base);
+    if !base_path.exists() {
+        return Err(format!("Path not found: {}", base));
+    }
+    let mut results = Vec::new();
+    let walker = walkdir::WalkDir::new(base_path).max_depth(8).into_iter().filter_entry(|e| {
+        let name = e.file_name().to_string_lossy();
+        !name.starts_with(".git") && name != "target" && name != "node_modules"
+    });
+    for entry in walker.filter_map(|e| e.ok()) {
+        if entry.file_type().is_file() {
+            if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                for (idx, line) in content.lines().enumerate() {
+                    if line.contains(pattern) {
+                        results.push(format!("{}:{}: {}", entry.path().display(), idx + 1, line.trim()));
+                        if results.len() >= 200 { break; }
+                    }
+                }
+            }
+            if results.len() >= 200 { break; }
+        }
+    }
+    if results.is_empty() {
+        Ok(format!("No matches for '{}' in {}", pattern, base))
+    } else {
+        Ok(truncate_output(&results.join("\n"), TruncateStrategy::Head))
+    }
+}
+
+pub async fn find(pattern: &str, path: Option<&str>) -> Result<String, String> {
+    let base = path.unwrap_or(".");
+    let base_path = Path::new(base);
+    if !base_path.exists() {
+        return Err(format!("Path not found: {}", base));
+    }
+    let mut results = Vec::new();
+    let walker = walkdir::WalkDir::new(base_path).max_depth(8).into_iter().filter_entry(|e| {
+        let name = e.file_name().to_string_lossy();
+        !name.starts_with(".git") && name != "target"
+    });
+    let matcher = wildmatch::WildMatch::new(pattern);
+    for entry in walker.filter_map(|e| e.ok()) {
+        let name = entry.file_name().to_string_lossy();
+        if matcher.matches(&name) || entry.path().to_string_lossy().contains(pattern) {
+            results.push(entry.path().display().to_string());
+            if results.len() >= 200 { break; }
+        }
+    }
+    if results.is_empty() {
+        Ok(format!("No files matching '{}' in {}", pattern, base))
+    } else {
+        Ok(truncate_output(&results.join("\n"), TruncateStrategy::Head))
+    }
+}
+
+pub async fn ls(path: Option<&str>) -> Result<String, String> {
+    let base = path.unwrap_or(".");
+    let p = Path::new(base);
+    if !p.exists() {
+        return Err(format!("Path not found: {}", base));
+    }
+    if p.is_file() {
+        return Ok(p.display().to_string());
+    }
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(p).map_err(|e| format!("read dir error: {}", e))? {
+        let e = entry.map_err(|e| format!("entry error: {}", e))?;
+        let ft = e.file_type().map_err(|e| format!("file type error: {}", e))?;
+        let name = e.file_name().to_string_lossy().to_string();
+        let suffix = if ft.is_dir() { "/" } else { "" };
+        entries.push(format!("{}{}", name, suffix));
+    }
+    entries.sort();
+    Ok(truncate_output(&entries.join("\n"), TruncateStrategy::Head))
+}
+
 async fn guard_path(path: &str, tool: &str) -> Option<String> {
     if crate::approval::is_auto_accept() {
         return None;
@@ -405,6 +490,69 @@ async fn guard_mcp(server: &str, tool: &str, args: &serde_json::Value) -> Option
     None
 }
 
+
+async fn run_subagent(agent_name: &str, task: &str, label: &str) -> String {
+    // Load agent definition; extensible - any agent in agents/<name>/AGENT.md works
+    let agent = match crate::agents::load_agent(agent_name).await {
+        Ok(a) => a,
+        Err(e) => return format!("Error: {}", e),
+    };
+    // Enforce subagent_agents allowlist if specified
+    // If agent has subagent_agents list, future nested subagent calls will be checked there.
+    // For now we just ensure requested agent exists - caller allowlist is checked at LLM prompt level.
+
+    // Tool filtering: if agent specifies tools, we could restrict, but for v1 we run with full tools
+    // and rely on prompt to guide usage.
+
+    let id = format!("{}-{}", agent_name, &uuid_simple());
+    let display_label = if label.is_empty() { agent_name.to_string() } else { label.to_string() };
+    crate::agents::register_subagent(id.clone(), agent_name.to_string(), task.to_string());
+
+    // Build isolated subagent task: body + task
+    let sub_prompt = format!("Agent: {}\nDescription: {}\n\nTask: {}\n\nContext:\n{}", agent.name, agent.description, task, agent.body);
+
+    // Choose model: agent.model overrides, else default from models::resolve
+    let model = agent.model.clone().unwrap_or_else(|| crate::llm::DEFAULT_MODEL.to_string());
+
+    // Run subagent loop (reuse same LLM infrastructure, isolated history)
+    // We run a short agent loop with limited steps (15) to keep it lean
+    let max_steps = 15usize;
+
+    // Use a oneshot channel to collect final text from streaming agent
+    use futures::StreamExt;
+    let mut stream = crate::agent::run_agent(sub_prompt, model, max_steps);
+    // pin the stream for Unpin requirement
+    futures::pin_mut!(stream);
+    let mut final_text = String::new();
+    let mut last_error = None;
+    while let Some(ev) = stream.next().await {
+        match ev {
+            crate::agent::AgentEvent::Text { delta } => { final_text.push_str(&delta); },
+            crate::agent::AgentEvent::Done { text, .. } => { final_text = text; break; },
+            crate::agent::AgentEvent::ToolResult { name, result, .. } if result.contains("Error") && name == "subagent" => {
+                last_error = Some(result);
+            },
+            _ => {}
+        }
+    }
+    if final_text.trim().is_empty() {
+        if let Some(e) = last_error {
+            crate::agents::update_subagent(&id, "error");
+            return format!("[subagent {} error] {}", display_label, e);
+        }
+        crate::agents::update_subagent(&id, "error");
+        return format!("[subagent {}] no output", display_label);
+    }
+    crate::agents::update_subagent(&id, "done");
+    format!("[subagent:{}]\n{}", display_label, final_text)
+}
+
+fn uuid_simple() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    format!("{:x}", nanos & 0xffffff)
+}
+
 pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
     // MCP namespaced tools: server__tool
     if name.contains("__") {
@@ -420,20 +568,20 @@ pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
         }
     }
     let res = match name {
-        "read_file" => {
+        "read" | "read_file" => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            if let Some(blocked) = guard_path(path, "read_file").await { return blocked; }
+            if let Some(blocked) = guard_path(path, "read").await { return blocked; }
             read_file(path).await
         }
-        "write_file" => {
+        "write" | "write_file" => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            if let Some(blocked) = guard_path(path, "write_file").await { return blocked; }
+            if let Some(blocked) = guard_path(path, "write").await { return blocked; }
             let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
             write_file(path, content).await
         }
-        "edit_file" => {
+        "edit" | "edit_file" => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            if let Some(blocked) = guard_path(path, "edit_file").await { return blocked; }
+            if let Some(blocked) = guard_path(path, "edit").await { return blocked; }
             let old = args.get("oldText").and_then(|v| v.as_str()).unwrap_or("");
             let new = args.get("newText").and_then(|v| v.as_str()).unwrap_or("");
             // also support snake_case fallback
@@ -448,6 +596,40 @@ pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
                 new
             };
             edit_file(path, old2, new2).await
+        }
+        "grep" => {
+            let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+            let path = args.get("path").and_then(|v| v.as_str());
+            grep(pattern, path).await
+        }
+        "find" => {
+            let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+            let path = args.get("path").and_then(|v| v.as_str());
+            find(pattern, path).await
+        }
+        "ls" => {
+            let path = args.get("path").and_then(|v| v.as_str());
+            ls(path).await
+        }
+        "web_fetch" => {
+            let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("");
+            web_fetch(url).await
+        }
+        "read_agent" => {
+            let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            match crate::agents::load_agent(name).await {
+                Ok(a) => Ok(a.content),
+                Err(e) => Err(format!("{}", e)),
+            }
+        }
+        "subagents_list" => {
+            Ok(crate::agents::get_agent_catalog().await)
+        }
+        "subagent" => {
+            let agent = args.get("agent").and_then(|v| v.as_str()).unwrap_or("");
+            let task = args.get("task").and_then(|v| v.as_str()).unwrap_or("");
+            let label = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            Ok(run_subagent(agent, task, label).await)
         }
         "bash" => {
             let cmd = args.get("command").and_then(|v| v.as_str()).unwrap_or("");

@@ -357,7 +357,7 @@ impl Msg {
         if has_result {
             inner.push(Line::from(Span::styled("─".repeat(28), Style::default().fg(ASHEN.charcoal))));
             let result_lines: Vec<&str> = result.lines().collect();
-            let is_diff = name == "edit_file" || result.contains("diff:") || result.contains("@@");
+            let is_diff = (name == "edit" || name == "edit_file") || result.contains("diff:") || result.contains("@@");
             let max_lines = if is_diff { 12 } else { 3 };
             let show = result_lines.len().min(max_lines);
             for l in &result_lines[..show] {
@@ -403,7 +403,7 @@ impl Msg {
 
             // Truncate long results — show more for diffs (edit_file)
             let result_lines: Vec<&str> = result.lines().collect();
-            let is_diff = name == "edit_file" || result.contains("diff:") || result.contains("@@");
+            let is_diff = (name == "edit" || name == "edit_file") || result.contains("diff:") || result.contains("@@");
             let max_lines = if is_diff { 12 } else { 3 };
             let show = result_lines.len().min(max_lines);
 
@@ -3258,11 +3258,11 @@ async fn app_loop(
                                     let init_prompt = format!(r#"Initialize project memory for lean. Current directory: {cwd}
 
 Tasks:
-1. Explore the codebase: run `ls -la`, read README.md, Cargo.toml / package.json / pyproject.toml / go.mod if present, and list src/ structure. Use read_file and bash (read-only) to gather facts.
+1. Explore the codebase: run `ls -la`, read README.md, Cargo.toml / package.json / pyproject.toml / go.mod if present, and list src/ structure. Use read and bash (read-only) to gather facts.
 2. Create or update AGENT.md at ./AGENT.md. Include: Project Overview (what it does), Tech Stack, Commands (build/run/test/lint exactly as found), Project Structure (key dirs), Conventions (style, commits), Architecture Notes, Gotchas. Keep concise, actionable, 1-2 pages. Use only facts you found — don't invent.
 3. Ensure CLAUDE.md mirrors AGENT.md for Claude Code compatibility: if ./CLAUDE.md is missing, copy AGENT.md to CLAUDE.md (or symlink on Unix via `ln -sf AGENT.md CLAUDE.md`). If it exists and differs, update it to match AGENT.md unless difference looks intentional — keep them in sync.
 4. For MEMORY.md (user persona, 3-5 short sections about who the user is so the agent can personalize): check ./MEMORY.md — if missing, use ask_user to ask the user about their role, preferences, goals, working style, then write ./MEMORY.md with template + answers. If it exists, preserve content and only fill gaps. Also check ~/.lean/MEMORY.md for global persona — note it but prefer project file.
-5. After writing, verify by reading the created files with read_file and summarize what was created/updated. End with "All done."
+5. After writing, verify by reading the created files with read and summarize what was created/updated. End with "All done."
 
 Be thorough but concise. Read before write; use unique oldText for edits."#);
                                     let hist = llm_history_for_spawn(&session, &messages);
