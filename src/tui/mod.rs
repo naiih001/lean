@@ -1524,9 +1524,9 @@ fn agent_autocomplete_matches(prefix: &str) -> Vec<String> {
     let mut out = Vec::new();
     for (name, desc) in all {
         if lower.is_empty() || name.to_lowercase().starts_with(&lower) || name.to_lowercase().contains(&lower) {
-            let display = if desc.is_empty() { format!("@agent:{}", name) } else {
+            let display = if desc.is_empty() { format!("#{}", name) } else {
                 let d = if desc.len() > 40 { format!("{}…", &desc[..40]) } else { desc };
-                format!("@agent:{} — {}", name, d)
+                format!("#{} — {}", name, d)
             };
             out.push(display);
             if out.len() >= 20 { break; }
@@ -1544,7 +1544,7 @@ fn detect_agent_mention(textarea: &TextArea<'_>) -> Option<AtMention> {
     let line = &lines[row];
     let chars: Vec<char> = line.chars().collect();
     if col > chars.len() { return None; }
-    let target = "@agent:";
+    let target = "#";
     let mut at_col: Option<usize> = None;
     for i in (0..col).rev() {
         if i + target.len() <= chars.len() {
@@ -1568,12 +1568,12 @@ fn detect_agent_mention(textarea: &TextArea<'_>) -> Option<AtMention> {
 }
 
 fn parse_forced_agent(input: &str) -> Option<(String, String)> {
-    // Find first @agent:<name> in input
+    // Find first #<name> in input
     let mut search = input;
     let mut offset = 0usize;
-    while let Some(idx) = search.find("@agent:") {
+    while let Some(idx) = search.find("#") {
         let start = offset + idx;
-        let rest = &input[start + "@agent:".len()..];
+        let rest = &input[start + "#".len()..];
         // extract agent name: alnum, -, _
         let mut name_end = 0usize;
         for c in rest.chars() {
@@ -1589,10 +1589,10 @@ fn parse_forced_agent(input: &str) -> Option<(String, String)> {
         }
         let name = rest[..name_end].to_string();
         let task = rest[name_end..].trim().trim_start_matches(|c| c=='-' || c==':' || c==' ').to_string();
-        // Also check if input has more before @agent: — task is remainder after name, but if task empty, use whole input without @agent prefix? Use remainder
+        // Also check if input has more before # — task is remainder after name, but if task empty, use whole input without @agent prefix? Use remainder
         let final_task = if task.is_empty() {
-            // if no task after name, use everything after @agent:<name> if empty, fallback to input without the @agent part
-            // If input was exactly "@agent:scout do X", task is "do X". If input was "@agent:scout" alone, use "continue" or empty
+            // if no task after name, use everything after #<name> if empty, fallback to input without the @agent part
+            // If input was exactly "#scout do X", task is "do X". If input was "#scout" alone, use "continue" or empty
             "".to_string()
         } else { task };
         return Some((name, final_task));
@@ -3354,9 +3354,9 @@ async fn app_loop(
                             if !ac_matches.is_empty() {
                                 let chosen = ac_matches[ac_idx].clone();
                                 if let Some(m) = detect_agent_mention(&textarea) {
-                                    // @agent: completion — chosen is like "@agent:scout — desc"
-                                    let agent_name = chosen.split('—').next().unwrap_or(&chosen).trim().trim_start_matches("@agent:").trim().to_string();
-                                    let full = format!("@agent:{}", agent_name);
+                                    // # completion — chosen is like "#scout — desc"
+                                    let agent_name = chosen.split('—').next().unwrap_or(&chosen).trim().trim_start_matches("#").trim().to_string();
+                                    let full = format!("#{}", agent_name);
                                     let mut lines = textarea.lines().to_vec();
                                     if m.row < lines.len() {
                                         let line = &lines[m.row];
@@ -3494,9 +3494,9 @@ async fn app_loop(
                             if !ac_matches.is_empty() {
                                 let chosen = ac_matches[ac_idx].clone();
                                 if let Some(m) = detect_agent_mention(&textarea) {
-                                    // @agent: completion — chosen is like "@agent:scout — desc"
-                                    let agent_name = chosen.split('—').next().unwrap_or(&chosen).trim().trim_start_matches("@agent:").trim().to_string();
-                                    let full = format!("@agent:{}", agent_name);
+                                    // # completion — chosen is like "#scout — desc"
+                                    let agent_name = chosen.split('—').next().unwrap_or(&chosen).trim().trim_start_matches("#").trim().to_string();
+                                    let full = format!("#{}", agent_name);
                                     let mut lines = textarea.lines().to_vec();
                                     if m.row < lines.len() {
                                         let line = &lines[m.row];
@@ -3668,7 +3668,7 @@ async fn app_loop(
                     if submit_pending {
                         let raw = textarea.lines().join("\n");
                         let prompt_raw = raw.trim().to_string();
-                        // --- Forced @agent: intercept (skill-like) ---
+                        // --- Forced # intercept (skill-like) ---
                         if let Some((agent_name, task)) = parse_forced_agent(&prompt_raw) {
                             let display_task = if task.is_empty() { prompt_raw.clone() } else { task.clone() };
                             // Validate agent exists (sync check via blocking)
@@ -3712,7 +3712,7 @@ async fn app_loop(
                                 dirty = true;
                                 continue;
                             }
-                            let placeholder = if display_task.is_empty() { format!("@agent:{} (forced)", agent_name) } else { format!("@agent:{} {}", agent_name, display_task) };
+                            let placeholder = if display_task.is_empty() { format!("#{} (forced)", agent_name) } else { format!("#{} {}", agent_name, display_task) };
                             messages.push(Msg { role: "user".into(), content: placeholder.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None });
                             messages.push(Msg { role: "system".into(), content: format!("→ forced subagent `{}` spawned — see summary bar / Ctrl+O", agent_name), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None });
                             // Spawn subagent in background (don't block UI)
