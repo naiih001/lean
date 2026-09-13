@@ -1358,18 +1358,39 @@ pub fn run_agent_with_history(
                 // If no tool calls, handle conversational / continuation logic same as chat
                 if tool_acc.is_empty() {
                     if tracker.is_conversational_goal() {
-                        if !accum_text.is_empty() { messages.push(json!({"role": "assistant", "content": accum_text})); }
+                        if !accum_text.is_empty() { {
+                    let mut assistant_msg = json!({"role": "assistant", "content": accum_text.clone()});
+                    if !accum_reasoning.is_empty() {
+                        assistant_msg["reasoning_content"] = json!(accum_reasoning.clone());
+                        assistant_msg["reasoning"] = json!(accum_reasoning.clone());
+                    }
+                    messages.push(assistant_msg);
+                } }
                         yield AgentEvent::Done { text: final_text.clone(), history: messages.clone() };
                         break;
                     }
                     tracker.nocall_streak += 1;
                     let complete = tracker.looks_complete(&accum_text);
                     if complete || tracker.nocall_streak >= MAX_NOCALL_STREAK {
-                        if !accum_text.is_empty() { messages.push(json!({"role": "assistant", "content": accum_text})); }
+                        if !accum_text.is_empty() { {
+                    let mut assistant_msg = json!({"role": "assistant", "content": accum_text.clone()});
+                    if !accum_reasoning.is_empty() {
+                        assistant_msg["reasoning_content"] = json!(accum_reasoning.clone());
+                        assistant_msg["reasoning"] = json!(accum_reasoning.clone());
+                    }
+                    messages.push(assistant_msg);
+                } }
                         yield AgentEvent::Done { text: final_text.clone(), history: messages.clone() };
                         break;
                     }
-                    if !accum_text.is_empty() { messages.push(json!({"role": "assistant", "content": accum_text})); }
+                    if !accum_text.is_empty() { {
+                    let mut assistant_msg = json!({"role": "assistant", "content": accum_text.clone()});
+                    if !accum_reasoning.is_empty() {
+                        assistant_msg["reasoning_content"] = json!(accum_reasoning.clone());
+                        assistant_msg["reasoning"] = json!(accum_reasoning.clone());
+                    }
+                    messages.push(assistant_msg);
+                } }
                     continue;
                 }
                 // Tool calls present — sort by id for deterministic order
@@ -1396,7 +1417,14 @@ pub fn run_agent_with_history(
                     tool_results.push((id,name,result,args_val));
                 }
                 let tool_calls_json: Vec<Value> = ordered.iter().map(|(_, acc)| json!({"id": acc.id, "type": "function", "function": {"name": acc.name, "arguments": acc.args}})).collect();
-                messages.push(json!({"role": "assistant", "content": accum_text, "tool_calls": tool_calls_json}));
+                {
+                    let mut assistant_msg = json!({"role": "assistant", "content": accum_text.clone(), "tool_calls": tool_calls_json.clone()});
+                    if !accum_reasoning.is_empty() {
+                        assistant_msg["reasoning_content"] = json!(accum_reasoning.clone());
+                        assistant_msg["reasoning"] = json!(accum_reasoning.clone());
+                    }
+                    messages.push(assistant_msg);
+                }
                 for (id, _name, result, _) in tool_results {
                     // Option A: keep tool content string-only, send image as follow-up user message
                     if let Some(img_start) = result.find("<<IMAGE:") {
@@ -1540,7 +1568,14 @@ pub fn run_agent_with_history(
             if !accum_text.is_empty() { final_text.push_str(&accum_text); yield AgentEvent::TextDone { text: accum_text.clone() }; tracker.record_text(&accum_text); }
             if tool_acc.is_empty() {
                 if tracker.is_conversational_goal() {
-                    if !accum_text.is_empty() { messages.push(json!({"role": "assistant", "content": accum_text})); }
+                    if !accum_text.is_empty() { {
+                    let mut assistant_msg = json!({"role": "assistant", "content": accum_text.clone()});
+                    if !accum_reasoning.is_empty() {
+                        assistant_msg["reasoning_content"] = json!(accum_reasoning.clone());
+                        assistant_msg["reasoning"] = json!(accum_reasoning.clone());
+                    }
+                    messages.push(assistant_msg);
+                } }
                     yield AgentEvent::Done { text: final_text.clone(), history: messages.clone() };
                     break;
                 }
@@ -1550,7 +1585,14 @@ pub fn run_agent_with_history(
                     yield AgentEvent::Done { text: final_text.clone(), history: messages.clone() };
                     break;
                 }
-                if !accum_text.is_empty() { messages.push(json!({"role": "assistant", "content": accum_text})); }
+                if !accum_text.is_empty() { {
+                    let mut assistant_msg = json!({"role": "assistant", "content": accum_text.clone()});
+                    if !accum_reasoning.is_empty() {
+                        assistant_msg["reasoning_content"] = json!(accum_reasoning.clone());
+                        assistant_msg["reasoning"] = json!(accum_reasoning.clone());
+                    }
+                    messages.push(assistant_msg);
+                } }
                 continue;
             }
             let mut ordered: Vec<(usize, ToolAccum)> = tool_acc.into_iter().collect();
@@ -1589,7 +1631,14 @@ pub fn run_agent_with_history(
                 tool_results.push((id, name, result, args_val));
             }
             let tool_calls_json: Vec<Value> = ordered.iter().map(|(_, acc)| json!({"id": acc.id, "type": "function", "function": {"name": acc.name, "arguments": acc.args}})).collect();
-            messages.push(json!({"role": "assistant", "content": accum_text, "tool_calls": tool_calls_json}));
+            {
+                    let mut assistant_msg = json!({"role": "assistant", "content": accum_text.clone(), "tool_calls": tool_calls_json.clone()});
+                    if !accum_reasoning.is_empty() {
+                        assistant_msg["reasoning_content"] = json!(accum_reasoning.clone());
+                        assistant_msg["reasoning"] = json!(accum_reasoning.clone());
+                    }
+                    messages.push(assistant_msg);
+                }
             for (id, _name, result, _) in tool_results {
                 if let Some(img_start) = result.find("<<IMAGE:") {
                     let meta = result[..img_start].trim_end();
