@@ -232,6 +232,91 @@ pub async fn edit_file(path: &str, old: &str, new: &str) -> Result<String, Strin
     Ok(diff)
 }
 
+fn contains_sudo(cmd: &str) -> bool {
+    // token-aware check for sudo as command
+    let tokens: Vec<&str> = cmd.split_whitespace().collect();
+    tokens.iter().any(|t| *t == "sudo") || cmd.contains("sudo ")
+}
+
+fn inject_sudo_s(cmd: &str) -> String {
+    // Insert -S -p '' after each sudo not already using -S
+    let mut out = String::new();
+    let mut chars = cmd.chars().peekable();
+    let mut i = 0;
+    let bytes: Vec<char> = cmd.chars().collect();
+    while i < bytes.len() {
+        if i + 4 <= bytes.len() && bytes[i..i + 4].iter().collect::<String>() == "sudo" {
+            let prev_ok = i == 0 || bytes[i - 1].is_whitespace() || " ;|&(".contains(bytes[i - 1]);
+            let next_ok = i + 4 == bytes.len() || bytes[i + 4].is_whitespace();
+            if prev_ok && next_ok {
+                // check if already followed by -S
+                let rest: String = bytes[i + 4..].iter().collect();
+                let trimmed = rest.trim_start();
+                if trimmed.starts_with("-S") {
+                    out.push_str("sudo");
+                    i += 4;
+                    continue;
+                } else {
+                    out.push_str("sudo -S -p ''");
+                    i += 4;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    out
+}
+
+async fn run_bash_with_password(command: &str, password: &str) -> Result<String, String> {
+    use tokio::io::AsyncWriteExt;
+    let injected = inject_sudo_s(command);
+    let mut child = tokio::process::Command::new("bash")
+        .arg("-c")
+        .arg(&injected)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("spawn error: {}", e))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let pw = format!("{}\n", password);
+        stdin
+            .write_all(pw.as_bytes())
+            .await
+            .map_err(|e| format!("stdin error: {}", e))?;
+        stdin
+            .flush()
+            .await
+            .map_err(|e| format!("stdin flush: {}", e))?;
+        drop(stdin);
+    }
+    let out = child
+        .wait_with_output()
+        .await
+        .map_err(|e| format!("wait error: {}", e))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    let code = out.status.code().unwrap_or(-1);
+    let mut combined = String::new();
+    if !stdout.is_empty() {
+        combined.push_str(&stdout);
+    }
+    if !stderr.is_empty() {
+        if !combined.is_empty() {
+            combined.push('\n');
+        }
+        combined.push_str(&format!("[stderr]\n{}", stderr));
+    }
+    if combined.is_empty() {
+        combined.push_str(&format!("[exit code {}]", code));
+    } else {
+        combined.push_str(&format!("\n[exit code {}]", code));
+    }
+    Ok(truncate_output(&combined, TruncateStrategy::Tail))
+}
+
 pub async fn run_bash(command: &str) -> Result<String, String> {
     let out = tokio::process::Command::new("bash")
         .arg("-c")
@@ -910,9 +995,43 @@ pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
         }
         "bash" => {
             let cmd = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
-            // Unified guard for both bash-risk and directory escape — if Some, it is either blocked OR already-executed approved output
             if let Some(result) = guard_bash(cmd).await {
                 return result;
+            }
+            if contains_sudo(cmd) {
+                let mut attempts = 0;
+                loop {
+                    attempts += 1;
+                    let pw_opt = crate::sudo::request(cmd.to_string()).await;
+                    match pw_opt {
+                        None => {
+                            return "[sudo cancelled by user — command not executed]".to_string()
+                        }
+                        Some(pw) => {
+                            let res = run_bash_with_password(cmd, &pw).await;
+                            drop(pw);
+                            match res {
+                                Ok(out)
+                                    if out.contains("Sorry, try again")
+                                        || out.contains("incorrect password") =>
+                                {
+                                    if attempts >= 3 {
+                                        return format!(
+                                            "{}\n[sudo: 3 failed attempts — giving up]",
+                                            out
+                                        );
+                                    }
+                                    continue;
+                                }
+                                Ok(out) => return out,
+                                Err(e) if e.contains("Sorry, try again") && attempts < 3 => {
+                                    continue
+                                }
+                                Err(e) => return format!("Error: {}", e),
+                            }
+                        }
+                    }
+                }
             }
             run_bash(cmd).await
         }

@@ -3078,6 +3078,80 @@ fn draw_approval(f: &mut Frame, area: Rect, req: &crate::approval::ApprovalReque
     f.render_widget(para, inner);
 }
 
+fn draw_sudo(
+    f: &mut Frame,
+    area: Rect,
+    cmd: &str,
+    input: &str,
+    error: Option<&str>,
+    attempt: usize,
+) {
+    let width = (area.width.saturating_sub(6)).min(72);
+    let height = if error.is_some() { 9 } else { 8 };
+    let height = height.min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let rect = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+    let block = Block::default()
+        .title(format!(
+            " Sudo — Password Required (attempt {}/3) ",
+            attempt
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ASHEN.ember))
+        .style(Style::default().bg(THEME.header_bg).fg(ASHEN.bone));
+    let inner = block.inner(rect);
+    f.render_widget(Clear, rect);
+    f.render_widget(block, rect);
+    let short_cmd = if cmd.len() > width as usize - 4 {
+        format!("{}…", &cmd[..(width as usize - 5)])
+    } else {
+        cmd.to_string()
+    };
+    let masked = "•".repeat(input.chars().count());
+    let display = if masked.is_empty() {
+        "▏".to_string()
+    } else {
+        format!("{}▏", masked)
+    };
+    let mut lines = vec![
+        Line::from(Span::styled(
+            format!("  $ {}", short_cmd),
+            Style::default().fg(ASHEN.whisper),
+        )),
+        Line::from(Span::styled(
+            "  Password (masked, not logged):",
+            Style::default().fg(ASHEN.smoke),
+        )),
+        Line::from(vec![
+            Span::styled(
+                "  > ",
+                Style::default()
+                    .fg(ASHEN.frost)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(display, Style::default().fg(ASHEN.bone)),
+        ]),
+    ];
+    if let Some(err) = error {
+        lines.push(Line::from(Span::styled(
+            format!("  ✗ {}", err),
+            Style::default().fg(ASHEN.ember),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Enter submit · Esc cancel",
+        Style::default().fg(ASHEN.deep_ash),
+    )));
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
 fn draw_question(
     f: &mut Frame,
     area: Rect,
@@ -3771,6 +3845,10 @@ async fn app_loop(
     let mut subagent_selected: usize = 0;
     let mut subagent_scroll: usize = 0;
     let mut subagent_detail: Option<usize> = None;
+    let mut pending_sudo: Option<crate::sudo::SudoRequest> = None;
+    let mut sudo_input = String::new();
+    let mut sudo_error: Option<String> = None;
+    let mut sudo_attempt: usize = 1;
     let mut subagent_detail_scroll: u16 = 0;
     let mut subagent_detail_auto_scroll = true;
     let mut subagent_detail_total: usize = 0;
@@ -3825,6 +3903,16 @@ async fn app_loop(
             if let Some(req) = crate::question::take_pending() {
                 question_wizard = Some(crate::question::Wizard::new(req.questions.clone()));
                 pending_question = Some(req);
+                dirty = true;
+            }
+        }
+        // Poll for sudo password requests
+        if pending_sudo.is_none() {
+            if let Some(req) = crate::sudo::take_pending() {
+                sudo_input.clear();
+                sudo_error = None;
+                sudo_attempt = 1;
+                pending_sudo = Some(req);
                 dirty = true;
             }
         }
@@ -4238,7 +4326,7 @@ async fn app_loop(
                         draw_subagent_list(f, f.area(), subagent_selected, subagent_scroll);
                     }
                 }
-                // Approval / question on top of all overlays (visible even inside subagent view)
+                // Approval / question / sudo on top of all overlays (visible even inside subagent view)
                 if !crate::approval::is_auto_accept() {
                     if let Some(ref req) = pending_approval {
                         draw_approval(f, f.area(), req);
@@ -4248,6 +4336,16 @@ async fn app_loop(
                     if let Some(ref wizard) = question_wizard {
                         draw_question(f, f.area(), req, wizard);
                     }
+                }
+                if let Some(ref req) = pending_sudo {
+                    draw_sudo(
+                        f,
+                        f.area(),
+                        &req.cmd,
+                        &sudo_input,
+                        sudo_error.as_deref(),
+                        sudo_attempt,
+                    );
                 }
 
                 // Footer (2 rows) — includes dictate meter/spinner (shifts bar as requested)
@@ -4683,6 +4781,52 @@ async fn app_loop(
                                 pending_approval = Some(req);
                             }
                         }
+                        continue;
+                    }
+                    // Sudo password modal: hijack keys while waiting for password
+                    if pending_sudo.is_some() {
+                        let is_ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+                        let is_alt = k.modifiers.contains(KeyModifiers::ALT);
+                        match k.code {
+                            KeyCode::Esc => {
+                                if let Some(mut req) = pending_sudo.take() {
+                                    if let Some(tx) = req.tx.take() {
+                                        let _ = tx.send(None);
+                                    }
+                                }
+                                sudo_input.clear();
+                                sudo_error = None;
+                                sudo_attempt = 1;
+                            }
+                            KeyCode::Enter => {
+                                if sudo_input.is_empty() {
+                                    sudo_error = Some("password cannot be empty".to_string());
+                                    let req = pending_sudo.take().unwrap();
+                                    pending_sudo = Some(req);
+                                } else {
+                                    if let Some(mut req) = pending_sudo.take() {
+                                        if let Some(tx) = req.tx.take() {
+                                            let _ = tx.send(Some(sudo_input.clone()));
+                                        }
+                                    }
+                                    sudo_input.clear();
+                                    sudo_error = None;
+                                }
+                            }
+                            KeyCode::Backspace => {
+                                sudo_input.pop();
+                                sudo_error = None;
+                            }
+                            KeyCode::Char(c) if !is_ctrl && !is_alt => {
+                                sudo_input.push(c);
+                                sudo_error = None;
+                            }
+                            _ => {
+                                let req = pending_sudo.take().unwrap();
+                                pending_sudo = Some(req);
+                            }
+                        }
+                        dirty = true;
                         continue;
                     }
                     // Subagent overlay: hijack keys (highest priority after Shift+Tab)

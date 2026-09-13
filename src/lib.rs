@@ -13,5 +13,6 @@ pub mod observer;
 pub mod question;
 pub mod session;
 pub mod skills;
+pub mod sudo;
 pub mod telemetry;
 pub mod tools;

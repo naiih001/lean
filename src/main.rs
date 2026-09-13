@@ -13,6 +13,7 @@ mod observer;
 mod question;
 mod session;
 mod skills;
+mod sudo;
 mod telemetry;
 mod theme;
 mod tools;
