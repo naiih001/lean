@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::sync::OnceLock;
 
 pub const DEFAULT_MODEL: &str = "mimo-v2.5-free";
 
@@ -48,6 +49,37 @@ impl Client {
             provider: resolved.provider.clone(),
             api_mode: resolved.api_mode.clone(),
         }
+    }
+
+    fn opencode_session_id() -> String {
+        static SESSION: OnceLock<String> = OnceLock::new();
+        SESSION
+            .get_or_init(|| {
+                // lean- + 12 hex chars (like zen_proxy jcode-proxy-xxx) — stable per process, mirrors pi's sessionId
+                let nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                format!("lean-{:012x}", nanos & 0xffffffffff)
+            })
+            .clone()
+    }
+
+    pub fn is_opencode(&self) -> bool {
+        // pi: provider == "opencode" || "opencode-go" || hostname == "opencode.ai"
+        self.base_url.contains("opencode.ai")
+            || matches!(self.provider, crate::models::Provider::Generic)
+                && self.base_url.contains("opencode")
+    }
+
+    pub fn opencode_headers(&self) -> Vec<(String, String)> {
+        if !self.is_opencode() {
+            return Vec::new();
+        }
+        vec![
+            ("x-opencode-session".to_string(), Self::opencode_session_id()),
+            ("x-opencode-client".to_string(), "pi".to_string()),
+        ]
     }
 
     pub fn is_anthropic(&self) -> bool {
@@ -99,6 +131,10 @@ impl Client {
     pub fn apply_auth(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         let mut b = builder;
         for (k, v) in self.auth_headers() {
+            b = b.header(k, v);
+        }
+        // pi parity: opencode free tier requires x-opencode-session/client (MissingSessionID)
+        for (k, v) in self.opencode_headers() {
             b = b.header(k, v);
         }
         b
