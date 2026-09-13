@@ -26,47 +26,57 @@ fn render_inline(text: &str, base: Style) -> Vec<Span<'static>> {
             }
         }
 
-        // Bold: **...**
-        if i + 1 < len && chars[i] == '*' && chars[i + 1] == '*' {
-            if let Some(end) = find_double_star_end(&chars, i + 2) {
+        // Bold: **...**  (also __...__)
+        if i + 1 < len && ((chars[i] == '*' && chars[i + 1] == '*') || (chars[i] == '_' && chars[i + 1] == '_')) {
+            let marker = chars[i];
+            if let Some(end) = find_double_marker_end(&chars, i + 2, marker) {
                 let inner: String = chars[i + 2..end].iter().collect();
-                let mut spans_inner = render_inline(&inner, base);
-                for s in &mut spans_inner {
-                    s.style = s.style.add_modifier(Modifier::BOLD).fg(ASHEN.bone);
+                if !inner.trim().is_empty() {
+                    let mut inner_spans = render_inline(&inner, base);
+                    for s in &mut inner_spans {
+                        s.style = s.style.add_modifier(Modifier::BOLD).fg(ASHEN.bone);
+                    }
+                    spans.extend(inner_spans);
+                    i = end + 2;
+                    continue;
                 }
-                spans.extend(spans_inner);
-                i = end + 2;
-                continue;
             }
         }
 
-        // Italic: *...* (single star, not preceded/followed by *)
-        if chars[i] == '*'
-            && (i == 0 || chars[i - 1] != '*')
-            && (i + 1 < len && chars[i + 1] != '*')
+        // Italic: *...* or _..._
+        if (chars[i] == '*' || chars[i] == '_')
+            && (i == 0 || chars[i - 1] != chars[i])
+            && (i + 1 < len && chars[i + 1] != chars[i])
         {
-            if let Some(end) = find_single_star_end(&chars, i + 1) {
+            let marker = chars[i];
+            if let Some(end) = find_single_marker_end(&chars, i + 1, marker) {
                 let inner: String = chars[i + 1..end].iter().collect();
-                let mut spans_inner = render_inline(&inner, base);
-                for s in &mut spans_inner {
-                    s.style = s.style.add_modifier(Modifier::ITALIC);
+                if !inner.trim().is_empty() && !inner.contains('\n') {
+                    let mut inner_spans = render_inline(&inner, base);
+                    for s in &mut inner_spans {
+                        s.style = s.style.add_modifier(Modifier::ITALIC).fg(ASHEN.pale_ash);
+                    }
+                    spans.extend(inner_spans);
+                    i = end + 1;
+                    continue;
                 }
-                spans.extend(spans_inner);
-                i = end + 1;
-                continue;
             }
         }
 
-        // Link: [text](url)
-        if chars[i] == '[' {
-            if let Some(bracket_end) = find_char(&chars, i + 1, ']') {
+        // Link: [text](url) and ![alt](url)
+        if chars[i] == '[' || (chars[i] == '!' && i + 1 < len && chars[i + 1] == '[') {
+            let is_image = chars[i] == '!';
+            let bracket_start = if is_image { i + 1 } else { i };
+            if let Some(bracket_end) = find_char(&chars, bracket_start + 1, ']') {
                 if bracket_end + 1 < len && chars[bracket_end + 1] == '(' {
                     if let Some(paren_end) = find_char(&chars, bracket_end + 2, ')') {
-                        let link_text: String = chars[i + 1..bracket_end].iter().collect();
+                        let link_text: String = chars[bracket_start + 1..bracket_end].iter().collect();
                         let url: String = chars[bracket_end + 2..paren_end].iter().collect();
+                        let mut mods = Modifier::UNDERLINED;
+                        if is_image { mods |= Modifier::ITALIC; }
                         spans.push(Span::styled(
                             link_text,
-                            base.fg(ASHEN.frost).add_modifier(Modifier::UNDERLINED),
+                            base.fg(ASHEN.frost).add_modifier(mods),
                         ));
                         spans.push(Span::styled(format!(" ({})", url), base.fg(ASHEN.deep_ash)));
                         i = paren_end + 1;
@@ -76,7 +86,21 @@ fn render_inline(text: &str, base: Style) -> Vec<Span<'static>> {
             }
         }
 
-        // Plain text: collect until next special char
+        // Strikethrough: ~~...~~
+        if i + 1 < len && chars[i] == '~' && chars[i + 1] == '~' {
+            if let Some(end) = find_double_marker_end(&chars, i + 2, '~') {
+                let inner: String = chars[i + 2..end].iter().collect();
+                let mut inner_spans = render_inline(&inner, base);
+                for s in &mut inner_spans {
+                    s.style = s.style.add_modifier(Modifier::CROSSED_OUT).fg(ASHEN.deep_ash);
+                }
+                spans.extend(inner_spans);
+                i = end + 2;
+                continue;
+            }
+        }
+
+        // Plain text
         let start = i;
         while i < len && !is_inline_special(chars[i]) {
             i += 1;
@@ -85,8 +109,6 @@ fn render_inline(text: &str, base: Style) -> Vec<Span<'static>> {
             let text: String = chars[start..i].iter().collect();
             spans.push(Span::styled(text, base));
         } else {
-            // Unmatched special char (e.g. a lone '[' or '`'). Emit it as
-            // literal text and advance so the loop can never spin forever.
             spans.push(Span::styled(chars[i].to_string(), base));
             i += 1;
         }
@@ -96,7 +118,7 @@ fn render_inline(text: &str, base: Style) -> Vec<Span<'static>> {
 }
 
 fn is_inline_special(c: char) -> bool {
-    c == '*' || c == '`' || c == '['
+    c == '*' || c == '`' || c == '[' || c == '!' || c == '_' || c == '~'
 }
 
 fn find_inline_code_end(chars: &[char], start: usize) -> Option<usize> {
@@ -108,18 +130,18 @@ fn find_inline_code_end(chars: &[char], start: usize) -> Option<usize> {
     None
 }
 
-fn find_double_star_end(chars: &[char], start: usize) -> Option<usize> {
+fn find_double_marker_end(chars: &[char], start: usize, marker: char) -> Option<usize> {
     for i in start..chars.len() - 1 {
-        if chars[i] == '*' && chars[i + 1] == '*' {
+        if chars[i] == marker && chars[i + 1] == marker {
             return Some(i);
         }
     }
     None
 }
 
-fn find_single_star_end(chars: &[char], start: usize) -> Option<usize> {
+fn find_single_marker_end(chars: &[char], start: usize, marker: char) -> Option<usize> {
     for i in start..chars.len() {
-        if chars[i] == '*' && (i + 1 >= chars.len() || chars[i + 1] != '*') {
+        if chars[i] == marker && (i + 1 >= chars.len() || chars[i + 1] != marker) {
             return Some(i);
         }
     }
@@ -143,50 +165,57 @@ pub fn render_markdown(content: &str, indent: usize) -> Vec<Line<'static>> {
     let mut in_code_block = false;
     let mut code_lang = String::new();
     let mut code_buf: Vec<String> = Vec::new();
+    let mut prev_was_header = false;
 
     for raw_line in content.lines() {
         let trimmed = raw_line.trim_end();
 
-        // Fenced code block start/end
+        // Fenced code block
         if trimmed.starts_with("```") {
             if in_code_block {
-                // End code block
                 let code_content = code_buf.join("\n");
-                for cl in code_content.lines() {
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("{}  ", pad), Style::default()),
-                        Span::styled(
-                            cl.to_string(),
-                            Style::default().fg(ASHEN.pale_ash).bg(ASHEN.stone),
-                        ),
-                    ]));
-                }
-                if code_buf.is_empty() {
+                if code_content.is_empty() {
                     lines.push(Line::from(vec![
                         Span::styled(format!("{}  ", pad), Style::default()),
                         Span::styled(" ", Style::default().bg(ASHEN.stone)),
                     ]));
+                } else {
+                    for cl in code_content.lines() {
+                        lines.push(Line::from(vec![
+                            Span::styled(format!("{}  ", pad), Style::default()),
+                            Span::styled(
+                                cl.to_string(),
+                                Style::default().fg(ASHEN.pale_ash).bg(ASHEN.stone),
+                            ),
+                        ]));
+                    }
                 }
                 in_code_block = false;
                 code_buf.clear();
                 code_lang.clear();
+                lines.push(Line::from(""));
+                prev_was_header = false;
             } else {
-                // Start code block
                 in_code_block = true;
                 code_lang = trimmed.trim_start_matches('`').trim().to_string();
-                // Show language tag if present
                 if !code_lang.is_empty() {
                     lines.push(Line::from(vec![
                         Span::styled(format!("{}  ", pad), Style::default()),
                         Span::styled(
-                            code_lang.clone(),
+                            format!("{} ", code_lang),
                             Style::default()
                                 .fg(ASHEN.deep_ash)
                                 .add_modifier(Modifier::ITALIC)
                                 .bg(ASHEN.stone),
                         ),
                     ]));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("{}  ", pad), Style::default()),
+                        Span::styled(" ", Style::default().bg(ASHEN.stone)),
+                    ]));
                 }
+                prev_was_header = false;
             }
             continue;
         }
@@ -196,45 +225,55 @@ pub fn render_markdown(content: &str, indent: usize) -> Vec<Line<'static>> {
             continue;
         }
 
-        // Horizontal rule: --- or *** or ___
+        // Horizontal rule
         if is_horizontal_rule(trimmed) {
             lines.push(Line::from(vec![Span::styled(
-                format!("{}   {}", pad, "─".repeat(40)),
+                format!("{}  {}", pad, "─".repeat(42)),
                 Style::default().fg(ASHEN.charcoal),
             )]));
+            lines.push(Line::from(""));
+            prev_was_header = false;
             continue;
         }
 
-        // Headers: # ... ######
+        // Headers
         if let Some(header) = parse_header(trimmed) {
             let (level, text) = header;
-            let (fg, modifiers) = match level {
+            if !lines.is_empty() {
+                lines.push(Line::from(""));
+            }
+            let (fg, mods) = match level {
                 1 => (ASHEN.moss, Modifier::BOLD),
-                2 => (ASHEN.frost, Modifier::BOLD),
+                2 => (ASHEN.bone, Modifier::BOLD),
                 3 => (ASHEN.ember_glow, Modifier::BOLD),
                 _ => (ASHEN.slate, Modifier::BOLD),
             };
-            let prefix = "#".repeat(level);
+            let prefix = match level {
+                1 => "█".to_string(),
+                2 => "▓".to_string(),
+                _ => "#".repeat(level),
+            };
             let mut spans = vec![Span::styled(
                 format!("{} {} ", pad, prefix),
-                Style::default().fg(fg).add_modifier(modifiers),
+                Style::default().fg(fg).add_modifier(mods),
             )];
             spans.extend(render_inline(
                 text,
-                Style::default().fg(fg).add_modifier(modifiers),
+                Style::default().fg(fg).add_modifier(mods),
             ));
             lines.push(Line::from(spans));
             if level <= 2 {
-                // Underline for h1/h2
                 lines.push(Line::from(Span::styled(
-                    format!("{} {}", pad, "─".repeat(text.chars().count().min(50))),
+                    format!("{} {}", pad, "─".repeat(text.chars().count().min(48))),
                     Style::default().fg(ASHEN.charcoal),
                 )));
             }
+            lines.push(Line::from(""));
+            prev_was_header = true;
             continue;
         }
 
-        // Blockquote: > ...
+        // Blockquote
         if let Some(quote_text) = trimmed.strip_prefix('>') {
             let qt = quote_text.strip_prefix(' ').unwrap_or(quote_text);
             let mut spans = vec![Span::styled(
@@ -248,10 +287,33 @@ pub fn render_markdown(content: &str, indent: usize) -> Vec<Line<'static>> {
                 .add_modifier(Modifier::ITALIC);
             spans.extend(render_inline(qt, base));
             lines.push(Line::from(spans));
+            prev_was_header = false;
             continue;
         }
 
-        // Unordered list: - or *
+        // Task list
+        if let Some(task) = parse_task_list(trimmed) {
+            let (checked, item) = task;
+            let box_char = if checked { "☑" } else { "☐" };
+            let mut spans = vec![
+                Span::styled(format!("{}   ", pad), Style::default()),
+                Span::styled(
+                    format!("{} ", box_char),
+                    Style::default().fg(if checked { ASHEN.moss } else { ASHEN.deep_ash }),
+                ),
+            ];
+            let style = if checked {
+                Style::default().fg(ASHEN.deep_ash).add_modifier(Modifier::CROSSED_OUT)
+            } else {
+                Style::default().fg(ASHEN.smoke)
+            };
+            spans.extend(render_inline(item, style));
+            lines.push(Line::from(spans));
+            prev_was_header = false;
+            continue;
+        }
+
+        // Unordered list
         if let Some(item) = parse_unordered_list(trimmed) {
             let mut spans = vec![Span::styled(
                 format!("{}   • ", pad),
@@ -259,34 +321,38 @@ pub fn render_markdown(content: &str, indent: usize) -> Vec<Line<'static>> {
             )];
             spans.extend(render_inline(item, Style::default().fg(ASHEN.smoke)));
             lines.push(Line::from(spans));
+            prev_was_header = false;
             continue;
         }
 
-        // Ordered list: 1. or 1)
+        // Ordered list
         if let Some((num, item)) = parse_ordered_list(trimmed) {
             let mut spans = vec![Span::styled(
-                format!("{}   {}. ", pad, num),
+                format!("{}  {:>2}. ", pad, num),
                 Style::default().fg(ASHEN.ember),
             )];
             spans.extend(render_inline(item, Style::default().fg(ASHEN.smoke)));
             lines.push(Line::from(spans));
+            prev_was_header = false;
             continue;
         }
 
-        // Plain text line
+        // Plain text
         if trimmed.is_empty() {
+            if lines.last().map(|l| l.width() == 0).unwrap_or(false) {
+                continue;
+            }
             lines.push(Line::from(""));
         } else {
             let mut spans = vec![Span::styled(format!("{} ", pad), Style::default())];
             spans.extend(render_inline(trimmed, Style::default().fg(ASHEN.smoke)));
             lines.push(Line::from(spans));
         }
+        prev_was_header = false;
     }
 
-    // Flush any unclosed code block
     if in_code_block && !code_buf.is_empty() {
-        let code_content = code_buf.join("\n");
-        for cl in code_content.lines() {
+        for cl in code_buf.join("\n").lines() {
             lines.push(Line::from(vec![
                 Span::styled(format!("{}  ", pad), Style::default()),
                 Span::styled(
@@ -295,6 +361,11 @@ pub fn render_markdown(content: &str, indent: usize) -> Vec<Line<'static>> {
                 ),
             ]));
         }
+        lines.push(Line::from(""));
+    }
+
+    while lines.len() > 1 && lines.last().map(|l| l.width() == 0).unwrap_or(false) && lines[lines.len() - 2].width() == 0 {
+        lines.pop();
     }
 
     lines
@@ -325,7 +396,20 @@ fn parse_header(line: &str) -> Option<(usize, &str)> {
     if hash_count >= 1 && hash_count <= 6 {
         let rest = &trimmed[hash_count..];
         if let Some(text) = rest.strip_prefix(' ') {
-            return Some((hash_count, text));
+            if !text.is_empty() {
+                return Some((hash_count, text));
+            }
+        }
+    }
+    None
+}
+
+fn parse_task_list(line: &str) -> Option<(bool, &str)> {
+    let trimmed = line.trim();
+    for prefix in ["- [ ] ", "* [ ] ", "+ [ ] ", "- [x] ", "- [X] ", "* [x] ", "* [X] "] {
+        if trimmed.starts_with(prefix) {
+            let checked = prefix.contains("[x]") || prefix.contains("[X]");
+            return Some((checked, &trimmed[prefix.len()..]));
         }
     }
     None
@@ -336,6 +420,8 @@ fn parse_unordered_list(line: &str) -> Option<&str> {
     if trimmed.starts_with("- ") {
         Some(&trimmed[2..])
     } else if trimmed.starts_with("* ") {
+        if trimmed.starts_with("**") { None } else { Some(&trimmed[2..]) }
+    } else if trimmed.starts_with("+ ") {
         Some(&trimmed[2..])
     } else {
         None
@@ -395,7 +481,6 @@ mod tests {
 
     #[test]
     fn test_unmatched_bracket_terminates() {
-        // A lone '[' with no valid link must not loop forever.
         let spans = render_inline("hello [unmatched", Style::default());
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "hello [unmatched");
@@ -426,6 +511,17 @@ mod tests {
         assert_eq!(spans[0].content, "text");
         assert!(spans[0].style.add_modifier.contains(Modifier::UNDERLINED));
         assert_eq!(spans[1].content, " (https://x.test)");
+    }
+
+    #[test]
+    fn test_screenshot_sample() {
+        let md = "## Key Code\n- **Agent prompt** (agent.rs): `You are Lean, a coding assistant` → Defines\n1. **TUI (Ratatui)** → renders UI";
+        let lines = render_markdown(md, 2);
+        let flat: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.to_string())).collect::<Vec<_>>().join("\n");
+        assert!(!flat.contains("**"), "stars should be stripped, got: {}", flat);
+        assert!(!flat.contains("##"), "hashes should be styled not raw, got: {}", flat);
+        assert!(flat.contains("Agent prompt"));
+        assert!(flat.contains("TUI"));
     }
 
     #[test]
