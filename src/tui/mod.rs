@@ -3777,14 +3777,21 @@ async fn app_loop(
                         let after = &w.result[pos + 1..];
                         // also strip leading "[subagent" line if present
                         if after.starts_with("[subagent") {
-                            after.find('\n').map(|p| after[p + 1..].trim_start().to_string()).unwrap_or(after.to_string())
+                            after
+                                .find('\n')
+                                .map(|p| after[p + 1..].trim_start().to_string())
+                                .unwrap_or(after.to_string())
                         } else {
                             after.trim_start().to_string()
                         }
                     } else {
                         w.result.clone()
                     };
-                    let body = if clean.trim().is_empty() { "(no output)".to_string() } else { clean };
+                    let body = if clean.trim().is_empty() {
+                        "(no output)".to_string()
+                    } else {
+                        clean
+                    };
                     // keep args JSON-ish like original tool call for preview
                     let args_json = if w.task.is_empty() {
                         format!(r#"{{"agent":"{}","task":"{}"}}"#, w.agent, w.label)

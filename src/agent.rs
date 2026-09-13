@@ -864,6 +864,60 @@ fn prune_context_messages(messages: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+fn history_slice_for_api<'a>(history: &'a [Value]) -> &'a [Value] {
+    let start = if history.len() > 20 {
+        history.len() - 20
+    } else {
+        0
+    };
+    let slice = &history[start..];
+    // Avoid starting inside a tool pair: skip leading tool outputs whose matching call was pruned
+    if slice
+        .iter()
+        .any(|m| m.get("role").and_then(|r| r.as_str()) == Some("tool"))
+    {
+        // Find first non-tool entry; if slice starts with tool(s), drop them
+        if let Some(first_non_tool) = slice
+            .iter()
+            .position(|m| m.get("role").and_then(|r| r.as_str()) != Some("tool"))
+        {
+            // Only skip if the leading segment is all tool outputs (orphaned)
+            if first_non_tool > 0
+                && slice[..first_non_tool]
+                    .iter()
+                    .all(|m| m.get("role").and_then(|r| r.as_str()) == Some("tool"))
+            {
+                return &slice[first_non_tool..];
+            }
+        }
+    }
+    slice
+}
+
+fn drop_orphaned_tool_outputs(messages: &mut Vec<Value>) {
+    // Collect valid assistant tool_call ids
+    let mut valid_ids = std::collections::HashSet::new();
+    for m in messages.iter() {
+        if m.get("role").and_then(|r| r.as_str()) == Some("assistant") {
+            if let Some(calls) = m.get("tool_calls").and_then(|v| v.as_array()) {
+                for c in calls {
+                    if let Some(id) = c.get("id").and_then(|v| v.as_str()) {
+                        valid_ids.insert(id.to_string());
+                    }
+                }
+            }
+        }
+    }
+    messages.retain(|m| {
+        if m.get("role").and_then(|r| r.as_str()) == Some("tool") {
+            if let Some(id) = m.get("tool_call_id").and_then(|v| v.as_str()) {
+                return valid_ids.contains(id);
+            }
+        }
+        true
+    });
+}
+
 // ── Network retry helpers ──────────────────────────────────────────────
 fn is_retryable_status(status: u16) -> bool {
     matches!(status, 429 | 500..=599)
@@ -1106,7 +1160,7 @@ pub fn run_agent_with_history(
             let client = Client::from_resolved(&resolved);
             let system = build_system_prompt().await;
             let mut messages: Vec<Value> = vec![json!({"role": "system", "content": system})];
-            let hist_slice = if history.len() > 20 { &history[history.len()-20..] } else { &history[..] };
+            let hist_slice = history_slice_for_api(&history);
             for v in hist_slice {
                 let mut val = v.clone();
                 if let Some(content) = val.get("content") { if let Some(s) = content.as_str() { if s.chars().count() > 3000 { val["content"] = json!(format!("{}… [truncated]", truncate_chars(s, 3000))); } } }
@@ -1167,6 +1221,7 @@ pub fn run_agent_with_history(
                 let mut buf = String::new();
                 // For mapping output_index/call_id to tool entry when delta doesn't carry name
                 let mut pending_calls: HashMap<String, String> = HashMap::new(); // item_id/call_id -> name placeholder
+                let mut pending_deltas: HashMap<String, String> = HashMap::new(); // buffer for deltas that arrived before OutputItemAdded
                 while let Some(chunk) = stream.next().await {
                     let bytes = match chunk { Ok(b) => b, Err(e) => { yield AgentEvent::Text { delta: format!("\n[stream error: {}]", e) }; break; } };
                     let text = String::from_utf8_lossy(&bytes);
@@ -1211,7 +1266,16 @@ pub fn run_agent_with_history(
                                             entry.id = call_id.clone();
                                             if !fc_id.is_empty() {
                                                 pending_calls.insert(fc_id.clone(), call_id.clone());
-                                                // also keep reverse for lookup if delta uses fc
+                                            }
+                                            // Flush any deltas that arrived before the item was announced
+                                            for key in [fc_id.clone(), call_id.clone()] {
+                                                if let Some(buf) = pending_deltas.remove(&key) {
+                                                    entry.args.push_str(&buf);
+                                                }
+                                            }
+                                            // Also check pending keyed by raw fc
+                                            if let Some(buf) = pending_deltas.remove(&fc_id) {
+                                                if !entry.args.contains(&buf) { entry.args.push_str(&buf); }
                                             }
                                         }
                                     }
@@ -1222,31 +1286,31 @@ pub fn run_agent_with_history(
                                         let call_id = item.call_id.clone().unwrap_or_else(|| fc_id.clone());
                                         let name = item.name.clone().unwrap_or_default();
                                         let key = if !call_id.is_empty() { call_id.clone() } else { fc_id.clone() };
-                                        // also resolve via pending if fc key exists but we keyed by call
                                         let resolved_key = if tool_acc.contains_key(&key) { key.clone() } else if let Some(mapped) = pending_calls.get(&fc_id) { mapped.clone() } else { key.clone() };
                                         if !resolved_key.is_empty() {
                                             let entry = tool_acc.entry(resolved_key.clone()).or_insert_with(|| ToolAccum { id: call_id.clone(), name: String::new(), args: String::new() });
                                             if !name.is_empty() { entry.name = name; }
-                                            if let Some(args) = item.arguments { if !args.is_empty() { entry.args = args; } }
+                                            if let Some(args) = item.arguments { if !args.is_empty() && entry.args.is_empty() { entry.args = args; } }
                                             if !call_id.is_empty() { entry.id = call_id.clone(); }
+                                            // Flush pending deltas now that we have the real id
+                                            for k in [fc_id.clone(), call_id.clone(), resolved_key.clone()] {
+                                                if let Some(buf) = pending_deltas.remove(&k) {
+                                                    if entry.args.is_empty() { entry.args = buf; } else if !entry.args.contains(&buf) { entry.args.push_str(&buf); }
+                                                }
+                                            }
                                         }
                                     }
                                 },
                                 llm::ResponsesEvent::FunctionCallArgsDelta { delta, item_id, call_id, .. } => {
                                     let raw = call_id.clone().or(item_id.clone()).unwrap_or_default();
-                                    // Resolve fc -> call via pending_calls
                                     let resolved = if let Some(mapped) = pending_calls.get(&raw) { mapped.clone() } else { raw.clone() };
                                     let key = if tool_acc.contains_key(&resolved) { resolved.clone() } else if tool_acc.contains_key(&raw) { raw.clone() } else { resolved.clone() };
-                                    if key.is_empty() {
-                                        if let Some((k, _)) = tool_acc.iter().next().map(|(k,v)| (k.clone(), v)) {
-                                            if let Some(entry) = tool_acc.get_mut(&k) { entry.args.push_str(&delta); }
-                                        } else {
-                                            // No entry yet — create placeholder; name will be filled by OutputItemAdded/Done
-                                            let entry = tool_acc.entry("call_0".to_string()).or_insert_with(|| ToolAccum { id: "call_0".to_string(), name: String::new(), args: String::new() });
-                                            entry.args.push_str(&delta);
-                                        }
+                                    if key.is_empty() || !tool_acc.contains_key(&key) && !tool_acc.contains_key(&raw) && pending_calls.get(&raw).is_none() {
+                                        // No tool entry yet — buffer until OutputItemAdded arrives (strict: never synthesize call_0)
+                                        pending_deltas.entry(raw.clone()).or_default().push_str(&delta);
                                     } else {
-                                        let entry = tool_acc.entry(key.clone()).or_insert_with(|| ToolAccum { id: key.clone(), name: String::new(), args: String::new() });
+                                        let target = if tool_acc.contains_key(&resolved) { resolved.clone() } else { raw.clone() };
+                                        let entry = tool_acc.entry(target.clone()).or_insert_with(|| ToolAccum { id: target.clone(), name: String::new(), args: String::new() });
                                         entry.args.push_str(&delta);
                                     }
                                 },
@@ -1338,18 +1402,36 @@ pub fn run_agent_with_history(
                                         let e = tool_acc.entry(call_id.clone()).or_insert_with(|| ToolAccum { id: call_id.clone(), name: String::new(), args: String::new() });
                                         if !name.is_empty() { e.name = name; }
                                         e.id = call_id.clone();
+                                        if !fc_id.is_empty() { pending_calls.insert(fc_id.clone(), call_id.clone()); }
+                                        for k in [fc_id.clone(), call_id.clone()] { if let Some(buf) = pending_deltas.remove(&k) { e.args.push_str(&buf); } }
                                     }
                                 }
                             },
                             llm::ResponsesEvent::FunctionCallArgsDelta { delta, item_id, call_id, .. } => {
                                 let raw = call_id.clone().or(item_id.clone()).unwrap_or_default();
-                                let target = if tool_acc.contains_key(&raw) { raw.clone() } else if let Some((k,_)) = tool_acc.iter().next().map(|(k,v)|(k.clone(),v)) { k.clone() } else { raw.clone() };
-                                if target.is_empty() { if let Some((k,_))=tool_acc.iter().next().map(|(k,v)|(k.clone(),v)) { if let Some(e)=tool_acc.get_mut(&k){e.args.push_str(&delta);} } } else { let e=tool_acc.entry(target.clone()).or_insert_with(|| ToolAccum{id: target.clone(), name:String::new(), args:String::new()}); e.args.push_str(&delta); }
+                                let resolved = if let Some(mapped) = pending_calls.get(&raw) { mapped.clone() } else { raw.clone() };
+                                if tool_acc.contains_key(&resolved) || tool_acc.contains_key(&raw) {
+                                    let target = if tool_acc.contains_key(&resolved) { resolved } else { raw };
+                                    let e = tool_acc.entry(target.clone()).or_insert_with(|| ToolAccum{id: target.clone(), name:String::new(), args:String::new()});
+                                    e.args.push_str(&delta);
+                                } else {
+                                    pending_deltas.entry(raw.clone()).or_default().push_str(&delta);
+                                }
                             },
                             _ => {}
                         }
                     } else if let Ok(chunk) = serde_json::from_str::<llm::ChatChunk>(data) {
                         for ch in chunk.choices { if let Some(t)=ch.delta.content{accum_text.push_str(&t); yield AgentEvent::Text{delta:t}; } if let Some(tcs)=ch.delta.tool_calls { for tc in tcs { let key=tc.id.clone().unwrap_or_else(||format!("idx_{}",tc.index)); let e=tool_acc.entry(key.clone()).or_insert_with(||ToolAccum{id:tc.id.clone().unwrap_or(key),name:String::new(),args:String::new()}); if let Some(id)=tc.id{if !id.is_empty(){e.id=id;}} if let Some(f)=tc.function{if let Some(n)=f.name{if !n.is_empty(){e.name=n;}} if let Some(a)=f.arguments{e.args.push_str(&a);}} } } }
+                    }
+                }
+                // Flush any buffered deltas that arrived before OutputItemAdded (strict: no call_0 synthesis)
+                if !pending_deltas.is_empty() {
+                    let buffered: Vec<(String,String)> = pending_deltas.drain().collect();
+                    for (raw, buf) in buffered {
+                        let resolved = pending_calls.get(&raw).cloned().unwrap_or(raw.clone());
+                        if let Some(e) = tool_acc.get_mut(&resolved) { e.args.push_str(&buf); }
+                        else if let Some(e) = tool_acc.get_mut(&raw) { e.args.push_str(&buf); }
+                        else if tool_acc.len() == 1 { if let Some((_, e)) = tool_acc.iter_mut().next() { e.args.push_str(&buf); } }
                     }
                 }
                 if !accum_text.is_empty() { final_text.push_str(&accum_text); yield AgentEvent::TextDone { text: accum_text.clone() }; tracker.record_text(&accum_text); }
@@ -1451,6 +1533,7 @@ pub fn run_agent_with_history(
                     let truncated = truncate_for_llm(&result);
                     messages.push(json!({"role": "tool", "tool_call_id": id, "content": truncated}));
                 }
+                drop_orphaned_tool_outputs(&mut messages);
                 let _ = usage;
             }
             yield AgentEvent::Done { text: final_text, history: messages.clone() };
@@ -1461,7 +1544,7 @@ pub fn run_agent_with_history(
         let client = Client::from_resolved(&resolved);
         let system = build_system_prompt().await;
         let mut messages: Vec<Value> = vec![json!({"role": "system", "content": system})];
-        let hist_slice = if history.len() > 20 { &history[history.len()-20..] } else { &history[..] };
+        let hist_slice = history_slice_for_api(&history);
         for v in hist_slice {
             let mut val = v.clone();
             if let Some(content) = val.get("content") { if let Some(s) = content.as_str() { if s.chars().count() > 3000 { val["content"] = json!(format!("{}… [truncated]", truncate_chars(s, 3000))); } } }
@@ -1664,6 +1747,7 @@ pub fn run_agent_with_history(
                 let truncated = truncate_for_llm(&result);
                 messages.push(json!({"role": "tool", "tool_call_id": id, "content": truncated}));
             }
+            drop_orphaned_tool_outputs(&mut messages);
             let _ = usage;
         }
         yield AgentEvent::Done { text: final_text, history: messages.clone() };

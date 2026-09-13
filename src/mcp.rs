@@ -403,6 +403,170 @@ pub fn status_summary() -> String {
     }
 }
 
+fn sanitize_pattern(pat: &str) -> String {
+    // OpenAI strict validator rejects \0 (null byte) in ECMA regex
+    pat.replace("\\0", "")
+        .replace("\\x00", "")
+        .replace('\0', "")
+}
+
+fn sanitize_schema(value: Value) -> Value {
+    match value {
+        Value::Object(mut map) => {
+            // Strip JSON Schema meta keys that OpenAI's strict validator rejects
+            map.remove("$schema");
+            map.remove("$id");
+            map.remove("$defs");
+            map.remove("definitions");
+            // Sanitize pattern containing \0
+            if let Some(pat) = map
+                .get("pattern")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+            {
+                let cleaned = sanitize_pattern(&pat);
+                if cleaned != pat {
+                    if cleaned.is_empty() {
+                        map.remove("pattern");
+                    } else {
+                        map.insert("pattern".to_string(), Value::String(cleaned));
+                    }
+                }
+                if let Some(p) = map.get("pattern").and_then(|v| v.as_str()) {
+                    if p.contains('\0') {
+                        map.remove("pattern");
+                    }
+                }
+            }
+            // Strict requires "type":"object" when "properties" present
+            if map.contains_key("properties") && !map.contains_key("type") {
+                map.insert("type".to_string(), Value::String("object".to_string()));
+            }
+            // Recursively sanitize properties
+            if let Some(props) = map.get("properties").cloned() {
+                if let Some(obj) = props.as_object() {
+                    let mut sanitized = serde_json::Map::new();
+                    for (k, v) in obj {
+                        sanitized.insert(k.clone(), sanitize_schema(v.clone()));
+                    }
+                    map.insert("properties".to_string(), Value::Object(sanitized));
+                }
+            }
+            // Sanitize patternProperties
+            if let Some(pp) = map.get("patternProperties").cloned() {
+                if let Some(obj) = pp.as_object() {
+                    let mut sanitized = serde_json::Map::new();
+                    for (k, v) in obj {
+                        sanitized.insert(k.clone(), sanitize_schema(v.clone()));
+                    }
+                    map.insert("patternProperties".to_string(), Value::Object(sanitized));
+                }
+            }
+            // Sanitize single-schema keywords
+            for key in [
+                "items",
+                "not",
+                "propertyNames",
+                "contains",
+                "if",
+                "then",
+                "else",
+            ] {
+                if let Some(v) = map.get(key).cloned() {
+                    if v.is_object() || v.is_array() {
+                        map.insert(key.to_string(), sanitize_schema(v));
+                    }
+                }
+            }
+            // additionalProperties may be bool or schema
+            if let Some(v) = map.get("additionalProperties").cloned() {
+                if v.is_object() || v.is_array() {
+                    map.insert("additionalProperties".to_string(), sanitize_schema(v));
+                }
+            }
+            // Sanitize array-schema keywords
+            for key in ["anyOf", "allOf", "oneOf", "prefixItems"] {
+                if let Some(arr) = map.get(key).cloned() {
+                    if let Some(a) = arr.as_array() {
+                        let sanitized: Vec<Value> =
+                            a.iter().cloned().map(sanitize_schema).collect();
+                        map.insert(key.to_string(), Value::Array(sanitized));
+                    }
+                }
+            }
+            // Clean any nested schema-like objects under other keys (e.g. Gmail's inlineImages items)
+            let keys: Vec<String> = map.keys().cloned().collect();
+            for k in keys {
+                if [
+                    "type",
+                    "description",
+                    "enum",
+                    "pattern",
+                    "minLength",
+                    "maxLength",
+                    "minimum",
+                    "maximum",
+                    "required",
+                    "title",
+                    "examples",
+                    "default",
+                    "format",
+                    "properties",
+                    "items",
+                    "anyOf",
+                    "allOf",
+                    "oneOf",
+                    "prefixItems",
+                    "additionalProperties",
+                    "patternProperties",
+                    "not",
+                    "propertyNames",
+                    "contains",
+                    "if",
+                    "then",
+                    "else",
+                ]
+                .contains(&k.as_str())
+                {
+                    continue;
+                }
+                if let Some(v) = map.get(&k).cloned() {
+                    if v.is_object() {
+                        if let Some(obj) = v.as_object() {
+                            if obj.contains_key("type")
+                                || obj.contains_key("properties")
+                                || obj.contains_key("pattern")
+                                || obj.contains_key("enum")
+                                || obj.contains_key("anyOf")
+                            {
+                                map.insert(k, sanitize_schema(v));
+                            }
+                        }
+                    } else if v.is_array() {
+                        if let Some(arr) = v.as_array() {
+                            if arr.iter().any(|e| {
+                                e.is_object()
+                                    && e.as_object()
+                                        .map(|o| {
+                                            o.contains_key("type") || o.contains_key("properties")
+                                        })
+                                        .unwrap_or(false)
+                            }) {
+                                let sanitized: Vec<Value> =
+                                    arr.iter().cloned().map(sanitize_schema).collect();
+                                map.insert(k, Value::Array(sanitized));
+                            }
+                        }
+                    }
+                }
+            }
+            Value::Object(map)
+        }
+        Value::Array(arr) => Value::Array(arr.into_iter().map(sanitize_schema).collect()),
+        other => other,
+    }
+}
+
 // ── Tool definitions (cached) ──────────────────────────────────
 
 pub async fn mcp_tool_definitions() -> Vec<Value> {
@@ -426,21 +590,23 @@ pub async fn mcp_tool_definitions() -> Vec<Value> {
             continue;
         }
         for tool in &srv.tools {
-            let params = if tool.input_schema.is_null()
+            let raw_params = if tool.input_schema.is_null()
                 || tool.input_schema == Value::Object(Default::default())
             {
                 serde_json::json!({"type":"object","properties":{}})
             } else {
                 tool.input_schema.clone()
             };
-            let params = if params.get("type").is_none() {
+            let mut params = if raw_params.get("type").is_none() {
                 let mut m = serde_json::Map::new();
                 m.insert("type".into(), Value::String("object".into()));
-                m.insert("properties".into(), params);
+                m.insert("properties".into(), raw_params);
                 Value::Object(m)
             } else {
-                params
+                raw_params
             };
+            // Strict: sanitize all MCP schemas (Gmail inlineImages cid pattern with \0, $schema, etc.)
+            params = sanitize_schema(params);
             out.push(serde_json::json!({
                 "type": "function",
                 "function": {

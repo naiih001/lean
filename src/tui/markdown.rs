@@ -27,7 +27,10 @@ fn render_inline(text: &str, base: Style) -> Vec<Span<'static>> {
         }
 
         // Bold: **...**  (also __...__)
-        if i + 1 < len && ((chars[i] == '*' && chars[i + 1] == '*') || (chars[i] == '_' && chars[i + 1] == '_')) {
+        if i + 1 < len
+            && ((chars[i] == '*' && chars[i + 1] == '*')
+                || (chars[i] == '_' && chars[i + 1] == '_'))
+        {
             let marker = chars[i];
             if let Some(end) = find_double_marker_end(&chars, i + 2, marker) {
                 let inner: String = chars[i + 2..end].iter().collect();
@@ -70,10 +73,13 @@ fn render_inline(text: &str, base: Style) -> Vec<Span<'static>> {
             if let Some(bracket_end) = find_char(&chars, bracket_start + 1, ']') {
                 if bracket_end + 1 < len && chars[bracket_end + 1] == '(' {
                     if let Some(paren_end) = find_char(&chars, bracket_end + 2, ')') {
-                        let link_text: String = chars[bracket_start + 1..bracket_end].iter().collect();
+                        let link_text: String =
+                            chars[bracket_start + 1..bracket_end].iter().collect();
                         let url: String = chars[bracket_end + 2..paren_end].iter().collect();
                         let mut mods = Modifier::UNDERLINED;
-                        if is_image { mods |= Modifier::ITALIC; }
+                        if is_image {
+                            mods |= Modifier::ITALIC;
+                        }
                         spans.push(Span::styled(
                             link_text,
                             base.fg(ASHEN.frost).add_modifier(mods),
@@ -92,7 +98,10 @@ fn render_inline(text: &str, base: Style) -> Vec<Span<'static>> {
                 let inner: String = chars[i + 2..end].iter().collect();
                 let mut inner_spans = render_inline(&inner, base);
                 for s in &mut inner_spans {
-                    s.style = s.style.add_modifier(Modifier::CROSSED_OUT).fg(ASHEN.deep_ash);
+                    s.style = s
+                        .style
+                        .add_modifier(Modifier::CROSSED_OUT)
+                        .fg(ASHEN.deep_ash);
                 }
                 spans.extend(inner_spans);
                 i = end + 2;
@@ -303,7 +312,9 @@ pub fn render_markdown(content: &str, indent: usize) -> Vec<Line<'static>> {
                 ),
             ];
             let style = if checked {
-                Style::default().fg(ASHEN.deep_ash).add_modifier(Modifier::CROSSED_OUT)
+                Style::default()
+                    .fg(ASHEN.deep_ash)
+                    .add_modifier(Modifier::CROSSED_OUT)
             } else {
                 Style::default().fg(ASHEN.smoke)
             };
@@ -364,7 +375,10 @@ pub fn render_markdown(content: &str, indent: usize) -> Vec<Line<'static>> {
         lines.push(Line::from(""));
     }
 
-    while lines.len() > 1 && lines.last().map(|l| l.width() == 0).unwrap_or(false) && lines[lines.len() - 2].width() == 0 {
+    while lines.len() > 1
+        && lines.last().map(|l| l.width() == 0).unwrap_or(false)
+        && lines[lines.len() - 2].width() == 0
+    {
         lines.pop();
     }
 
@@ -406,7 +420,9 @@ fn parse_header(line: &str) -> Option<(usize, &str)> {
 
 fn parse_task_list(line: &str) -> Option<(bool, &str)> {
     let trimmed = line.trim();
-    for prefix in ["- [ ] ", "* [ ] ", "+ [ ] ", "- [x] ", "- [X] ", "* [x] ", "* [X] "] {
+    for prefix in [
+        "- [ ] ", "* [ ] ", "+ [ ] ", "- [x] ", "- [X] ", "* [x] ", "* [X] ",
+    ] {
         if trimmed.starts_with(prefix) {
             let checked = prefix.contains("[x]") || prefix.contains("[X]");
             return Some((checked, &trimmed[prefix.len()..]));
@@ -420,7 +436,11 @@ fn parse_unordered_list(line: &str) -> Option<&str> {
     if trimmed.starts_with("- ") {
         Some(&trimmed[2..])
     } else if trimmed.starts_with("* ") {
-        if trimmed.starts_with("**") { None } else { Some(&trimmed[2..]) }
+        if trimmed.starts_with("**") {
+            None
+        } else {
+            Some(&trimmed[2..])
+        }
     } else if trimmed.starts_with("+ ") {
         Some(&trimmed[2..])
     } else {
@@ -517,9 +537,21 @@ mod tests {
     fn test_screenshot_sample() {
         let md = "## Key Code\n- **Agent prompt** (agent.rs): `You are Lean, a coding assistant` → Defines\n1. **TUI (Ratatui)** → renders UI";
         let lines = render_markdown(md, 2);
-        let flat: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.to_string())).collect::<Vec<_>>().join("\n");
-        assert!(!flat.contains("**"), "stars should be stripped, got: {}", flat);
-        assert!(!flat.contains("##"), "hashes should be styled not raw, got: {}", flat);
+        let flat: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !flat.contains("**"),
+            "stars should be stripped, got: {}",
+            flat
+        );
+        assert!(
+            !flat.contains("##"),
+            "hashes should be styled not raw, got: {}",
+            flat
+        );
         assert!(flat.contains("Agent prompt"));
         assert!(flat.contains("TUI"));
     }

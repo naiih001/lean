@@ -77,7 +77,10 @@ impl Client {
             return Vec::new();
         }
         vec![
-            ("x-opencode-session".to_string(), Self::opencode_session_id()),
+            (
+                "x-opencode-session".to_string(),
+                Self::opencode_session_id(),
+            ),
             ("x-opencode-client".to_string(), "pi".to_string()),
         ]
     }
@@ -149,30 +152,66 @@ pub struct RetryPolicy {
     pub base_delays_ms: Vec<u64>,
 }
 impl Default for RetryPolicy {
-    fn default() -> Self { Self { max_retries: 3, base_delays_ms: vec![500, 1000, 2000] } }
+    fn default() -> Self {
+        Self {
+            max_retries: 3,
+            base_delays_ms: vec![500, 1000, 2000],
+        }
+    }
 }
 impl RetryPolicy {
-    pub fn ollama() -> Self { Self { max_retries: 2, base_delays_ms: vec![300, 600] } }
+    pub fn ollama() -> Self {
+        Self {
+            max_retries: 2,
+            base_delays_ms: vec![300, 600],
+        }
+    }
     pub fn for_provider(provider: &crate::models::Provider) -> Self {
-        match provider { crate::models::Provider::Ollama => Self::ollama(), _ => Self::default() }
+        match provider {
+            crate::models::Provider::Ollama => Self::ollama(),
+            _ => Self::default(),
+        }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MessageRole { User, Assistant, System, Tool, Developer }
+pub enum MessageRole {
+    User,
+    Assistant,
+    System,
+    Tool,
+    Developer,
+}
 
 #[derive(Debug, Clone)]
-pub struct TextPart { pub text: String }
-impl TextPart { pub fn new(text: impl Into<String>) -> Self { Self { text: text.into() } } }
+pub struct TextPart {
+    pub text: String,
+}
+impl TextPart {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self { text: text.into() }
+    }
+}
 
 #[derive(Debug, Clone)]
-pub struct ImagePart { pub url: String, pub mime_type: Option<String>, pub is_base64: bool }
+pub struct ImagePart {
+    pub url: String,
+    pub mime_type: Option<String>,
+    pub is_base64: bool,
+}
 
 #[derive(Debug, Clone)]
-pub struct ToolCallPart { pub id: String, pub name: String, pub arguments: String }
+pub struct ToolCallPart {
+    pub id: String,
+    pub name: String,
+    pub arguments: String,
+}
 
 #[derive(Debug, Clone)]
-pub struct ToolResultPart { pub tool_call_id: String, pub result: String }
+pub struct ToolResultPart {
+    pub tool_call_id: String,
+    pub result: String,
+}
 
 #[derive(Debug, Clone)]
 pub enum MessagePart {
@@ -204,7 +243,9 @@ pub struct LLMRequest {
     pub tool_choice: Option<Value>,
 }
 impl LLMRequest {
-    pub fn builder() -> LLMRequestBuilder { LLMRequestBuilder::default() }
+    pub fn builder() -> LLMRequestBuilder {
+        LLMRequestBuilder::default()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -222,17 +263,50 @@ pub struct LLMRequestBuilder {
     tool_choice: Option<Value>,
 }
 impl LLMRequestBuilder {
-    pub fn api_type(mut self, v: crate::models::ApiMode) -> Self { self.api_type = Some(v); self }
-    pub fn model(mut self, v: impl Into<String>) -> Self { self.model = Some(v.into()); self }
-    pub fn messages(mut self, v: Vec<Message>) -> Self { self.messages = v; self }
-    pub fn base_url(mut self, v: impl Into<String>) -> Self { self.base_url = Some(v.into()); self }
-    pub fn api_key(mut self, v: impl Into<String>) -> Self { self.api_key = Some(v.into()); self }
-    pub fn max_output_tokens(mut self, v: u32) -> Self { self.max_output_tokens = Some(v); self }
-    pub fn temperature(mut self, v: f32) -> Self { self.temperature = Some(v); self }
-    pub fn top_p(mut self, v: f32) -> Self { self.top_p = Some(v); self }
-    pub fn stream(mut self, v: bool) -> Self { self.stream = Some(v); self }
-    pub fn tools(mut self, v: Vec<Value>) -> Self { self.tools = Some(v); self }
-    pub fn tool_choice(mut self, v: Value) -> Self { self.tool_choice = Some(v); self }
+    pub fn api_type(mut self, v: crate::models::ApiMode) -> Self {
+        self.api_type = Some(v);
+        self
+    }
+    pub fn model(mut self, v: impl Into<String>) -> Self {
+        self.model = Some(v.into());
+        self
+    }
+    pub fn messages(mut self, v: Vec<Message>) -> Self {
+        self.messages = v;
+        self
+    }
+    pub fn base_url(mut self, v: impl Into<String>) -> Self {
+        self.base_url = Some(v.into());
+        self
+    }
+    pub fn api_key(mut self, v: impl Into<String>) -> Self {
+        self.api_key = Some(v.into());
+        self
+    }
+    pub fn max_output_tokens(mut self, v: u32) -> Self {
+        self.max_output_tokens = Some(v);
+        self
+    }
+    pub fn temperature(mut self, v: f32) -> Self {
+        self.temperature = Some(v);
+        self
+    }
+    pub fn top_p(mut self, v: f32) -> Self {
+        self.top_p = Some(v);
+        self
+    }
+    pub fn stream(mut self, v: bool) -> Self {
+        self.stream = Some(v);
+        self
+    }
+    pub fn tools(mut self, v: Vec<Value>) -> Self {
+        self.tools = Some(v);
+        self
+    }
+    pub fn tool_choice(mut self, v: Value) -> Self {
+        self.tool_choice = Some(v);
+        self
+    }
     pub fn build(self) -> LLMRequest {
         LLMRequest {
             api_type: self.api_type.unwrap_or_default(),
@@ -253,8 +327,14 @@ impl LLMRequestBuilder {
 /// Unified streaming item mirroring llms-sdk: text/reasoning/tool delta or completion.
 #[derive(Debug, Clone)]
 pub enum LLMStreamingResponse {
-    Delta { delta: Option<String>, reasoning: Option<String>, tool_delta: Option<ToolCallPart> },
-    Complete { usage: Option<Usage> },
+    Delta {
+        delta: Option<String>,
+        reasoning: Option<String>,
+        tool_delta: Option<ToolCallPart>,
+    },
+    Complete {
+        usage: Option<Usage>,
+    },
 }
 
 pub fn native_tool_definitions() -> Vec<Value> {
