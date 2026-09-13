@@ -893,13 +893,11 @@ async fn post_with_retry(
     url: String,
     body: &Value,
 ) -> Result<reqwest::Response, String> {
+    // llms-sdk style: unified RetryPolicy (mirrors llms-sdk behaviour, keep lean's thin client)
+    let policy = crate::llm::RetryPolicy::for_provider(&client.provider);
+    let max_retries = policy.max_retries;
+    let base_delays_ms = policy.base_delays_ms;
     let is_ollama = client.provider == crate::models::Provider::Ollama;
-    let max_retries = if is_ollama { 2 } else { 3 };
-    let base_delays_ms: Vec<u64> = if is_ollama {
-        vec![300, 600]
-    } else {
-        vec![500, 1000, 2000]
-    };
     let mut last_err: Option<String> = None;
     for attempt in 0..=max_retries {
         let res = client

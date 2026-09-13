@@ -105,6 +105,122 @@ impl Client {
     }
 }
 
+/// Mirrors llms-sdk structure: configurable retry + message parts + builder,
+/// but keeps lean's thin reqwest client (no new dep).
+#[derive(Debug, Clone)]
+pub struct RetryPolicy {
+    pub max_retries: usize,
+    pub base_delays_ms: Vec<u64>,
+}
+impl Default for RetryPolicy {
+    fn default() -> Self { Self { max_retries: 3, base_delays_ms: vec![500, 1000, 2000] } }
+}
+impl RetryPolicy {
+    pub fn ollama() -> Self { Self { max_retries: 2, base_delays_ms: vec![300, 600] } }
+    pub fn for_provider(provider: &crate::models::Provider) -> Self {
+        match provider { crate::models::Provider::Ollama => Self::ollama(), _ => Self::default() }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageRole { User, Assistant, System, Tool, Developer }
+
+#[derive(Debug, Clone)]
+pub struct TextPart { pub text: String }
+impl TextPart { pub fn new(text: impl Into<String>) -> Self { Self { text: text.into() } } }
+
+#[derive(Debug, Clone)]
+pub struct ImagePart { pub url: String, pub mime_type: Option<String>, pub is_base64: bool }
+
+#[derive(Debug, Clone)]
+pub struct ToolCallPart { pub id: String, pub name: String, pub arguments: String }
+
+#[derive(Debug, Clone)]
+pub struct ToolResultPart { pub tool_call_id: String, pub result: String }
+
+#[derive(Debug, Clone)]
+pub enum MessagePart {
+    Text(TextPart),
+    Image(ImagePart),
+    ToolCall(ToolCallPart),
+    ToolResult(ToolResultPart),
+    Thinking(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct Message {
+    pub role: MessageRole,
+    pub content: Vec<MessagePart>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LLMRequest {
+    pub api_type: crate::models::ApiMode,
+    pub model: String,
+    pub messages: Vec<Message>,
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+    pub max_output_tokens: Option<u32>,
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    pub stream: bool,
+    pub tools: Option<Vec<Value>>,
+    pub tool_choice: Option<Value>,
+}
+impl LLMRequest {
+    pub fn builder() -> LLMRequestBuilder { LLMRequestBuilder::default() }
+}
+
+#[derive(Debug, Default)]
+pub struct LLMRequestBuilder {
+    api_type: Option<crate::models::ApiMode>,
+    model: Option<String>,
+    messages: Vec<Message>,
+    base_url: Option<String>,
+    api_key: Option<String>,
+    max_output_tokens: Option<u32>,
+    temperature: Option<f32>,
+    top_p: Option<f32>,
+    stream: Option<bool>,
+    tools: Option<Vec<Value>>,
+    tool_choice: Option<Value>,
+}
+impl LLMRequestBuilder {
+    pub fn api_type(mut self, v: crate::models::ApiMode) -> Self { self.api_type = Some(v); self }
+    pub fn model(mut self, v: impl Into<String>) -> Self { self.model = Some(v.into()); self }
+    pub fn messages(mut self, v: Vec<Message>) -> Self { self.messages = v; self }
+    pub fn base_url(mut self, v: impl Into<String>) -> Self { self.base_url = Some(v.into()); self }
+    pub fn api_key(mut self, v: impl Into<String>) -> Self { self.api_key = Some(v.into()); self }
+    pub fn max_output_tokens(mut self, v: u32) -> Self { self.max_output_tokens = Some(v); self }
+    pub fn temperature(mut self, v: f32) -> Self { self.temperature = Some(v); self }
+    pub fn top_p(mut self, v: f32) -> Self { self.top_p = Some(v); self }
+    pub fn stream(mut self, v: bool) -> Self { self.stream = Some(v); self }
+    pub fn tools(mut self, v: Vec<Value>) -> Self { self.tools = Some(v); self }
+    pub fn tool_choice(mut self, v: Value) -> Self { self.tool_choice = Some(v); self }
+    pub fn build(self) -> LLMRequest {
+        LLMRequest {
+            api_type: self.api_type.unwrap_or_default(),
+            model: self.model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
+            messages: self.messages,
+            base_url: self.base_url,
+            api_key: self.api_key,
+            max_output_tokens: self.max_output_tokens,
+            temperature: self.temperature,
+            top_p: self.top_p,
+            stream: self.stream.unwrap_or(true),
+            tools: self.tools,
+            tool_choice: self.tool_choice,
+        }
+    }
+}
+
+/// Unified streaming item mirroring llms-sdk: text/reasoning/tool delta or completion.
+#[derive(Debug, Clone)]
+pub enum LLMStreamingResponse {
+    Delta { delta: Option<String>, reasoning: Option<String>, tool_delta: Option<ToolCallPart> },
+    Complete { usage: Option<Usage> },
+}
+
 pub fn native_tool_definitions() -> Vec<Value> {
     vec![
         json!({
