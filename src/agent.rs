@@ -256,7 +256,7 @@ fn mcp_section() -> String {
 /// Assemble the full system prompt within `TOTAL_BUDGET`.
 ///
 /// Priority order: the base prompt (regular or plan) is never truncated, the
-/// context files (AGENT.md / CLAUDE.md / MEMORY.md) are next (truncated if needed),
+/// context files (AGENT.md + global MEMORY.md) are next (truncated if needed),
 /// the confinement guard is kept when enabled, the skill catalog is shrunk line by
 /// line, and the MCP section is dropped first when the budget is exceeded.
 pub async fn build_system_prompt() -> String {

@@ -3,9 +3,10 @@ use std::path::{Path, PathBuf};
 const MAX_FILE_CHARS: usize = 8000;
 const MAX_TOTAL_CHARS: usize = 24000;
 
-/// All context filenames we support (project + global).
-/// AGENT.md is preferred, CLAUDE.md is kept for Claude Code compatibility.
-const FILENAMES: &[&str] = &["AGENT.md", "CLAUDE.md", "MEMORY.md"];
+/// All context filenames we support.
+/// Project: only AGENT.md (created by /init).
+/// Global (background): AGENT.md + MEMORY.md (MEMORY.md auto-updated silently in ~/.lean/).
+const FILENAMES: &[&str] = &["AGENT.md"];
 
 fn home_dir() -> Option<PathBuf> {
     dirs::home_dir()
@@ -17,6 +18,7 @@ fn project_root() -> PathBuf {
 
 /// All candidate paths in priority order: global first, then project.
 /// Duplicates are deduped by canonical check at load time.
+/// Project only loads AGENT.md; MEMORY.md is global-only (background, ~/.lean/).
 fn candidate_paths() -> Vec<(PathBuf, &'static str)> {
     let mut out = Vec::new();
     let home = home_dir();
@@ -24,29 +26,28 @@ fn candidate_paths() -> Vec<(PathBuf, &'static str)> {
 
     // Global candidates — low priority, shown first.
     if let Some(home) = &home {
-        // ~/.lean/*
+        // ~/.lean/AGENT.md + MEMORY.md (global config, MEMORY.md updated silently in background)
         for name in FILENAMES {
             out.push((home.join(".lean").join(name), "global"));
         }
-        // ~/.claude/CLAUDE.md compatibility (and MEMORY.md if user keeps it there)
-        out.push((home.join(".claude").join("CLAUDE.md"), "global"));
+        out.push((home.join(".lean").join("MEMORY.md"), "global"));
+        // ~/.claude compat (legacy)
         out.push((home.join(".claude").join("MEMORY.md"), "global"));
-        // ~/AGENT.md etc. (direct home)
+        // ~/AGENT.md (direct home)
         for name in FILENAMES {
             out.push((home.join(name), "global"));
         }
+        out.push((home.join("MEMORY.md"), "global"));
     }
 
-    // Project candidates — higher priority.
+    // Project candidates — higher priority. Only AGENT.md; MEMORY.md is global-only.
     for name in FILENAMES {
         out.push((cwd.join(name), "project"));
     }
-    // ./.lean/*
+    // ./.lean/AGENT.md (project-local lean config)
     for name in FILENAMES {
         out.push((cwd.join(".lean").join(name), "project"));
     }
-    // ./.claude/CLAUDE.md
-    out.push((cwd.join(".claude").join("CLAUDE.md"), "project"));
 
     out
 }
@@ -79,7 +80,7 @@ pub fn load_context_section() -> Option<String> {
 
     let mut sections: Vec<String> = Vec::new();
     let mut total = 0usize;
-    // Track content hashes to avoid duplicating identical AGENT.md / CLAUDE.md copies.
+    // Track content hashes to avoid duplicating identical content copies.
     let mut seen_hashes: std::collections::HashSet<u64> = std::collections::HashSet::new();
 
     for (path, scope) in files {
@@ -137,8 +138,8 @@ pub fn load_context_section() -> Option<String> {
     }
 
     let mut out = String::new();
-    out.push_str("## Project & User Context (AGENT.md / CLAUDE.md / MEMORY.md)\n");
-    out.push_str("The following files were loaded from disk — treat them as high-priority persistent context. Project files override global ones when they conflict. Follow their instructions, conventions, and preferences.\n\n");
+    out.push_str("## Project & User Context (AGENT.md + global MEMORY.md)\n");
+    out.push_str("The following files were loaded from disk — treat them as high-priority persistent context. Project AGENT.md overrides global ones when they conflict. Global MEMORY.md (~/.lean/MEMORY.md) is updated silently in the background. Follow their instructions, conventions, and preferences.\n\n");
     out.push_str(&sections.join("\n\n---\n\n"));
     Some(out)
 }
@@ -181,7 +182,7 @@ pub fn load_summary() -> Option<String> {
 pub fn agent_template(project_name: &str) -> String {
     format!(r#"# AGENT.md — Project Context for lean
 
-> This file is loaded on every lean session. Keep it concise and actionable. It is also mirrored to CLAUDE.md for Claude Code compatibility.
+> This file is loaded on every lean session. Keep it concise and actionable.
 
 ## Project Overview
 - **Name:** {project_name}
@@ -239,10 +240,12 @@ cargo fmt --check
 "#)
 }
 
+#[allow(dead_code)]
 pub fn claude_mirror_note() -> String {
     "This file mirrors AGENT.md for Claude Code compatibility. Keep them in sync (or symlink CLAUDE.md → AGENT.md).".to_string()
 }
 
+#[allow(dead_code)]
 pub fn memory_template() -> String {
     r#"# MEMORY.md — Who I Am (User Persona)
 
@@ -279,6 +282,8 @@ pub fn memory_template() -> String {
 
 /// Ensure init files exist, creating them with templates if missing.
 /// Returns list of created/updated paths for display.
+/// Only creates ./AGENT.md in the project — MEMORY.md is global-only
+/// and updated silently in the background (~/.lean/MEMORY.md).
 /// This is the deterministic fallback used when the LLM is unavailable;
 /// the primary `/init` flow spawns an agent to generate richer content.
 pub fn ensure_init_files() -> Vec<String> {
@@ -286,7 +291,7 @@ pub fn ensure_init_files() -> Vec<String> {
     let project_name = cwd.file_name().and_then(|n| n.to_str()).unwrap_or("project");
     let mut created = Vec::new();
 
-    // AGENT.md
+    // AGENT.md — project only
     let agent_path = cwd.join("AGENT.md");
     if !agent_path.exists() {
         let content = agent_template(project_name);
@@ -295,60 +300,6 @@ pub fn ensure_init_files() -> Vec<String> {
         }
         if std::fs::write(&agent_path, content).is_ok() {
             created.push(agent_path.display().to_string());
-        }
-    }
-
-    // CLAUDE.md mirror — only if missing (don't clobber existing distinct file)
-    let claude_path = cwd.join("CLAUDE.md");
-    if !claude_path.exists() {
-        // Try symlink first (Unix), fallback to copy
-        #[cfg(unix)]
-        {
-            if std::os::unix::fs::symlink("AGENT.md", &claude_path).is_err() {
-                if let Ok(content) = std::fs::read_to_string(&agent_path) {
-                    let _ = std::fs::write(&claude_path, content);
-                    created.push(claude_path.display().to_string());
-                }
-            } else {
-                created.push(format!("{} → AGENT.md (symlink)", claude_path.display()));
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            if let Ok(content) = std::fs::read_to_string(&agent_path) {
-                let _ = std::fs::write(&claude_path, content);
-                created.push(claude_path.display().to_string());
-            }
-        }
-    }
-
-    // MEMORY.md
-    let memory_path = cwd.join("MEMORY.md");
-    if !memory_path.exists() {
-        let content = memory_template();
-        if std::fs::write(&memory_path, content).is_ok() {
-            created.push(memory_path.display().to_string());
-        }
-    }
-
-    // Global files — handled automatically behind the scenes (no explicit /init global needed)
-    if let Some(home) = home_dir() {
-        let global_dir = home.join(".lean");
-        let _ = std::fs::create_dir_all(&global_dir);
-        let global_mem = global_dir.join("MEMORY.md");
-        if !global_mem.exists() {
-            let content = memory_template();
-            if std::fs::write(&global_mem, content).is_ok() {
-                created.push(format!("{} (global, auto)", global_mem.display()));
-            }
-        }
-        // Also ensure a global AGENT.md stub exists for global instructions (kept minimal, behind the scenes)
-        let global_agent = global_dir.join("AGENT.md");
-        if !global_agent.exists() {
-            let stub = format!("# AGENT.md — Global Context\n\n> Global instructions loaded on every lean session (behind the scenes). Edit this file to set cross-project preferences.\n\n- **Default stack:** [your preferred stack]\n- **Global conventions:** [your conventions]\n");
-            if std::fs::write(&global_agent, stub).is_ok() {
-                created.push(format!("{} (global, auto)", global_agent.display()));
-            }
         }
     }
 
