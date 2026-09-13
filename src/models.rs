@@ -37,7 +37,9 @@ pub enum Provider {
 }
 
 impl Default for Provider {
-    fn default() -> Self { Self::OpenAI }
+    fn default() -> Self {
+        Self::OpenAI
+    }
 }
 
 impl Provider {
@@ -104,21 +106,37 @@ pub struct ModelEntry {
 
 impl ModelEntry {
     pub fn api_mode(&self) -> ApiMode {
-        if let Some(m) = self.api.clone() { return m; }
+        if let Some(m) = self.api.clone() {
+            return m;
+        }
         // If provider is anthropic and no explicit api, default to Anthropic wire format
-        if self.provider() == Provider::Anthropic { return ApiMode::Anthropic; }
+        if self.provider() == Provider::Anthropic {
+            return ApiMode::Anthropic;
+        }
         ApiMode::default()
     }
     pub fn provider(&self) -> Provider {
-        if let Some(p) = self.provider.clone() { return p; }
+        if let Some(p) = self.provider.clone() {
+            return p;
+        }
         // Infer for backward compat: old configs without provider field
         if let Some(url) = &self.base_url {
             let lower = url.to_lowercase();
-            if lower.contains("api.anthropic.com") { return Provider::Anthropic; }
-            if lower.contains("localhost:11434") || lower.contains("127.0.0.1:11434") || lower.contains("localhost:1234") || lower.contains("127.0.0.1:1234") { return Provider::Ollama; }
+            if lower.contains("api.anthropic.com") {
+                return Provider::Anthropic;
+            }
+            if lower.contains("localhost:11434")
+                || lower.contains("127.0.0.1:11434")
+                || lower.contains("localhost:1234")
+                || lower.contains("127.0.0.1:1234")
+            {
+                return Provider::Ollama;
+            }
         }
         // Also check api field
-        if self.api == Some(ApiMode::Anthropic) { return Provider::Anthropic; }
+        if self.api == Some(ApiMode::Anthropic) {
+            return Provider::Anthropic;
+        }
         Provider::default()
     }
 }
@@ -190,7 +208,9 @@ fn ollama_host_for_probe() -> String {
 /// Check if Ollama is reachable and return model names. Sync best-effort with timeout.
 /// Honors OLLAMA_HOST env var; falls back to localhost/127.0.0.1 for compat.
 fn ollama_detect_sync() -> Vec<String> {
-    let try_client = reqwest::blocking::Client::builder().timeout(std::time::Duration::from_millis(400)).build();
+    let try_client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_millis(400))
+        .build();
     if let Ok(client) = try_client {
         let mut tried = Vec::new();
         let primary = ollama_host_for_probe();
@@ -206,7 +226,14 @@ fn ollama_detect_sync() -> Vec<String> {
             if let Ok(resp) = client.get(&url).send() {
                 if let Ok(json) = resp.json::<serde_json::Value>() {
                     if let Some(models) = json.get("models").and_then(|m| m.as_array()) {
-                        let names: Vec<String> = models.iter().filter_map(|m| m.get("name").and_then(|n| n.as_str()).map(|s| s.to_string())).collect();
+                        let names: Vec<String> = models
+                            .iter()
+                            .filter_map(|m| {
+                                m.get("name")
+                                    .and_then(|n| n.as_str())
+                                    .map(|s| s.to_string())
+                            })
+                            .collect();
                         if !names.is_empty() {
                             return names;
                         }
@@ -218,9 +245,13 @@ fn ollama_detect_sync() -> Vec<String> {
     Vec::new()
 }
 
-pub fn ollama_available() -> bool { !ollama_detect_sync().is_empty() }
+pub fn ollama_available() -> bool {
+    !ollama_detect_sync().is_empty()
+}
 
-pub fn ollama_model_names() -> Vec<String> { ollama_detect_sync() }
+pub fn ollama_model_names() -> Vec<String> {
+    ollama_detect_sync()
+}
 
 /// Canonical fresh-install template — must stay OpenAI (Q3). Do not change to localhost zen proxy.
 fn template_config() -> ModelsConfig {
@@ -246,11 +277,27 @@ fn template_config() -> ModelsConfig {
 }
 
 fn example_ollama_entry(model: &str) -> ModelEntry {
-    ModelEntry { model: model.to_string(), provider: Some(Provider::Ollama), base_url: Some(Provider::Ollama.default_base_url()), api_key: Some("ollama".to_string()), api_key_env: None, api: None, vision: None }
+    ModelEntry {
+        model: model.to_string(),
+        provider: Some(Provider::Ollama),
+        base_url: Some(Provider::Ollama.default_base_url()),
+        api_key: Some("ollama".to_string()),
+        api_key_env: None,
+        api: None,
+        vision: None,
+    }
 }
 
 fn example_anthropic_entry(model: &str) -> ModelEntry {
-    ModelEntry { model: model.to_string(), provider: Some(Provider::Anthropic), base_url: Some(Provider::Anthropic.default_base_url()), api_key: None, api_key_env: Some("ANTHROPIC_API_KEY".to_string()), api: Some(ApiMode::Anthropic), vision: None }
+    ModelEntry {
+        model: model.to_string(),
+        provider: Some(Provider::Anthropic),
+        base_url: Some(Provider::Anthropic.default_base_url()),
+        api_key: None,
+        api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
+        api: Some(ApiMode::Anthropic),
+        vision: None,
+    }
 }
 
 /// Ensure ~/.lean/models.json exists, creating a template if missing.
@@ -277,10 +324,14 @@ pub fn load() -> Result<ModelsConfig> {
     if !path.exists() {
         return ensure_exists();
     }
-    let raw = std::fs::read_to_string(&path)
-        .with_context(|| format!("read {}", path.display()))?;
-    let cfg: ModelsConfig = serde_json::from_str(&raw)
-        .with_context(|| format!("parse {} as JSON (check syntax with `jq empty {}`)", path.display(), path.display()))?;
+    let raw = std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    let cfg: ModelsConfig = serde_json::from_str(&raw).with_context(|| {
+        format!(
+            "parse {} as JSON (check syntax with `jq empty {}`)",
+            path.display(),
+            path.display()
+        )
+    })?;
     if cfg.models.is_empty() {
         bail!("{} has no models defined", path.display());
     }
@@ -362,7 +413,9 @@ fn resolve_api_key_env(entry: &ModelEntry, _alias: Option<&str>) -> Result<Strin
         if let Some(env_name) = &entry.api_key_env {
             if !env_name.trim().is_empty() {
                 if let Ok(v) = std::env::var(env_name) {
-                    if !v.trim().is_empty() { return Ok(v); }
+                    if !v.trim().is_empty() {
+                        return Ok(v);
+                    }
                 }
             }
         }
@@ -374,19 +427,27 @@ fn resolve_api_key_env(entry: &ModelEntry, _alias: Option<&str>) -> Result<Strin
         if let Some(env_name) = &entry.api_key_env {
             if !env_name.trim().is_empty() {
                 if let Ok(v) = std::env::var(env_name) {
-                    if !v.trim().is_empty() { return Ok(v); }
+                    if !v.trim().is_empty() {
+                        return Ok(v);
+                    }
                 }
                 // Try ANTHROPIC_API_KEY fallback before error
                 let fallback = default_anthropic_api_key();
-                if fallback != "sk-test" && !fallback.trim().is_empty() { return Ok(fallback); }
+                if fallback != "sk-test" && !fallback.trim().is_empty() {
+                    return Ok(fallback);
+                }
                 bail!(
                     "No API key found for '{}' — set {} or add `api_key` to {}",
-                    env_name, env_name, models_path().display()
+                    env_name,
+                    env_name,
+                    models_path().display()
                 );
             }
         }
         let fallback = default_anthropic_api_key();
-        if fallback != "sk-test" && !fallback.trim().is_empty() { return Ok(fallback); }
+        if fallback != "sk-test" && !fallback.trim().is_empty() {
+            return Ok(fallback);
+        }
         bail!("No API key found for 'ANTHROPIC_API_KEY' — set ANTHROPIC_API_KEY or add `api_key` to {}", models_path().display());
     }
     // OpenAI / Generic: original logic
@@ -452,7 +513,11 @@ mod tests {
     fn template_is_openai_default() {
         let cfg = template_config();
         assert!(!cfg.default.contains("mimo"));
-        assert!(!cfg.models.values().any(|e| e.base_url.as_deref().unwrap_or("").contains("127.0.0.1")));
+        assert!(!cfg.models.values().any(|e| e
+            .base_url
+            .as_deref()
+            .unwrap_or("")
+            .contains("127.0.0.1")));
         let e = &cfg.models["gpt-4o"];
         assert_eq!(e.base_url.as_deref(), Some("https://api.openai.com/v1"));
     }
@@ -477,8 +542,12 @@ mod tests {
         let err = resolve_api_key_env(&entry, None).unwrap_err();
         assert!(err.to_string().contains("OPENAI_API_KEY"));
         // restore
-        if let Some(v) = orig_openai { std::env::set_var("OPENAI_API_KEY", v); }
-        if let Some(v) = orig_opencode { std::env::set_var("OPENCODE_API_KEY", v); }
+        if let Some(v) = orig_openai {
+            std::env::set_var("OPENAI_API_KEY", v);
+        }
+        if let Some(v) = orig_opencode {
+            std::env::set_var("OPENCODE_API_KEY", v);
+        }
     }
 
     #[test]
@@ -491,7 +560,15 @@ mod tests {
 
     #[test]
     fn provider_ollama_no_key() {
-        let entry = ModelEntry { provider: Some(Provider::Ollama), model: "qwen2".into(), base_url: None, api_key: None, api_key_env: None, api: None, vision: None };
+        let entry = ModelEntry {
+            provider: Some(Provider::Ollama),
+            model: "qwen2".into(),
+            base_url: None,
+            api_key: None,
+            api_key_env: None,
+            api: None,
+            vision: None,
+        };
         // Ollama should not fail even without env keys
         let key = resolve_api_key_env(&entry, None).unwrap();
         assert_eq!(key, "ollama");

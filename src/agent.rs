@@ -77,43 +77,100 @@ Don't loop or re-read the same file. Continue while steps remain but stop when a
 
 pub const SYSTEM_PROMPT: &str = REGULAR_SYSTEM_PROMPT;
 
-pub const ASK_READONLY_DENY_MSG: &str = "ASK is read-only — switch to Norm (Shift+Tab) or Plan to build.";
+pub const ASK_READONLY_DENY_MSG: &str =
+    "ASK is read-only — switch to Norm (Shift+Tab) or Plan to build.";
 
 use std::sync::atomic::{AtomicBool, Ordering};
 static PLAN_MODE: AtomicBool = AtomicBool::new(false);
 static ASK_MODE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode { Norm, Plan, Ask, Auto }
+pub enum Mode {
+    Norm,
+    Plan,
+    Ask,
+    Auto,
+}
 
 impl Mode {
-    pub fn as_str(&self) -> &'static str { match self { Mode::Norm => "norm", Mode::Plan => "plan", Mode::Ask => "ask", Mode::Auto => "auto" } }
-    pub fn from_str(s: &str) -> Self { match s { "plan" => Mode::Plan, "ask" => Mode::Ask, "auto" => Mode::Auto, _ => Mode::Norm } }
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Mode::Norm => "norm",
+            Mode::Plan => "plan",
+            Mode::Ask => "ask",
+            Mode::Auto => "auto",
+        }
+    }
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "plan" => Mode::Plan,
+            "ask" => Mode::Ask,
+            "auto" => Mode::Auto,
+            _ => Mode::Norm,
+        }
+    }
 }
 
 pub fn current_mode() -> Mode {
-    if is_plan_mode() { Mode::Plan } else if is_ask_mode() { Mode::Ask } else if crate::approval::is_auto_accept() { Mode::Auto } else { Mode::Norm }
+    if is_plan_mode() {
+        Mode::Plan
+    } else if is_ask_mode() {
+        Mode::Ask
+    } else if crate::approval::is_auto_accept() {
+        Mode::Auto
+    } else {
+        Mode::Norm
+    }
 }
 
 pub fn set_mode(m: Mode) {
     match m {
-        Mode::Norm => { set_plan_mode(false); set_ask_mode(false); crate::approval::set_auto_accept(false); },
-        Mode::Plan => { set_plan_mode(true); set_ask_mode(false); crate::approval::set_auto_accept(false); },
-        Mode::Ask => { set_plan_mode(false); set_ask_mode(true); crate::approval::set_auto_accept(false); },
-        Mode::Auto => { set_plan_mode(false); set_ask_mode(false); crate::approval::set_auto_accept(true); },
+        Mode::Norm => {
+            set_plan_mode(false);
+            set_ask_mode(false);
+            crate::approval::set_auto_accept(false);
+        }
+        Mode::Plan => {
+            set_plan_mode(true);
+            set_ask_mode(false);
+            crate::approval::set_auto_accept(false);
+        }
+        Mode::Ask => {
+            set_plan_mode(false);
+            set_ask_mode(true);
+            crate::approval::set_auto_accept(false);
+        }
+        Mode::Auto => {
+            set_plan_mode(false);
+            set_ask_mode(false);
+            crate::approval::set_auto_accept(true);
+        }
     }
 }
 
 pub fn cycle_mode() -> Mode {
-    let next = match current_mode() { Mode::Norm => Mode::Plan, Mode::Plan => Mode::Ask, Mode::Ask => Mode::Auto, Mode::Auto => Mode::Norm };
+    let next = match current_mode() {
+        Mode::Norm => Mode::Plan,
+        Mode::Plan => Mode::Ask,
+        Mode::Ask => Mode::Auto,
+        Mode::Auto => Mode::Norm,
+    };
     set_mode(next);
     next
 }
 
-pub fn set_plan_mode(v: bool) { PLAN_MODE.store(v, Ordering::Relaxed); }
-pub fn is_plan_mode() -> bool { PLAN_MODE.load(Ordering::Relaxed) }
-pub fn set_ask_mode(v: bool) { ASK_MODE.store(v, Ordering::Relaxed); }
-pub fn is_ask_mode() -> bool { ASK_MODE.load(Ordering::Relaxed) }
+pub fn set_plan_mode(v: bool) {
+    PLAN_MODE.store(v, Ordering::Relaxed);
+}
+pub fn is_plan_mode() -> bool {
+    PLAN_MODE.load(Ordering::Relaxed)
+}
+pub fn set_ask_mode(v: bool) {
+    ASK_MODE.store(v, Ordering::Relaxed);
+}
+pub fn is_ask_mode() -> bool {
+    ASK_MODE.load(Ordering::Relaxed)
+}
 pub fn toggle_plan_mode() -> bool {
     let cur = is_plan_mode();
     set_plan_mode(!cur);
@@ -121,7 +178,13 @@ pub fn toggle_plan_mode() -> bool {
 }
 
 fn current_system_prompt() -> &'static str {
-    if is_plan_mode() { PLAN_SYSTEM_PROMPT } else if is_ask_mode() { ASK_SYSTEM_PROMPT } else { REGULAR_SYSTEM_PROMPT }
+    if is_plan_mode() {
+        PLAN_SYSTEM_PROMPT
+    } else if is_ask_mode() {
+        ASK_SYSTEM_PROMPT
+    } else {
+        REGULAR_SYSTEM_PROMPT
+    }
 }
 
 const TOTAL_BUDGET: usize = 12000;
@@ -183,7 +246,10 @@ fn render_skill_catalog(raw_catalog: &str, max_lines: usize) -> String {
         out.push(truncate_str(short, SKILL_LINE_MAX));
     }
     if lines.len() > take {
-        out.push(format!("... +{} more (use read_skill to see)", lines.len() - take));
+        out.push(format!(
+            "... +{} more (use read_skill to see)",
+            lines.len() - take
+        ));
     }
     out.join("\n")
 }
@@ -201,7 +267,10 @@ fn confinement_section() -> Option<String> {
     }
     let cwd = crate::dir_guard::project_root().display().to_string();
     Some(truncate_str(
-        &format!("\n\n## Confinement\nYou are confined to CWD: `{}`. Paths outside need approval.", cwd),
+        &format!(
+            "\n\n## Confinement\nYou are confined to CWD: `{}`. Paths outside need approval.",
+            cwd
+        ),
         300,
     ))
 }
@@ -221,7 +290,10 @@ async fn agents_section() -> Option<String> {
         out.push_str("\n");
     }
     if lines.len() > take {
-        out.push_str(&format!("... +{} more (use read_agent or subagents_list)\n", lines.len() - take));
+        out.push_str(&format!(
+            "... +{} more (use read_agent or subagents_list)\n",
+            lines.len() - take
+        ));
     }
     Some(truncate_str(&out, 800))
 }
@@ -237,7 +309,12 @@ fn mcp_section() -> String {
     }
     let mut s = String::from("\n\n## MCP Servers (server__tool, needs approval)\n");
     for srv in &mcp_snap {
-        s.push_str(&format!("- {} [{}] ({} tools)", srv.name, srv.status.as_str(), srv.tools.len()));
+        s.push_str(&format!(
+            "- {} [{}] ({} tools)",
+            srv.name,
+            srv.status.as_str(),
+            srv.tools.len()
+        ));
         if !srv.tools.is_empty() {
             let names: Vec<String> = srv.tools.iter().take(5).map(|t| t.name.clone()).collect();
             s.push_str(&format!(": {}", names.join(", ")));
@@ -302,12 +379,21 @@ pub async fn build_system_prompt() -> String {
 
     // Still over: truncate context to fit (keep at least base + confinement).
     if let Some(ctx) = &context {
-        let mut minimal_ctx = truncate_to_bytes(ctx, TOTAL_BUDGET.saturating_sub(base.len() + confinement.as_ref().map(|s| s.len()).unwrap_or(0) + 500));
+        let mut minimal_ctx = truncate_to_bytes(
+            ctx,
+            TOTAL_BUDGET.saturating_sub(
+                base.len() + confinement.as_ref().map(|s| s.len()).unwrap_or(0) + 500,
+            ),
+        );
         // If context was truncated, ensure we still have a marker
         if minimal_ctx.len() < ctx.len() {
             minimal_ctx.push_str("\n… [context truncated for budget]");
         }
-        let candidate = assemble(&render_skill_catalog(&raw_catalog, 1), Some(&minimal_ctx), agents.as_deref());
+        let candidate = assemble(
+            &render_skill_catalog(&raw_catalog, 1),
+            Some(&minimal_ctx),
+            agents.as_deref(),
+        );
         if candidate.len() <= TOTAL_BUDGET {
             return candidate;
         }
@@ -340,20 +426,39 @@ fn truncate_for_llm(s: &str) -> String {
     let remaining = s.chars().count() - MAX_TOOL_OUTPUT_FOR_LLM;
     format!(
         "{}… [truncated {} chars for LLM, full shown in TUI]",
-        truncated,
-        remaining
+        truncated, remaining
     )
 }
 
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
-    Text { delta: String },
-    Reasoning { delta: String },
-    TextDone { text: String },
-    ToolStart { name: String, args: Value, id: String },
-    ToolResult { name: String, result: String, id: String, elapsed_ms: u64 },
-    Step { n: usize },
-    Done { text: String, history: Vec<Value> },
+    Text {
+        delta: String,
+    },
+    Reasoning {
+        delta: String,
+    },
+    TextDone {
+        text: String,
+    },
+    ToolStart {
+        name: String,
+        args: Value,
+        id: String,
+    },
+    ToolResult {
+        name: String,
+        result: String,
+        id: String,
+        elapsed_ms: u64,
+    },
+    Step {
+        n: usize,
+    },
+    Done {
+        text: String,
+        history: Vec<Value>,
+    },
 }
 
 struct ToolAccum {
@@ -367,10 +472,16 @@ pub(crate) fn is_mutating_tool(name: &str) -> bool {
 }
 
 pub(crate) fn is_plan_exempt_write(name: &str, args: &Value) -> bool {
-    if !is_plan_mode() { return false; }
-    if name != "write" && name != "write_file" { return false; }
+    if !is_plan_mode() {
+        return false;
+    }
+    if name != "write" && name != "write_file" {
+        return false;
+    }
     if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
-        return p.starts_with(".lean/plans") || p.starts_with("./.lean/plans") || p.contains("/.lean/plans");
+        return p.starts_with(".lean/plans")
+            || p.starts_with("./.lean/plans")
+            || p.contains("/.lean/plans");
     }
     false
 }
@@ -387,7 +498,9 @@ pub(crate) fn is_stay_in_plan(result: &str) -> bool {
 
 pub(crate) fn is_readonly_bash(cmd: &str) -> bool {
     let lower = cmd.trim().to_lowercase();
-    if lower.is_empty() { return true; }
+    if lower.is_empty() {
+        return true;
+    }
     // File redirection is mutating. Allow stderr/pipes: 2>/dev/null, 2>&1, |, ;
     // Strip known benign stderr redirects before checking for '>'
     let stripped = lower
@@ -399,31 +512,112 @@ pub(crate) fn is_readonly_bash(cmd: &str) -> bool {
     if stripped.contains('>') {
         return false;
     }
-    let mutating = [" rm ", " rm", "rm ", "mv ", "cp ", "mkdir", "touch ", "chmod", "chown", "sed -i", "tee ", "rmdir", "unlink ", "shred "];
-    for m in mutating { if lower.contains(m) { return false; } }
+    let mutating = [
+        " rm ", " rm", "rm ", "mv ", "cp ", "mkdir", "touch ", "chmod", "chown", "sed -i", "tee ",
+        "rmdir", "unlink ", "shred ",
+    ];
+    for m in mutating {
+        if lower.contains(m) {
+            return false;
+        }
+    }
     // Cargo/other build commands are mutating except check
-    if lower.starts_with("cargo build") || lower.starts_with("cargo test") || lower.starts_with("cargo run") || lower.starts_with("npm run") || lower.starts_with("npm install") || lower.starts_with("git commit") || lower.starts_with("git push") || lower.starts_with("git checkout") || lower.starts_with("git merge") { return false; }
+    if lower.starts_with("cargo build")
+        || lower.starts_with("cargo test")
+        || lower.starts_with("cargo run")
+        || lower.starts_with("npm run")
+        || lower.starts_with("npm install")
+        || lower.starts_with("git commit")
+        || lower.starts_with("git push")
+        || lower.starts_with("git checkout")
+        || lower.starts_with("git merge")
+    {
+        return false;
+    }
     true
 }
 
 pub(crate) fn is_mcp_read(name: &str) -> bool {
     // Heuristic: MCP tools containing read/list/get/search are reads; others are writes
     let lower = name.to_lowercase();
-    lower.contains("read") || lower.contains("list") || lower.contains("get") || lower.contains("search") || lower.contains("query") || lower.contains("fetch")
+    lower.contains("read")
+        || lower.contains("list")
+        || lower.contains("get")
+        || lower.contains("search")
+        || lower.contains("query")
+        || lower.contains("fetch")
 }
 
 fn is_conversational_str(goal: &str) -> bool {
     let g = goal.trim().to_lowercase();
-    let stripped = g.trim_matches(|c: char| c == '!' || c == '.' || c == ',' || c == '?' || c == '\'' || c == '"').trim();
-    let conversational_exact = ["hi","hello","hey","hi there","hello there","hey there","thanks","thank you","thanks!","thank you!","yo","sup","howdy","hola","how are you","how are you?","hey!","hello!","hi!"];
-    if conversational_exact.contains(&stripped) { return true; }
-    if stripped.len() >= 30 { return false; }
-    let has_task_verb = ["write","create","fix","build","edit","read","search","make","add","update","implement","explain","help with","can you","could you","please","run","test","refactor","remove","delete"].iter().any(|v| stripped.contains(v));
-    if has_task_verb { return false; }
-    let greet_prefixes = ["hi ","hello ","hey ","thanks ","thank you "];
-    if greet_prefixes.iter().any(|p| stripped.starts_with(p)) { return true; }
+    let stripped = g
+        .trim_matches(|c: char| {
+            c == '!' || c == '.' || c == ',' || c == '?' || c == '\'' || c == '"'
+        })
+        .trim();
+    let conversational_exact = [
+        "hi",
+        "hello",
+        "hey",
+        "hi there",
+        "hello there",
+        "hey there",
+        "thanks",
+        "thank you",
+        "thanks!",
+        "thank you!",
+        "yo",
+        "sup",
+        "howdy",
+        "hola",
+        "how are you",
+        "how are you?",
+        "hey!",
+        "hello!",
+        "hi!",
+    ];
+    if conversational_exact.contains(&stripped) {
+        return true;
+    }
+    if stripped.len() >= 30 {
+        return false;
+    }
+    let has_task_verb = [
+        "write",
+        "create",
+        "fix",
+        "build",
+        "edit",
+        "read",
+        "search",
+        "make",
+        "add",
+        "update",
+        "implement",
+        "explain",
+        "help with",
+        "can you",
+        "could you",
+        "please",
+        "run",
+        "test",
+        "refactor",
+        "remove",
+        "delete",
+    ]
+    .iter()
+    .any(|v| stripped.contains(v));
+    if has_task_verb {
+        return false;
+    }
+    let greet_prefixes = ["hi ", "hello ", "hey ", "thanks ", "thank you "];
+    if greet_prefixes.iter().any(|p| stripped.starts_with(p)) {
+        return true;
+    }
     if stripped.split_whitespace().count() <= 3 {
-        if ["hi","hello","hey"].iter().any(|w| stripped.contains(w)) { return true; }
+        if ["hi", "hello", "hey"].iter().any(|w| stripped.contains(w)) {
+            return true;
+        }
     }
     false
 }
@@ -439,7 +633,15 @@ struct PlanTracker {
 
 const MAX_NOCALL_STREAK: usize = 3;
 
-const PENDING_MARKERS: [&str; 7] = ["next step", "still need", "remaining", "todo", "then i", "i'll now", "let me"];
+const PENDING_MARKERS: [&str; 7] = [
+    "next step",
+    "still need",
+    "remaining",
+    "todo",
+    "then i",
+    "i'll now",
+    "let me",
+];
 const COMPLETE_SIGNALS: [&str; 10] = [
     "here's what i did",
     "here is what i did",
@@ -457,15 +659,31 @@ impl PlanTracker {
     fn new(goal: &str) -> Self {
         // Plan mode = strict 5-phase gate; Regular mode = no gating, bias to doing.
         let requires_approval = is_plan_mode() && !is_conversational_str(goal);
-        Self { goal: goal.to_string(), steps_done: Vec::new(), last_tools: Vec::new(), nocall_streak: 0, requires_approval, approved: false }
+        Self {
+            goal: goal.to_string(),
+            steps_done: Vec::new(),
+            last_tools: Vec::new(),
+            nocall_streak: 0,
+            requires_approval,
+            approved: false,
+        }
     }
 
-    fn requires_approval(&self) -> bool { self.requires_approval }
-    fn has_approval(&self) -> bool { self.approved }
-    fn set_approved(&mut self, v: bool) { self.approved = v; }
+    fn requires_approval(&self) -> bool {
+        self.requires_approval
+    }
+    fn has_approval(&self) -> bool {
+        self.approved
+    }
+    fn set_approved(&mut self, v: bool) {
+        self.approved = v;
+    }
     fn note_ask_result(&mut self, result: &str) {
         let lower = result.to_lowercase();
-        if lower.contains("proceed as proposed") || lower.contains("\u{2713} proceed") || lower.contains("✓ proceed") {
+        if lower.contains("proceed as proposed")
+            || lower.contains("\u{2713} proceed")
+            || lower.contains("✓ proceed")
+        {
             self.approved = true;
         }
         if is_permission_to_leave_plan(result) {
@@ -505,9 +723,13 @@ impl PlanTracker {
             out.push_str("ASK is read-only: Allowed: read, read_skill, web_search, search_memory/recall_memory/list_memories, ask_user, readonly bash (ls/cat/grep/find/rg/git log|status|diff|show, 2>/dev/null, 2>&1, pipes), MCP reads (read/list/get/search/query/fetch). BLOCKED: write/edit/mutating bash (> file, rm/mv/cp/mkdir, cargo build/test/run, npm install, git commit/push) and MCP writes — reply with \"ASK is read-only — switch to Norm (Shift+Tab) or Plan to build.\" if asked to build. Do not over-verify; answer directly.\n");
             if !self.steps_done.is_empty() {
                 out.push_str(&format!("Progress ({}):\n", self.steps_done.len()));
-                for (i, s) in self.steps_done.iter().enumerate() { out.push_str(&format!("  {}. {}\n", i+1, s)); }
+                for (i, s) in self.steps_done.iter().enumerate() {
+                    out.push_str(&format!("  {}. {}\n", i + 1, s));
+                }
             }
-            if !self.last_tools.is_empty() { out.push_str(&format!("Recent tools: {}\n", self.last_tools.join(", "))); }
+            if !self.last_tools.is_empty() {
+                out.push_str(&format!("Recent tools: {}\n", self.last_tools.join(", ")));
+            }
             out.push_str(&format!("Step {}.\n", step));
             return out;
         }
@@ -520,9 +742,13 @@ impl PlanTracker {
             out.push_str("You MUST call ask_user now to clarify scope/approach. Cover goal, non-goals, files in scope, constraints, edge cases. Iterate until 100% sure. Final gating question MUST contain option exactly `\u{2713} Proceed as proposed`. Do NOT call mutating tools.\n");
             if !self.steps_done.is_empty() {
                 out.push_str(&format!("Progress ({}):\n", self.steps_done.len()));
-                for (i, s) in self.steps_done.iter().enumerate() { out.push_str(&format!("  {}. {}\n", i+1, s)); }
+                for (i, s) in self.steps_done.iter().enumerate() {
+                    out.push_str(&format!("  {}. {}\n", i + 1, s));
+                }
             }
-            if !self.last_tools.is_empty() { out.push_str(&format!("Recent tools: {}\n", self.last_tools.join(", "))); }
+            if !self.last_tools.is_empty() {
+                out.push_str(&format!("Recent tools: {}\n", self.last_tools.join(", ")));
+            }
             if self.nocall_streak > 0 {
                 out.push_str(&format!("No tool call yet (attempt {}/{}): call ask_user now to clarify, or if already clarified, ask the final Proceed question.\n", self.nocall_streak, MAX_NOCALL_STREAK));
             }
@@ -536,9 +762,15 @@ impl PlanTracker {
         }
         if !self.steps_done.is_empty() {
             out.push_str(&format!("Progress ({}):\n", self.steps_done.len()));
-            for (i, s) in self.steps_done.iter().enumerate() { out.push_str(&format!("  {}. {}\n", i+1, s)); }
-        } else { out.push_str("Progress: starting\n"); }
-        if !self.last_tools.is_empty() { out.push_str(&format!("Recent tools: {}\n", self.last_tools.join(", "))); }
+            for (i, s) in self.steps_done.iter().enumerate() {
+                out.push_str(&format!("  {}. {}\n", i + 1, s));
+            }
+        } else {
+            out.push_str("Progress: starting\n");
+        }
+        if !self.last_tools.is_empty() {
+            out.push_str(&format!("Recent tools: {}\n", self.last_tools.join(", ")));
+        }
         if self.nocall_streak > 0 {
             out.push_str(&format!("No tool call yet (attempt {}/{}): call a tool now, or if the work is done, summarize and end with \"All done.\"\n", self.nocall_streak, MAX_NOCALL_STREAK));
         }
@@ -549,7 +781,9 @@ impl PlanTracker {
     fn record_tools(&mut self, tool_names: &[String]) {
         self.nocall_streak = 0;
         self.last_tools = tool_names.to_vec();
-        for name in tool_names { self.steps_done.push(format!("called {}", name)); }
+        for name in tool_names {
+            self.steps_done.push(format!("called {}", name));
+        }
     }
     fn record_text(&mut self, text: &str) {
         let trimmed = text.trim();
@@ -557,8 +791,14 @@ impl PlanTracker {
             return;
         }
         let summary = if let Some(period) = trimmed.find('.') {
-            if period < 200 { trimmed[..period+1].to_string() } else { trimmed.chars().take(200).collect() }
-        } else { trimmed.chars().take(200).collect() };
+            if period < 200 {
+                trimmed[..period + 1].to_string()
+            } else {
+                trimmed.chars().take(200).collect()
+            }
+        } else {
+            trimmed.chars().take(200).collect()
+        };
         // Dedup: Jaccard >0.75 vs last 2 entries, like consolidate_memory
         if !self.steps_done.is_empty() {
             let new_tokens: std::collections::HashSet<String> = summary
@@ -579,8 +819,11 @@ impl PlanTracker {
                 }
                 // Also hard block thank-you echo
                 let lower = summary.to_lowercase();
-                if (lower.contains("thank you") || lower.contains("thanks") || lower.contains("you're welcome"))
-                    && (prev.to_lowercase().contains("thank") || prev.to_lowercase().contains("welcome"))
+                if (lower.contains("thank you")
+                    || lower.contains("thanks")
+                    || lower.contains("you're welcome"))
+                    && (prev.to_lowercase().contains("thank")
+                        || prev.to_lowercase().contains("welcome"))
                 {
                     return;
                 }
@@ -627,7 +870,9 @@ fn is_retryable_status(status: u16) -> bool {
 }
 
 fn is_retryable_error(e: &reqwest::Error) -> bool {
-    e.is_timeout() || e.is_connect() || e.is_request() && format!("{:?}", e).to_lowercase().contains("connection")
+    e.is_timeout()
+        || e.is_connect()
+        || e.is_request() && format!("{:?}", e).to_lowercase().contains("connection")
 }
 
 fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
@@ -643,13 +888,22 @@ fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     None
 }
 
-async fn post_with_retry(client: &Client, url: String, body: &Value) -> Result<reqwest::Response, String> {
+async fn post_with_retry(
+    client: &Client,
+    url: String,
+    body: &Value,
+) -> Result<reqwest::Response, String> {
     let is_ollama = client.provider == crate::models::Provider::Ollama;
     let max_retries = if is_ollama { 2 } else { 3 };
-    let base_delays_ms: Vec<u64> = if is_ollama { vec![300, 600] } else { vec![500, 1000, 2000] };
+    let base_delays_ms: Vec<u64> = if is_ollama {
+        vec![300, 600]
+    } else {
+        vec![500, 1000, 2000]
+    };
     let mut last_err: Option<String> = None;
     for attempt in 0..=max_retries {
-        let res = client.apply_auth(client.http.post(url.clone()))
+        let res = client
+            .apply_auth(client.http.post(url.clone()))
             .header("Content-Type", "application/json")
             .json(body)
             .send()
@@ -661,7 +915,8 @@ async fn post_with_retry(client: &Client, url: String, body: &Value) -> Result<r
                 }
                 let status = resp.status().as_u16();
                 if is_retryable_status(status) && attempt < max_retries {
-                    let retry_after = parse_retry_after(resp.headers()).unwrap_or(Duration::from_millis(base_delays_ms[attempt as usize]));
+                    let retry_after = parse_retry_after(resp.headers())
+                        .unwrap_or(Duration::from_millis(base_delays_ms[attempt as usize]));
                     let delay = std::cmp::min(retry_after, Duration::from_secs(30));
                     tokio::time::sleep(delay).await;
                     continue;
@@ -673,25 +928,47 @@ async fn post_with_retry(client: &Client, url: String, body: &Value) -> Result<r
                         " — check API key (OPENAI_API_KEY / ANTHROPIC_API_KEY / OPENCODE_API_KEY)"
                     } else if status == 429 {
                         " — rate limited, try again shortly"
-                    } else { "" };
+                    } else {
+                        ""
+                    };
                     // Truncate long body for inline display
-                    let snippet = if txt.chars().count() > 800 { format!("{}… [truncated]", txt.chars().take(800).collect::<String>()) } else { txt };
-                    return Err(format!("[LLM HTTP {}: {}{}] (provider: {}, url: {})", status, snippet, hint, client.provider.as_str(), url));
+                    let snippet = if txt.chars().count() > 800 {
+                        format!("{}… [truncated]", txt.chars().take(800).collect::<String>())
+                    } else {
+                        txt
+                    };
+                    return Err(format!(
+                        "[LLM HTTP {}: {}{}] (provider: {}, url: {})",
+                        status,
+                        snippet,
+                        hint,
+                        client.provider.as_str(),
+                        url
+                    ));
                 }
-            },
+            }
             Err(e) if is_retryable_error(&e) && attempt < max_retries => {
                 let delay = Duration::from_millis(base_delays_ms[attempt as usize]);
                 tokio::time::sleep(delay).await;
                 last_err = Some(e.to_string());
                 continue;
-            },
+            }
             Err(e) => {
-                let hint = if is_ollama && (e.is_connect() || format!("{:?}", e).to_lowercase().contains("connection")) {
+                let hint = if is_ollama
+                    && (e.is_connect() || format!("{:?}", e).to_lowercase().contains("connection"))
+                {
                     " — Ollama is not running — run 'ollama serve' and ensure http://localhost:11434/api/tags is reachable"
                 } else if e.is_timeout() {
                     " — timeout"
-                } else { "" };
-                return Err(format!("[LLM error: {}{}] (provider: {})", e, hint, client.provider.as_str()));
+                } else {
+                    ""
+                };
+                return Err(format!(
+                    "[LLM error: {}{}] (provider: {})",
+                    e,
+                    hint,
+                    client.provider.as_str()
+                ));
             }
         }
     }
@@ -713,9 +990,11 @@ fn build_user_content(prompt: &str) -> Value {
             parts.push(json!({"type": "text", "text": before }));
         }
         if let Some(end) = remaining[start..].find(">>") {
-            let marker = &remaining[start..start+end+2];
+            let marker = &remaining[start..start + end + 2];
             if marker.starts_with("<<IMAGE_URL:") {
-                let url = marker.trim_start_matches("<<IMAGE_URL:").trim_end_matches(">>");
+                let url = marker
+                    .trim_start_matches("<<IMAGE_URL:")
+                    .trim_end_matches(">>");
                 if count < MAX_IMAGES_PER_TURN {
                     parts.push(json!({"type": "image_url", "image_url": {"url": url}}));
                     count += 1;
@@ -726,7 +1005,7 @@ fn build_user_content(prompt: &str) -> Value {
                 let inner = marker.trim_start_matches("<<IMAGE:").trim_end_matches(">>");
                 if let Some(colon) = inner.find(':') {
                     let mime = &inner[..colon];
-                    let b64 = &inner[colon+1..];
+                    let b64 = &inner[colon + 1..];
                     if count < MAX_IMAGES_PER_TURN {
                         parts.push(json!({"type": "image_url", "image_url": {"url": format!("data:{};base64,{}", mime, b64)}}));
                         count += 1;
@@ -735,7 +1014,7 @@ fn build_user_content(prompt: &str) -> Value {
                     }
                 }
             }
-            remaining = &remaining[start+end+2..];
+            remaining = &remaining[start + end + 2..];
         } else {
             parts.push(json!({"type": "text", "text": remaining[start..].to_string()}));
             remaining = "";
@@ -745,10 +1024,16 @@ fn build_user_content(prompt: &str) -> Value {
     if !remaining.is_empty() {
         parts.push(json!({"type": "text", "text": remaining}));
     }
-    if parts.iter().any(|p| p.get("type").and_then(|t| t.as_str()) == Some("image_url")) {
+    if parts
+        .iter()
+        .any(|p| p.get("type").and_then(|t| t.as_str()) == Some("image_url"))
+    {
         Value::Array(parts)
     } else {
-        let txt: String = parts.iter().filter_map(|p| p.get("text").and_then(|v| v.as_str())).collect();
+        let txt: String = parts
+            .iter()
+            .filter_map(|p| p.get("text").and_then(|v| v.as_str()))
+            .collect();
         Value::String(txt)
     }
 }
@@ -756,35 +1041,56 @@ fn build_user_content(prompt: &str) -> Value {
 /// Strip image content from messages for models that don't support vision.
 /// Replaces image_url parts with a text placeholder, preserving text parts.
 fn strip_images_for_non_vision(messages: &[Value]) -> Vec<Value> {
-    messages.iter().map(|m| {
-        let mut out = m.clone();
-        if let Some(content) = out.get("content") {
-            if let Some(arr) = content.as_array() {
-                let has_image = arr.iter().any(|p| p.get("type").and_then(|t| t.as_str()) == Some("image_url"));
-                if has_image {
-                    let text_parts: Vec<String> = arr.iter()
-                        .filter_map(|p| {
-                            let tp = p.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                            match tp {
-                                "text" => p.get("text").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                                "image_url" => Some("[image omitted — model does not support vision]".to_string()),
-                                _ => None,
-                            }
-                        })
-                        .collect();
-                    out["content"] = json!(text_parts.join("\n"));
+    messages
+        .iter()
+        .map(|m| {
+            let mut out = m.clone();
+            if let Some(content) = out.get("content") {
+                if let Some(arr) = content.as_array() {
+                    let has_image = arr
+                        .iter()
+                        .any(|p| p.get("type").and_then(|t| t.as_str()) == Some("image_url"));
+                    if has_image {
+                        let text_parts: Vec<String> = arr
+                            .iter()
+                            .filter_map(|p| {
+                                let tp = p.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                                match tp {
+                                    "text" => p
+                                        .get("text")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string()),
+                                    "image_url" => Some(
+                                        "[image omitted — model does not support vision]"
+                                            .to_string(),
+                                    ),
+                                    _ => None,
+                                }
+                            })
+                            .collect();
+                        out["content"] = json!(text_parts.join("\n"));
+                    }
                 }
             }
-        }
-        out
-    }).collect()
+            out
+        })
+        .collect()
 }
 
-pub fn run_agent(user_prompt: String, model: String, max_steps: usize) -> impl Stream<Item = AgentEvent> {
+pub fn run_agent(
+    user_prompt: String,
+    model: String,
+    max_steps: usize,
+) -> impl Stream<Item = AgentEvent> {
     run_agent_with_history(user_prompt, model, max_steps, Vec::new())
 }
 
-pub fn run_agent_with_history(user_prompt: String, model: String, max_steps: usize, history: Vec<Value>) -> impl Stream<Item = AgentEvent> {
+pub fn run_agent_with_history(
+    user_prompt: String,
+    model: String,
+    max_steps: usize,
+    history: Vec<Value>,
+) -> impl Stream<Item = AgentEvent> {
     async_stream::stream! {
         let resolved = match crate::models::resolve(Some(&model)) {
             Ok(r) => r,
@@ -1347,7 +1653,10 @@ mod prompt_tests {
     #[tokio::test]
     async fn built_prompt_keeps_base_prompt_intact() {
         let built = build_system_prompt().await;
-        assert!(built.starts_with(SYSTEM_PROMPT), "base prompt was altered or truncated");
+        assert!(
+            built.starts_with(SYSTEM_PROMPT),
+            "base prompt was altered or truncated"
+        );
     }
 
     #[test]
@@ -1372,7 +1681,16 @@ mod behavior_tests {
 
     #[test]
     fn conversational_goals_detected() {
-        for goal in ["hi", "hello", "hey", "thanks", "thank you", "how are you?", "Hi!", "Hey there"] {
+        for goal in [
+            "hi",
+            "hello",
+            "hey",
+            "thanks",
+            "thank you",
+            "how are you?",
+            "Hi!",
+            "Hey there",
+        ] {
             assert!(
                 PlanTracker::new(goal).is_conversational_goal(),
                 "{goal:?} should be conversational"
@@ -1433,7 +1751,10 @@ mod behavior_tests {
         ];
         let pruned = prune_context_messages(&messages);
         assert_eq!(pruned.len(), 3);
-        assert!(pruned[1]["content"].as_str().unwrap().starts_with("Recalled memories"));
+        assert!(pruned[1]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("Recalled memories"));
         assert_eq!(pruned[2]["content"], "hi");
     }
 }

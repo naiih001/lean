@@ -105,7 +105,10 @@ fn disabled_lock() -> &'static Mutex<DisabledState> {
     DISABLED.get_or_init(|| {
         let path = disabled_state_path();
         let state = if path.exists() {
-            std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+            std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default()
         } else {
             DisabledState::default()
         };
@@ -113,7 +116,8 @@ fn disabled_lock() -> &'static Mutex<DisabledState> {
     })
 }
 fn disabled_state_path() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"))
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("~"))
         .join(".lean")
         .join("mcp_state.json")
 }
@@ -121,7 +125,9 @@ fn save_disabled_state() {
     if let Some(lock) = DISABLED.get() {
         let state = lock.lock().unwrap().clone();
         let path = disabled_state_path();
-        if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         if let Ok(json) = serde_json::to_string_pretty(&state) {
             let _ = std::fs::write(path, json);
         }
@@ -177,7 +183,11 @@ pub fn toggle_server_disabled(name: &str) -> bool {
 pub fn set_server_disabled(name: &str, disabled: bool) {
     {
         let mut st = disabled_lock().lock().unwrap();
-        if disabled { st.disabled_servers.insert(name.to_string()); } else { st.disabled_servers.remove(name); }
+        if disabled {
+            st.disabled_servers.insert(name.to_string());
+        } else {
+            st.disabled_servers.remove(name);
+        }
     }
     save_disabled_state();
     invalidate_tool_cache();
@@ -254,7 +264,9 @@ fn expand_env(s: &str) -> String {
                     i += 3 + end;
                     continue;
                 }
-            } else if i + 1 < chars.len() && (chars[i + 1].is_ascii_alphabetic() || chars[i + 1] == '_') {
+            } else if i + 1 < chars.len()
+                && (chars[i + 1].is_ascii_alphabetic() || chars[i + 1] == '_')
+            {
                 // $VAR
                 let mut j = i + 1;
                 while j < chars.len() && (chars[j].is_ascii_alphanumeric() || chars[j] == '_') {
@@ -354,14 +366,17 @@ fn validate_config(name: &str, cfg: &ServerConfig) -> Option<String> {
 
 pub fn snapshot() -> Vec<McpServerInfo> {
     let lock = registry_lock().read().unwrap();
-    let mut v: Vec<McpServerInfo> = lock.values().map(|e| {
-        let mut info = e.info.clone();
-        if is_server_disabled(&info.name) && !matches!(info.status, ServerStatus::Disabled) {
-            info.status = ServerStatus::Disabled;
-            info.error_detail = Some("disabled via /mcp toggle".into());
-        }
-        info
-    }).collect();
+    let mut v: Vec<McpServerInfo> = lock
+        .values()
+        .map(|e| {
+            let mut info = e.info.clone();
+            if is_server_disabled(&info.name) && !matches!(info.status, ServerStatus::Disabled) {
+                info.status = ServerStatus::Disabled;
+                info.error_detail = Some("disabled via /mcp toggle".into());
+            }
+            info
+        })
+        .collect();
     // Also include disabled servers that are in config but not in registry? registry already has all
     v.sort_by(|a, b| a.name.cmp(&b.name));
     v
@@ -372,9 +387,15 @@ pub fn status_summary() -> String {
     if snap.is_empty() {
         return "mcp:0".to_string();
     }
-    let connected = snap.iter().filter(|s| matches!(s.status, ServerStatus::Connected)).count();
+    let connected = snap
+        .iter()
+        .filter(|s| matches!(s.status, ServerStatus::Connected))
+        .count();
     let total = snap.len();
-    let err = snap.iter().filter(|s| matches!(s.status, ServerStatus::Error(_))).count();
+    let err = snap
+        .iter()
+        .filter(|s| matches!(s.status, ServerStatus::Error(_)))
+        .count();
     if err > 0 {
         format!("mcp:{}/{} ({} err)", connected, total, err)
     } else {
@@ -397,10 +418,17 @@ pub async fn mcp_tool_definitions() -> Vec<Value> {
     }
     let snap = snapshot();
     let mut out = Vec::new();
-    for srv in snap.iter().filter(|s| matches!(s.status, ServerStatus::Connected)) {
-        if is_server_disabled(&srv.name) { continue; }
+    for srv in snap
+        .iter()
+        .filter(|s| matches!(s.status, ServerStatus::Connected))
+    {
+        if is_server_disabled(&srv.name) {
+            continue;
+        }
         for tool in &srv.tools {
-            let params = if tool.input_schema.is_null() || tool.input_schema == Value::Object(Default::default()) {
+            let params = if tool.input_schema.is_null()
+                || tool.input_schema == Value::Object(Default::default())
+            {
                 serde_json::json!({"type":"object","properties":{}})
             } else {
                 tool.input_schema.clone()
@@ -439,7 +467,8 @@ pub async fn call_tool(server: &str, tool: &str, args: Value) -> Result<String, 
         let lock = registry_lock().read().unwrap();
         lock.get(server).and_then(|e| e.peer.clone())
     };
-    let peer = peer_opt.ok_or_else(|| format!("MCP server not found or not connected: {}", server))?;
+    let peer =
+        peer_opt.ok_or_else(|| format!("MCP server not found or not connected: {}", server))?;
 
     // Build CallToolRequestParams
     let mut params = rmcp::model::CallToolRequestParams::new(tool.to_string());
@@ -521,19 +550,31 @@ pub async fn call_tool(server: &str, tool: &str, args: Value) -> Result<String, 
         out.push_str("[MCP tool returned no content]");
     }
     // Truncate via same logic as tools.rs (reuse truncate)
-    Ok(crate::tools::truncate_output(&out, crate::tools::TruncateStrategy::Head))
+    Ok(crate::tools::truncate_output(
+        &out,
+        crate::tools::TruncateStrategy::Head,
+    ))
 }
 
 // ── Connection ─────────────────────────────────────────────────
 
 fn resolve_stdio_command(cmd: &str, args: &[String]) -> (String, Vec<String>) {
     // If using npx -y @modelcontextprotocol/server-github, try to use global install to avoid 3s npx overhead
-    if cmd == "npx" && args.iter().any(|a| a.contains("@modelcontextprotocol/server-github")) {
+    if cmd == "npx"
+        && args
+            .iter()
+            .any(|a| a.contains("@modelcontextprotocol/server-github"))
+    {
         // Try npm root -g
-        if let Ok(output) = std::process::Command::new("npm").arg("root").arg("-g").output() {
+        if let Ok(output) = std::process::Command::new("npm")
+            .arg("root")
+            .arg("-g")
+            .output()
+        {
             if output.status.success() {
                 let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                let candidate = std::path::Path::new(&root).join("@modelcontextprotocol/server-github/dist/index.js");
+                let candidate = std::path::Path::new(&root)
+                    .join("@modelcontextprotocol/server-github/dist/index.js");
                 if candidate.exists() {
                     // Prefer direct node
                     return ("node".to_string(), vec![candidate.display().to_string()]);
@@ -549,9 +590,18 @@ fn resolve_stdio_command(cmd: &str, args: &[String]) -> (String, Vec<String>) {
     (cmd.to_string(), args.to_vec())
 }
 
-async fn connect_stdio(name: String, cfg: ServerConfig) -> Result<(rmcp::service::Peer<rmcp::RoleClient>, rmcp::service::RunningService<rmcp::RoleClient, ()>), String> {
-    use rmcp::ServiceExt;
+async fn connect_stdio(
+    name: String,
+    cfg: ServerConfig,
+) -> Result<
+    (
+        rmcp::service::Peer<rmcp::RoleClient>,
+        rmcp::service::RunningService<rmcp::RoleClient, ()>,
+    ),
+    String,
+> {
     use rmcp::transport::TokioChildProcess;
+    use rmcp::ServiceExt;
 
     let raw_cmd = cfg.command.clone().unwrap_or_default();
     let raw_args = cfg.args.clone().unwrap_or_default();
@@ -572,15 +622,27 @@ async fn connect_stdio(name: String, cfg: ServerConfig) -> Result<(rmcp::service
         .spawn()
         .map_err(|e| format!("failed to spawn {}: {}", cmd, e))?;
 
-    let service = ().serve(transport).await.map_err(|e| format!("MCP initialize failed for {}: {}", name, e))?;
+    let service = ()
+        .serve(transport)
+        .await
+        .map_err(|e| format!("MCP initialize failed for {}: {}", name, e))?;
     let peer = service.peer().clone();
     Ok((peer, service))
 }
 
-async fn connect_http(name: String, cfg: ServerConfig) -> Result<(rmcp::service::Peer<rmcp::RoleClient>, rmcp::service::RunningService<rmcp::RoleClient, ()>), String> {
-    use rmcp::ServiceExt;
-    use rmcp::transport::StreamableHttpClientTransport;
+async fn connect_http(
+    name: String,
+    cfg: ServerConfig,
+) -> Result<
+    (
+        rmcp::service::Peer<rmcp::RoleClient>,
+        rmcp::service::RunningService<rmcp::RoleClient, ()>,
+    ),
+    String,
+> {
     use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+    use rmcp::transport::StreamableHttpClientTransport;
+    use rmcp::ServiceExt;
 
     let url = cfg.url.clone().unwrap_or_default();
     let headers = cfg.headers.clone().unwrap_or_default();
@@ -614,7 +676,10 @@ async fn connect_http(name: String, cfg: ServerConfig) -> Result<(rmcp::service:
         StreamableHttpClientTransport::from_config(config)
     };
 
-    let service = ().serve(transport).await.map_err(|e| format!("MCP HTTP initialize failed for {}: {}", name, e))?;
+    let service = ()
+        .serve(transport)
+        .await
+        .map_err(|e| format!("MCP HTTP initialize failed for {}: {}", name, e))?;
     let peer = service.peer().clone();
     Ok((peer, service))
 }
@@ -661,14 +726,22 @@ async fn connect_one(name: String, cfg: ServerConfig) {
             let tools_res = peer.list_all_tools().await;
             match tools_res {
                 Ok(tools) => {
-                    let tool_infos: Vec<McpToolInfo> = tools.into_iter().map(|t| McpToolInfo {
-                        name: t.name.to_string(),
-                        description: t.description.map(|d| d.to_string()),
-                        input_schema: {
-                            let v = serde_json::to_value(&t.input_schema).unwrap_or(Value::Object(Default::default()));
-                            if v.is_null() { serde_json::json!({"type":"object","properties":{}}) } else { v }
-                        },
-                    }).collect();
+                    let tool_infos: Vec<McpToolInfo> = tools
+                        .into_iter()
+                        .map(|t| McpToolInfo {
+                            name: t.name.to_string(),
+                            description: t.description.map(|d| d.to_string()),
+                            input_schema: {
+                                let v = serde_json::to_value(&t.input_schema)
+                                    .unwrap_or(Value::Object(Default::default()));
+                                if v.is_null() {
+                                    serde_json::json!({"type":"object","properties":{}})
+                                } else {
+                                    v
+                                }
+                            },
+                        })
+                        .collect();
                     let mut lock = registry_lock().write().unwrap();
                     if let Some(entry) = lock.get_mut(&name) {
                         entry.peer = Some(peer);
@@ -717,17 +790,20 @@ pub async fn init() {
         let mut lock = registry_lock().write().unwrap();
         lock.clear();
         for (name, server_cfg) in cfg {
-            lock.insert(name.clone(), LiveEntry {
-                info: McpServerInfo {
-                    name: name.clone(),
-                    config: server_cfg,
-                    status: ServerStatus::Disabled,
-                    error_detail: Some("globally disabled via /mcp".into()),
-                    tools: Vec::new(),
+            lock.insert(
+                name.clone(),
+                LiveEntry {
+                    info: McpServerInfo {
+                        name: name.clone(),
+                        config: server_cfg,
+                        status: ServerStatus::Disabled,
+                        error_detail: Some("globally disabled via /mcp".into()),
+                        tools: Vec::new(),
+                    },
+                    peer: None,
+                    _service: None,
                 },
-                peer: None,
-                _service: None,
-            });
+            );
         }
         invalidate_tool_cache();
         return;
@@ -738,17 +814,28 @@ pub async fn init() {
         lock.clear();
         for (name, server_cfg) in cfg.clone() {
             let disabled = is_server_disabled(&name);
-            lock.insert(name.clone(), LiveEntry {
-                info: McpServerInfo {
-                    name: name.clone(),
-                    config: server_cfg,
-                    status: if disabled { ServerStatus::Disabled } else { ServerStatus::Connecting },
-                    error_detail: if disabled { Some("disabled via /mcp toggle".into()) } else { None },
-                    tools: Vec::new(),
+            lock.insert(
+                name.clone(),
+                LiveEntry {
+                    info: McpServerInfo {
+                        name: name.clone(),
+                        config: server_cfg,
+                        status: if disabled {
+                            ServerStatus::Disabled
+                        } else {
+                            ServerStatus::Connecting
+                        },
+                        error_detail: if disabled {
+                            Some("disabled via /mcp toggle".into())
+                        } else {
+                            None
+                        },
+                        tools: Vec::new(),
+                    },
+                    peer: None,
+                    _service: None,
                 },
-                peer: None,
-                _service: None,
-            });
+            );
         }
     }
     if cfg.is_empty() {
@@ -756,7 +843,10 @@ pub async fn init() {
         return;
     }
     // Filter out disabled for spawning
-    let to_spawn: Vec<(String, ServerConfig)> = cfg.into_iter().filter(|(n, _)| !is_server_disabled(n)).collect();
+    let to_spawn: Vec<(String, ServerConfig)> = cfg
+        .into_iter()
+        .filter(|(n, _)| !is_server_disabled(n))
+        .collect();
     if to_spawn.is_empty() {
         invalidate_tool_cache();
         return;
@@ -775,7 +865,8 @@ pub async fn init() {
         for h in handles {
             let _ = h.await;
         }
-    }).await;
+    })
+    .await;
 }
 
 pub async fn reconnect(name: &str) -> Result<String, String> {
@@ -802,7 +893,11 @@ pub async fn reconnect(name: &str) -> Result<String, String> {
     };
     if let Some(info) = snap {
         match info.status {
-            ServerStatus::Connected => Ok(format!("{} connected ({} tools)", info.name, info.tools.len())),
+            ServerStatus::Connected => Ok(format!(
+                "{} connected ({} tools)",
+                info.name,
+                info.tools.len()
+            )),
             ServerStatus::Error(ref e) => Err(format!("{} failed: {}", info.name, e)),
             _ => Ok(format!("{} status: {}", info.name, info.status.as_str())),
         }

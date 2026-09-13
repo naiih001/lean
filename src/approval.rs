@@ -37,7 +37,11 @@ fn pending_lock() -> &'static Mutex<VecDeque<ApprovalRequest>> {
 /// Called from tools::execute_tool (background tokio task) to request approval.
 /// Returns true if approved, false if denied.
 /// If no TUI is running (pending not consumed within 200ms), falls back to blocking behavior handled by caller.
-pub async fn request(cmd: String, severity: crate::bash_guard::Severity, reasons: Vec<String>) -> bool {
+pub async fn request(
+    cmd: String,
+    severity: crate::bash_guard::Severity,
+    reasons: Vec<String>,
+) -> bool {
     // Session auto-accept bypass — no queue, no prompt, silent
     if is_auto_accept() {
         return true;

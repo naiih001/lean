@@ -129,7 +129,8 @@ async fn read_image(path: &str) -> Result<String, String> {
     if !p.exists() {
         return Err(format!("File not found: {}", path));
     }
-    let ext = p.extension()
+    let ext = p
+        .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
@@ -186,24 +187,34 @@ pub async fn edit_file(path: &str, old: &str, new: &str) -> Result<String, Strin
         return Err("oldText not found (no match)".to_string());
     }
     if count > 1 {
-        return Err(format!(
-            "oldText matched {} times — must be unique",
-            count
-        ));
+        return Err(format!("oldText matched {} times — must be unique", count));
     }
     let updated = raw.replacen(old, new, 1);
     // Compute unified diff for native feel (like pi diff_mode)
     let diff = {
         use similar::TextDiff;
         let diff = TextDiff::from_lines(&raw, &updated);
-        let unified = diff.unified_diff().context_radius(3).header("before", "after").to_string();
+        let unified = diff
+            .unified_diff()
+            .context_radius(3)
+            .header("before", "after")
+            .to_string();
         let mut out = format!("Edited {} — diff:\n{}", path, unified);
         let lines: Vec<&str> = out.lines().collect();
         if lines.len() > 120 {
             let kept = &lines[..120];
-            format!("{}\n… [diff truncated {} lines]", kept.join("\n"), lines.len() - 120)
+            format!(
+                "{}\n… [diff truncated {} lines]",
+                kept.join("\n"),
+                lines.len() - 120
+            )
         } else if unified.trim().is_empty() {
-            format!("Edited {} ({} bytes -> {} bytes)", path, raw.len(), updated.len())
+            format!(
+                "Edited {} ({} bytes -> {} bytes)",
+                path,
+                raw.len(),
+                updated.len()
+            )
         } else {
             out
         }
@@ -276,7 +287,10 @@ pub async fn web_search(query: &str) -> Result<String, String> {
     }
     // DuckDuckGo fallback
     let client = reqwest::Client::new();
-    let url = format!("https://api.duckduckgo.com/?q={}&format=json&no_html=1", query);
+    let url = format!(
+        "https://api.duckduckgo.com/?q={}&format=json&no_html=1",
+        query
+    );
     let resp = client
         .get(&url)
         .send()
@@ -291,8 +305,15 @@ pub async fn web_search(query: &str) -> Result<String, String> {
 
 pub async fn web_fetch(url: &str) -> Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.get(url).send().await.map_err(|e| format!("fetch error: {}", e))?;
-    let text = resp.text().await.map_err(|e| format!("fetch read error: {}", e))?;
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("fetch error: {}", e))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("fetch read error: {}", e))?;
     Ok(truncate_output(&text, TruncateStrategy::Head))
 }
 
@@ -303,21 +324,33 @@ pub async fn grep(pattern: &str, path: Option<&str>) -> Result<String, String> {
         return Err(format!("Path not found: {}", base));
     }
     let mut results = Vec::new();
-    let walker = walkdir::WalkDir::new(base_path).max_depth(8).into_iter().filter_entry(|e| {
-        let name = e.file_name().to_string_lossy();
-        !name.starts_with(".git") && name != "target" && name != "node_modules"
-    });
+    let walker = walkdir::WalkDir::new(base_path)
+        .max_depth(8)
+        .into_iter()
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            !name.starts_with(".git") && name != "target" && name != "node_modules"
+        });
     for entry in walker.filter_map(|e| e.ok()) {
         if entry.file_type().is_file() {
             if let Ok(content) = std::fs::read_to_string(entry.path()) {
                 for (idx, line) in content.lines().enumerate() {
                     if line.contains(pattern) {
-                        results.push(format!("{}:{}: {}", entry.path().display(), idx + 1, line.trim()));
-                        if results.len() >= 200 { break; }
+                        results.push(format!(
+                            "{}:{}: {}",
+                            entry.path().display(),
+                            idx + 1,
+                            line.trim()
+                        ));
+                        if results.len() >= 200 {
+                            break;
+                        }
                     }
                 }
             }
-            if results.len() >= 200 { break; }
+            if results.len() >= 200 {
+                break;
+            }
         }
     }
     if results.is_empty() {
@@ -334,16 +367,21 @@ pub async fn find(pattern: &str, path: Option<&str>) -> Result<String, String> {
         return Err(format!("Path not found: {}", base));
     }
     let mut results = Vec::new();
-    let walker = walkdir::WalkDir::new(base_path).max_depth(8).into_iter().filter_entry(|e| {
-        let name = e.file_name().to_string_lossy();
-        !name.starts_with(".git") && name != "target"
-    });
+    let walker = walkdir::WalkDir::new(base_path)
+        .max_depth(8)
+        .into_iter()
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            !name.starts_with(".git") && name != "target"
+        });
     let matcher = wildmatch::WildMatch::new(pattern);
     for entry in walker.filter_map(|e| e.ok()) {
         let name = entry.file_name().to_string_lossy();
         if matcher.matches(&name) || entry.path().to_string_lossy().contains(pattern) {
             results.push(entry.path().display().to_string());
-            if results.len() >= 200 { break; }
+            if results.len() >= 200 {
+                break;
+            }
         }
     }
     if results.is_empty() {
@@ -365,7 +403,9 @@ pub async fn ls(path: Option<&str>) -> Result<String, String> {
     let mut entries = Vec::new();
     for entry in std::fs::read_dir(p).map_err(|e| format!("read dir error: {}", e))? {
         let e = entry.map_err(|e| format!("entry error: {}", e))?;
-        let ft = e.file_type().map_err(|e| format!("file type error: {}", e))?;
+        let ft = e
+            .file_type()
+            .map_err(|e| format!("file type error: {}", e))?;
         let name = e.file_name().to_string_lossy().to_string();
         let suffix = if ft.is_dir() { "/" } else { "" };
         entries.push(format!("{}{}", name, suffix));
@@ -384,7 +424,11 @@ async fn guard_path(path: &str, tool: &str) -> Option<String> {
     let display = format!("{} {}", tool, path);
     // Reuse approval system but tag as dir-guard via reason prefix
     let approved = {
-        let fut = crate::approval::request(display.clone(), crate::bash_guard::Severity::High, risk.reasons.clone());
+        let fut = crate::approval::request(
+            display.clone(),
+            crate::bash_guard::Severity::High,
+            risk.reasons.clone(),
+        );
         match tokio::time::timeout(std::time::Duration::from_secs(300), fut).await {
             Ok(v) => v,
             Err(_) => false, // hard wall: deny on timeout
@@ -419,7 +463,9 @@ async fn guard_bash(cmd: &str) -> Option<String> {
 
     if let Some(r) = &bash_risk {
         reasons.extend(r.reasons.clone());
-        if r.severity == crate::bash_guard::Severity::High { severity = crate::bash_guard::Severity::High; }
+        if r.severity == crate::bash_guard::Severity::High {
+            severity = crate::bash_guard::Severity::High;
+        }
     }
     if let Some(r) = &dir_risk {
         reasons.extend(r.reasons.clone());
@@ -434,33 +480,56 @@ async fn guard_bash(cmd: &str) -> Option<String> {
         match tokio::time::timeout(std::time::Duration::from_secs(300), fut).await {
             Ok(v) => v,
             Err(_) => {
-                if is_dir_guard { false } else {
-                    match severity { crate::bash_guard::Severity::High => false, crate::bash_guard::Severity::Medium => true }
+                if is_dir_guard {
+                    false
+                } else {
+                    match severity {
+                        crate::bash_guard::Severity::High => false,
+                        crate::bash_guard::Severity::Medium => true,
+                    }
                 }
             }
         }
     };
     if !approved {
-        let sev_str = match severity { crate::bash_guard::Severity::High => "HIGH", crate::bash_guard::Severity::Medium => "MEDIUM" };
-        let guard = if is_dir_guard { "dir-guard" } else { "bash-guard" };
+        let sev_str = match severity {
+            crate::bash_guard::Severity::High => "HIGH",
+            crate::bash_guard::Severity::Medium => "MEDIUM",
+        };
+        let guard = if is_dir_guard {
+            "dir-guard"
+        } else {
+            "bash-guard"
+        };
         let reason_str = reasons.join("; ");
         return Some(format!("[{} BLOCKED ({}): {}]\nCommand: {}\nHint: {} — use allowlist or LEAN_DIR_GUARD_DISABLED=1 / --bash-guard-disabled", guard, sev_str, reason_str, cmd, if is_dir_guard { format!("outside CWD '{}'", crate::dir_guard::project_root().display()) } else { "risky command".to_string() }));
     }
     // Approved
     if !is_dir_guard && severity == crate::bash_guard::Severity::Medium {
         // Medium bash risk: run and annotate, return directly to avoid second prompt
-        let out = run_bash(cmd).await.unwrap_or_else(|e| format!("Error: {}", e));
+        let out = run_bash(cmd)
+            .await
+            .unwrap_or_else(|e| format!("Error: {}", e));
         let reason_str = reasons.join("; ");
-        return Some(format!("[bash-guard approved (MEDIUM): {}]\n{}", reason_str, out));
+        return Some(format!(
+            "[bash-guard approved (MEDIUM): {}]\n{}",
+            reason_str, out
+        ));
     }
     // High dir-guard or high bash-guard approved: proceed to normal execution (no annotation needed)
     // But we already approved, so just allow normal run_bash without re-prompting. To avoid re-prompt,
     // we temporarily allowlist this exact command for the next call? Instead we run here and return.
     if is_dir_guard || severity == crate::bash_guard::Severity::High {
-        let out = run_bash(cmd).await.unwrap_or_else(|e| format!("Error: {}", e));
+        let out = run_bash(cmd)
+            .await
+            .unwrap_or_else(|e| format!("Error: {}", e));
         // Add a small prefix so user knows it was dir-guarded but approved
         if is_dir_guard {
-            return Some(format!("[dir-guard approved (HIGH): {}]\n{}", reasons.join("; "), out));
+            return Some(format!(
+                "[dir-guard approved (HIGH): {}]\n{}",
+                reasons.join("; "),
+                out
+            ));
         }
         return Some(out);
     }
@@ -475,7 +544,11 @@ async fn guard_mcp(server: &str, tool: &str, args: &serde_json::Value) -> Option
     let display = format!("{}__{} {}", server, tool, args);
     let reasons = vec![format!("MCP tool {}.{} requires approval", server, tool)];
     let approved = {
-        let fut = crate::approval::request(display.clone(), crate::bash_guard::Severity::High, reasons.clone());
+        let fut = crate::approval::request(
+            display.clone(),
+            crate::bash_guard::Severity::High,
+            reasons.clone(),
+        );
         match tokio::time::timeout(std::time::Duration::from_secs(300), fut).await {
             Ok(v) => v,
             Err(_) => false,
@@ -490,17 +563,26 @@ async fn guard_mcp(server: &str, tool: &str, args: &serde_json::Value) -> Option
     None
 }
 
-
 async fn run_subagent(agent_name: &str, task: &str, label: &str) -> String {
     let agent = match crate::agents::load_agent(agent_name).await {
         Ok(a) => a,
         Err(e) => return format!("Error: {}", e),
     };
     let id = format!("{}-{}", agent_name, &uuid_simple());
-    let display_label = if label.is_empty() { agent_name.to_string() } else { label.to_string() };
+    let display_label = if label.is_empty() {
+        agent_name.to_string()
+    } else {
+        label.to_string()
+    };
     crate::agents::register_subagent(id.clone(), agent_name.to_string(), task.to_string());
-    let sub_prompt = format!("Agent: {}\nDescription: {}\n\nTask: {}\n\nContext:\n{}", agent.name, agent.description, task, agent.body);
-    let model = agent.model.clone().unwrap_or_else(|| crate::llm::DEFAULT_MODEL.to_string());
+    let sub_prompt = format!(
+        "Agent: {}\nDescription: {}\n\nTask: {}\n\nContext:\n{}",
+        agent.name, agent.description, task, agent.body
+    );
+    let model = agent
+        .model
+        .clone()
+        .unwrap_or_else(|| crate::llm::DEFAULT_MODEL.to_string());
     let max_steps = 15usize;
     let id_clone = id.clone();
     let display_clone = display_label.clone();
@@ -511,66 +593,158 @@ async fn run_subagent(agent_name: &str, task: &str, label: &str) -> String {
         let handle = rt.ok();
         // Use a new current_thread runtime if no handle
         let fut = async move {
-        use futures::StreamExt;
-        let mut stream = crate::agent::run_agent(sub_prompt, model, max_steps);
-        futures::pin_mut!(stream);
-        let mut final_text = String::new();
-        let mut last_error: Option<String> = None;
-        let mut tool_start_times: std::collections::HashMap<String, std::time::Instant> = std::collections::HashMap::new();
-        crate::agents::append_subagent_msg(&id_clone, crate::agents::SubagentMsg { role: "system".to_string(), content: format!("[{}] started: {}", agent_name_clone, task_clone), tool_name: None, tool_args: None, tool_id: None, elapsed_ms: None });
-        while let Some(ev) = stream.next().await {
-            match ev {
-                crate::agent::AgentEvent::Text { delta } => {
-                    final_text.push_str(&delta);
-                    if !delta.trim().is_empty() {
-                        crate::agents::append_subagent_msg(&id_clone, crate::agents::SubagentMsg { role: "assistant".to_string(), content: delta.clone(), tool_name: None, tool_args: None, tool_id: None, elapsed_ms: None });
+            use futures::StreamExt;
+            let mut stream = crate::agent::run_agent(sub_prompt, model, max_steps);
+            futures::pin_mut!(stream);
+            let mut final_text = String::new();
+            let mut last_error: Option<String> = None;
+            let mut tool_start_times: std::collections::HashMap<String, std::time::Instant> =
+                std::collections::HashMap::new();
+            crate::agents::append_subagent_msg(
+                &id_clone,
+                crate::agents::SubagentMsg {
+                    role: "system".to_string(),
+                    content: format!("[{}] started: {}", agent_name_clone, task_clone),
+                    tool_name: None,
+                    tool_args: None,
+                    tool_id: None,
+                    elapsed_ms: None,
+                },
+            );
+            while let Some(ev) = stream.next().await {
+                match ev {
+                    crate::agent::AgentEvent::Text { delta } => {
+                        final_text.push_str(&delta);
+                        if !delta.trim().is_empty() {
+                            crate::agents::append_subagent_msg(
+                                &id_clone,
+                                crate::agents::SubagentMsg {
+                                    role: "assistant".to_string(),
+                                    content: delta.clone(),
+                                    tool_name: None,
+                                    tool_args: None,
+                                    tool_id: None,
+                                    elapsed_ms: None,
+                                },
+                            );
+                        }
                     }
-                },
-                crate::agent::AgentEvent::Reasoning { delta } => {
-                    if !delta.trim().is_empty() {
-                        crate::agents::append_subagent_msg(&id_clone, crate::agents::SubagentMsg { role: "thinking".to_string(), content: delta.clone(), tool_name: None, tool_args: None, tool_id: None, elapsed_ms: None });
+                    crate::agent::AgentEvent::Reasoning { delta } => {
+                        if !delta.trim().is_empty() {
+                            crate::agents::append_subagent_msg(
+                                &id_clone,
+                                crate::agents::SubagentMsg {
+                                    role: "thinking".to_string(),
+                                    content: delta.clone(),
+                                    tool_name: None,
+                                    tool_args: None,
+                                    tool_id: None,
+                                    elapsed_ms: None,
+                                },
+                            );
+                        }
                     }
-                },
-                crate::agent::AgentEvent::ToolStart { name, args, id: tool_id } => {
-                    let args_str = serde_json::to_string(&args).unwrap_or_else(|_| format!("{:?}", args));
-                    tool_start_times.insert(tool_id.clone(), std::time::Instant::now());
-                    crate::agents::append_subagent_msg(&id_clone, crate::agents::SubagentMsg { role: "tool".to_string(), content: format!("{} {}", name, args_str), tool_name: Some(name.clone()), tool_args: Some(args_str), tool_id: Some(tool_id), elapsed_ms: None });
-                },
-                crate::agent::AgentEvent::ToolResult { name, result, id: tool_id, elapsed_ms } => {
-                    if result.contains("Error") && name == "subagent" {
-                        last_error = Some(result.clone());
+                    crate::agent::AgentEvent::ToolStart {
+                        name,
+                        args,
+                        id: tool_id,
+                    } => {
+                        let args_str =
+                            serde_json::to_string(&args).unwrap_or_else(|_| format!("{:?}", args));
+                        tool_start_times.insert(tool_id.clone(), std::time::Instant::now());
+                        crate::agents::append_subagent_msg(
+                            &id_clone,
+                            crate::agents::SubagentMsg {
+                                role: "tool".to_string(),
+                                content: format!("{} {}", name, args_str),
+                                tool_name: Some(name.clone()),
+                                tool_args: Some(args_str),
+                                tool_id: Some(tool_id),
+                                elapsed_ms: None,
+                            },
+                        );
                     }
-                    let elapsed = if elapsed_ms > 0 { elapsed_ms } else if let Some(start) = tool_start_times.remove(&tool_id) { start.elapsed().as_millis() as u64 } else { 0 };
-                    crate::agents::append_subagent_msg(&id_clone, crate::agents::SubagentMsg { role: "tool".to_string(), content: format!("{} → {}", name, result), tool_name: Some(name.clone()), tool_args: None, tool_id: Some(tool_id), elapsed_ms: Some(elapsed) });
-                },
-                crate::agent::AgentEvent::Done { text, .. } => { final_text = text; break; },
-                _ => {}
+                    crate::agent::AgentEvent::ToolResult {
+                        name,
+                        result,
+                        id: tool_id,
+                        elapsed_ms,
+                    } => {
+                        if result.contains("Error") && name == "subagent" {
+                            last_error = Some(result.clone());
+                        }
+                        let elapsed = if elapsed_ms > 0 {
+                            elapsed_ms
+                        } else if let Some(start) = tool_start_times.remove(&tool_id) {
+                            start.elapsed().as_millis() as u64
+                        } else {
+                            0
+                        };
+                        crate::agents::append_subagent_msg(
+                            &id_clone,
+                            crate::agents::SubagentMsg {
+                                role: "tool".to_string(),
+                                content: format!("{} → {}", name, result),
+                                tool_name: Some(name.clone()),
+                                tool_args: None,
+                                tool_id: Some(tool_id),
+                                elapsed_ms: Some(elapsed),
+                            },
+                        );
+                    }
+                    crate::agent::AgentEvent::Done { text, .. } => {
+                        final_text = text;
+                        break;
+                    }
+                    _ => {}
+                }
             }
-        }
-        let result_text = if final_text.trim().is_empty() {
-            if let Some(e) = last_error {
-                crate::agents::update_subagent(&id_clone, "error");
-                format!("[subagent {} error] {}", display_clone, e)
+            let result_text = if final_text.trim().is_empty() {
+                if let Some(e) = last_error {
+                    crate::agents::update_subagent(&id_clone, "error");
+                    format!("[subagent {} error] {}", display_clone, e)
+                } else {
+                    crate::agents::append_subagent_transcript(
+                        &id_clone,
+                        "[error] no output".to_string(),
+                    );
+                    crate::agents::update_subagent(&id_clone, "error");
+                    format!("[subagent {}] no output", display_clone)
+                }
             } else {
-                crate::agents::append_subagent_transcript(&id_clone, "[error] no output".to_string());
-                crate::agents::update_subagent(&id_clone, "error");
-                format!("[subagent {}] no output", display_clone)
-            }
-        } else {
-            crate::agents::append_subagent_transcript(&id_clone, format!("done: {} chars", final_text.len()));
-            crate::agents::update_subagent(&id_clone, "done");
-            format!("[subagent:{}]\n{}", display_clone, final_text)
-        };
-        crate::agents::append_subagent_msg(&id_clone, crate::agents::SubagentMsg { role: "system".to_string(), content: result_text.clone(), tool_name: None, tool_args: None, tool_id: None, elapsed_ms: None });
-        crate::agents::push_wake_message(format!("[subagent {} finished]\n{}", display_clone, result_text));
-        // keep done visible for 2s then remove from session
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        crate::agents::remove_subagent(&id_clone);
+                crate::agents::append_subagent_transcript(
+                    &id_clone,
+                    format!("done: {} chars", final_text.len()),
+                );
+                crate::agents::update_subagent(&id_clone, "done");
+                format!("[subagent:{}]\n{}", display_clone, final_text)
+            };
+            crate::agents::append_subagent_msg(
+                &id_clone,
+                crate::agents::SubagentMsg {
+                    role: "system".to_string(),
+                    content: result_text.clone(),
+                    tool_name: None,
+                    tool_args: None,
+                    tool_id: None,
+                    elapsed_ms: None,
+                },
+            );
+            crate::agents::push_wake_message(format!(
+                "[subagent {} finished]\n{}",
+                display_clone, result_text
+            ));
+            // keep done visible for 2s then remove from session
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            crate::agents::remove_subagent(&id_clone);
         };
         if let Some(h) = handle {
             let _ = h.block_on(fut);
         } else {
-            let rt2 = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            let rt2 = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
             let _ = rt2.block_on(fut);
         }
     });
@@ -579,7 +753,10 @@ async fn run_subagent(agent_name: &str, task: &str, label: &str) -> String {
 
 fn uuid_simple() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     format!("{:x}", nanos & 0xffffff)
 }
 
@@ -600,18 +777,24 @@ pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
     let res = match name {
         "read" | "read_file" => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            if let Some(blocked) = guard_path(path, "read").await { return blocked; }
+            if let Some(blocked) = guard_path(path, "read").await {
+                return blocked;
+            }
             read_file(path).await
         }
         "write" | "write_file" => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            if let Some(blocked) = guard_path(path, "write").await { return blocked; }
+            if let Some(blocked) = guard_path(path, "write").await {
+                return blocked;
+            }
             let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
             write_file(path, content).await
         }
         "edit" | "edit_file" => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            if let Some(blocked) = guard_path(path, "edit").await { return blocked; }
+            if let Some(blocked) = guard_path(path, "edit").await {
+                return blocked;
+            }
             let old = args.get("oldText").and_then(|v| v.as_str()).unwrap_or("");
             let new = args.get("newText").and_then(|v| v.as_str()).unwrap_or("");
             // also support snake_case fallback
@@ -660,11 +843,25 @@ pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
             } else {
                 let mut lines = Vec::new();
                 for s in running {
-                    let elapsed = std::time::SystemTime::now().duration_since(s.started_at).unwrap_or_default();
+                    let elapsed = std::time::SystemTime::now()
+                        .duration_since(s.started_at)
+                        .unwrap_or_default();
                     let secs = elapsed.as_secs();
-                    let task_preview = if s.task.len() > 80 { format!("{}…", &s.task[..80]) } else { s.task.clone() };
+                    let task_preview = if s.task.len() > 80 {
+                        format!("{}…", &s.task[..80])
+                    } else {
+                        s.task.clone()
+                    };
                     let short_id = &s.id[..8.min(s.id.len())];
-                    lines.push(format!("- {} [{}] {} — \"{}\" ({}s, {} transcript lines)", short_id, s.status, s.agent, task_preview, secs, s.transcript.len()));
+                    lines.push(format!(
+                        "- {} [{}] {} — \"{}\" ({}s, {} transcript lines)",
+                        short_id,
+                        s.status,
+                        s.agent,
+                        task_preview,
+                        secs,
+                        s.transcript.len()
+                    ));
                 }
                 Ok(lines.join("\n"))
             }
@@ -678,7 +875,9 @@ pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
         "bash" => {
             let cmd = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
             // Unified guard for both bash-risk and directory escape — if Some, it is either blocked OR already-executed approved output
-            if let Some(result) = guard_bash(cmd).await { return result; }
+            if let Some(result) = guard_bash(cmd).await {
+                return result;
+            }
             run_bash(cmd).await
         }
         "web_search" => {
@@ -702,21 +901,30 @@ pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
         }
         "remember" => {
             let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            let category = args.get("category").and_then(|v| v.as_str()).unwrap_or("fact");
-            let tags: Vec<String> = args.get("tags")
+            let category = args
+                .get("category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("fact");
+            let tags: Vec<String> = args
+                .get("tags")
                 .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|t| t.as_str().map(String::from)).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|t| t.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
-            let scope = args.get("scope").and_then(|v| v.as_str()).unwrap_or("global");
+            let scope = args
+                .get("scope")
+                .and_then(|v| v.as_str())
+                .unwrap_or("global");
             Ok(crate::memory::api_remember(content, category, tags, scope))
         }
         "search_memory" => {
             let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
             Ok(crate::memory::api_search(q))
         }
-        "recall_memory" => {
-            Ok(crate::memory::api_recall())
-        }
+        "recall_memory" => Ok(crate::memory::api_recall()),
         "list_memories" => {
             let tag = args.get("tag").and_then(|v| v.as_str()).unwrap_or("");
             Ok(crate::memory::api_list(tag))
@@ -725,12 +933,8 @@ pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
             let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("");
             Ok(crate::memory::api_forget(id))
         }
-        "consolidate_memory" => {
-            Ok(crate::memory::api_consolidate())
-        }
-        "memory_stats" => {
-            Ok(crate::memory::api_stats())
-        }
+        "consolidate_memory" => Ok(crate::memory::api_consolidate()),
+        "memory_stats" => Ok(crate::memory::api_stats()),
         _ => Err(format!("unknown tool: {}", name)),
     };
     match res {

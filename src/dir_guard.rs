@@ -1,11 +1,18 @@
 use std::path::{Path, PathBuf};
-use std::sync::{OnceLock, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    OnceLock,
+};
 
 static DISABLED: AtomicBool = AtomicBool::new(false);
 static PROJECT_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
-pub fn set_disabled(v: bool) { DISABLED.store(v, Ordering::Relaxed); }
-pub fn is_disabled() -> bool { DISABLED.load(Ordering::Relaxed) }
+pub fn set_disabled(v: bool) {
+    DISABLED.store(v, Ordering::Relaxed);
+}
+pub fn is_disabled() -> bool {
+    DISABLED.load(Ordering::Relaxed)
+}
 
 /// Call once at startup to capture CWD. If `root` is None, uses `current_dir()`.
 pub fn init(root: Option<PathBuf>) {
@@ -16,7 +23,9 @@ pub fn init(root: Option<PathBuf>) {
 }
 
 pub fn project_root() -> PathBuf {
-    if let Some(p) = PROJECT_ROOT.get() { return p.clone(); }
+    if let Some(p) = PROJECT_ROOT.get() {
+        return p.clone();
+    }
     // lazy fallback
     let r = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     r.canonicalize().unwrap_or_else(|_| normalize(&r))
@@ -25,7 +34,10 @@ pub fn project_root() -> PathBuf {
 // ---- allowlist ----
 
 fn allowlist_path() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from("~")).join(".lean").join("dir_allowlist.json")
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("~"))
+        .join(".lean")
+        .join("dir_allowlist.json")
 }
 
 fn load_allowlist() -> std::collections::HashSet<String> {
@@ -40,28 +52,46 @@ fn load_allowlist() -> std::collections::HashSet<String> {
 
 fn save_allowlist(set: &std::collections::HashSet<String>) {
     let path = allowlist_path();
-    if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     let vec: Vec<String> = set.iter().cloned().collect();
-    if let Ok(json) = serde_json::to_string_pretty(&vec) { let _ = std::fs::write(path, json); }
+    if let Ok(json) = serde_json::to_string_pretty(&vec) {
+        let _ = std::fs::write(path, json);
+    }
 }
 
 pub fn is_allowlisted(path: &str) -> bool {
     let set = load_allowlist();
     let trimmed = path.trim();
-    if set.contains(trimmed) { return true; }
+    if set.contains(trimmed) {
+        return true;
+    }
     // also check resolved form
     let resolved = resolve(trimmed).display().to_string();
-    if set.contains(&resolved) { return true; }
+    if set.contains(&resolved) {
+        return true;
+    }
     for pat in &set {
         // expand ~ in pattern
         let pat_expanded = expand_tilde(pat);
         let target = trimmed;
         let target_expanded = expand_tilde(target);
-        if wildmatch::WildMatch::new(&pat_expanded).matches(&target_expanded) { return true; }
-        if wildmatch::WildMatch::new(&pat_expanded).matches(&resolved) { return true; }
-        if wildmatch::WildMatch::new(pat).matches(target) { return true; }
+        if wildmatch::WildMatch::new(&pat_expanded).matches(&target_expanded) {
+            return true;
+        }
+        if wildmatch::WildMatch::new(&pat_expanded).matches(&resolved) {
+            return true;
+        }
+        if wildmatch::WildMatch::new(pat).matches(target) {
+            return true;
+        }
         // prefix fallback (no wildcard => prefix match)
-        if !pat.contains('*') && (target.starts_with(pat) || resolved.starts_with(pat) || target_expanded.starts_with(&pat_expanded)) {
+        if !pat.contains('*')
+            && (target.starts_with(pat)
+                || resolved.starts_with(pat)
+                || target_expanded.starts_with(&pat_expanded))
+        {
             return true;
         }
     }
@@ -115,12 +145,16 @@ fn normalize(p: &Path) -> PathBuf {
         match comp {
             Component::Prefix(p) => out.push(p.as_os_str()),
             Component::RootDir => out.push("/"),
-            Component::CurDir => {},
-            Component::ParentDir => { out.pop(); },
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
             Component::Normal(c) => out.push(c),
         }
     }
-    if out.as_os_str().is_empty() { out.push("."); }
+    if out.as_os_str().is_empty() {
+        out.push(".");
+    }
     out
 }
 
@@ -136,7 +170,9 @@ fn resolve(raw: &str) -> PathBuf {
     };
     // Try canonicalize if exists (resolves symlinks), else lexical normalize
     if joined.exists() {
-        if let Ok(c) = joined.canonicalize() { return c; }
+        if let Ok(c) = joined.canonicalize() {
+            return c;
+        }
     } else {
         // for non-existent, canonicalize parent if possible
         if let Some(parent) = joined.parent() {
@@ -155,7 +191,9 @@ fn resolve(raw: &str) -> PathBuf {
 
 /// Check if a path is inside project root
 pub fn is_inside(path: &str) -> bool {
-    if path.trim().is_empty() { return true; }
+    if path.trim().is_empty() {
+        return true;
+    }
     let root = project_root();
     let resolved = resolve(path);
     resolved.starts_with(&root)
@@ -164,7 +202,9 @@ pub fn is_inside(path: &str) -> bool {
 // ---- risk analysis ----
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Severity { High }
+pub enum Severity {
+    High,
+}
 
 #[derive(Debug, Clone)]
 pub struct Risk {
@@ -176,16 +216,33 @@ pub struct Risk {
 
 /// Analyze a single file path for directory escape
 pub fn analyze_path(path: &str) -> Option<Risk> {
-    if is_disabled() { return None; }
-    if std::env::var("LEAN_DIR_GUARD_DISABLED").map(|v| v == "1" || v == "true").unwrap_or(false) { return None; }
+    if is_disabled() {
+        return None;
+    }
+    if std::env::var("LEAN_DIR_GUARD_DISABLED")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false)
+    {
+        return None;
+    }
     let trimmed = path.trim();
-    if trimmed.is_empty() { return None; }
-    if is_allowlisted(trimmed) { return None; }
-    if is_inside(trimmed) { return None; }
+    if trimmed.is_empty() {
+        return None;
+    }
+    if is_allowlisted(trimmed) {
+        return None;
+    }
+    if is_inside(trimmed) {
+        return None;
+    }
     let resolved = resolve(trimmed);
     Some(Risk {
         severity: Severity::High,
-        reasons: vec![format!("outside CWD ({} → {})", trimmed, resolved.display())],
+        reasons: vec![format!(
+            "outside CWD ({} → {})",
+            trimmed,
+            resolved.display()
+        )],
         paths: vec![trimmed.to_string()],
     })
 }
@@ -193,13 +250,24 @@ pub fn analyze_path(path: &str) -> Option<Risk> {
 /// Light bash path extraction — finds path-like tokens that escape CWD.
 /// Reuses tokenization idea from bash_guard but focused on paths.
 pub fn analyze_bash(command: &str) -> Option<Risk> {
-    if is_disabled() { return None; }
-    if std::env::var("LEAN_DIR_GUARD_DISABLED").map(|v| v == "1" || v == "true").unwrap_or(false) { return None; }
+    if is_disabled() {
+        return None;
+    }
+    if std::env::var("LEAN_DIR_GUARD_DISABLED")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false)
+    {
+        return None;
+    }
     let raw = command.trim();
-    if raw.is_empty() { return None; }
+    if raw.is_empty() {
+        return None;
+    }
 
     // Quick allowlist check on whole command
-    if is_allowlisted(raw) { return None; }
+    if is_allowlisted(raw) {
+        return None;
+    }
 
     // Extract candidate paths from command
     let candidates = extract_paths(raw);
@@ -207,12 +275,22 @@ pub fn analyze_bash(command: &str) -> Option<Risk> {
     let mut reasons = Vec::new();
 
     for cand in candidates {
-        if cand.is_empty() { continue; }
+        if cand.is_empty() {
+            continue;
+        }
         // Skip flags, URLs, globs that are not paths, etc.
-        if cand.starts_with('-') { continue; }
-        if cand.contains("://") { continue; }
+        if cand.starts_with('-') {
+            continue;
+        }
+        if cand.contains("://") {
+            continue;
+        }
         // Heuristic: must look like a path (contains / or . or ~) or is a known file op target
-        let looks_like_path = cand.contains('/') || cand.starts_with('~') || cand.starts_with('.') || cand == ".." || cand == ".";
+        let looks_like_path = cand.contains('/')
+            || cand.starts_with('~')
+            || cand.starts_with('.')
+            || cand == ".."
+            || cand == ".";
         // Also check bare names that might be outside via relative? e.g. `cat ../foo`
         // If it doesn't look like path, skip unless it's after a path-expecting command, but we treat all candidates
         if !looks_like_path {
@@ -220,7 +298,9 @@ pub fn analyze_bash(command: &str) -> Option<Risk> {
             // But `../foo` would be caught because it contains /
             continue;
         }
-        if is_allowlisted(&cand) { continue; }
+        if is_allowlisted(&cand) {
+            continue;
+        }
         if !is_inside(&cand) {
             let resolved = resolve(&cand);
             offending.push(cand.clone());
@@ -232,8 +312,14 @@ pub fn analyze_bash(command: &str) -> Option<Risk> {
     // If command contains `cd <path>` where path is outside, that's already caught, but also `cd /tmp` should be flagged even if we missed
     // The extract_paths already covers it.
 
-    if offending.is_empty() { return None; }
-    Some(Risk { severity: Severity::High, reasons, paths: offending })
+    if offending.is_empty() {
+        return None;
+    }
+    Some(Risk {
+        severity: Severity::High,
+        reasons,
+        paths: offending,
+    })
 }
 
 fn extract_paths(cmd: &str) -> Vec<String> {
@@ -244,18 +330,35 @@ fn extract_paths(cmd: &str) -> Vec<String> {
     let mut in_double = false;
     let mut escaped = false;
     for c in cmd.chars() {
-        if escaped { cur.push(c); escaped = false; continue; }
+        if escaped {
+            cur.push(c);
+            escaped = false;
+            continue;
+        }
         match c {
-            '\\' if !in_single => { escaped = true; }
-            '\'' if !in_double => { in_single = !in_single; }
-            '"' if !in_single => { in_double = !in_double; }
-            ' ' | '\t' | '\n' | ';' | '|' | '&' | '(' | ')' | '<' | '>' | '`' if !in_single && !in_double => {
-                if !cur.is_empty() { tokens.push(cur.clone()); cur.clear(); }
+            '\\' if !in_single => {
+                escaped = true;
+            }
+            '\'' if !in_double => {
+                in_single = !in_single;
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+            }
+            ' ' | '\t' | '\n' | ';' | '|' | '&' | '(' | ')' | '<' | '>' | '`'
+                if !in_single && !in_double =>
+            {
+                if !cur.is_empty() {
+                    tokens.push(cur.clone());
+                    cur.clear();
+                }
             }
             _ => cur.push(c),
         }
     }
-    if !cur.is_empty() { tokens.push(cur); }
+    if !cur.is_empty() {
+        tokens.push(cur);
+    }
 
     // Filter out known command names (first token per segment) and operators
     // Heuristic: drop tokens that are typical flags/commands without slash
@@ -263,13 +366,24 @@ fn extract_paths(cmd: &str) -> Vec<String> {
     let mut out = Vec::new();
     for t in tokens {
         let trimmed = t.trim_matches(|c| c == '\'' || c == '"').to_string();
-        if trimmed.is_empty() { continue; }
+        if trimmed.is_empty() {
+            continue;
+        }
         // Skip common non-path keywords
-        if ["echo", "cat", "ls", "grep", "find", "cargo", "git", "npm", "pnpm", "yarn", "node", "python", "python3", "pip", "curl", "wget", "head", "tail", "wc", "sort", "uniq", "awk", "sed", "jq", "rg", "fd", "bash", "sh", "zsh", "cd", "cp", "mv", "rm", "mkdir", "touch", "chmod", "chown", "sudo", "env", "export"].contains(&trimmed.as_str()) {
+        if [
+            "echo", "cat", "ls", "grep", "find", "cargo", "git", "npm", "pnpm", "yarn", "node",
+            "python", "python3", "pip", "curl", "wget", "head", "tail", "wc", "sort", "uniq",
+            "awk", "sed", "jq", "rg", "fd", "bash", "sh", "zsh", "cd", "cp", "mv", "rm", "mkdir",
+            "touch", "chmod", "chown", "sudo", "env", "export",
+        ]
+        .contains(&trimmed.as_str())
+        {
             continue;
         }
         // Also skip tokens that are purely flags
-        if trimmed.starts_with('-') { continue; }
+        if trimmed.starts_with('-') {
+            continue;
+        }
         out.push(trimmed);
     }
     out

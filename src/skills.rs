@@ -87,7 +87,8 @@ async fn scan_dir(base: &Path) -> Vec<Skill> {
             Err(_) => continue,
         };
         let (name_opt, description_opt, body) = parse_frontmatter(&raw);
-        let skill_name = name_opt.unwrap_or_else(|| entry.file_name().to_string_lossy().to_string());
+        let skill_name =
+            name_opt.unwrap_or_else(|| entry.file_name().to_string_lossy().to_string());
         let desc = description_opt.unwrap_or_else(|| {
             body.lines()
                 .find(|l| !l.trim().is_empty())
@@ -149,13 +150,24 @@ pub async fn discover_skills() -> Vec<Skill> {
 pub async fn get_skill_catalog() -> String {
     let skills = discover_skills().await;
     // Filter pi-internal meta-skills that should not auto-trigger for every prompt
-    let filtered: Vec<&Skill> = skills.iter().filter(|s| s.name != "using-superpowers").collect();
+    let filtered: Vec<&Skill> = skills
+        .iter()
+        .filter(|s| s.name != "using-superpowers")
+        .collect();
     if filtered.is_empty() {
-        return "No skills installed. Use `pi skill add <skill>` to install to ~/.agents/skills.".to_string();
+        return "No skills installed. Use `pi skill add <skill>` to install to ~/.agents/skills."
+            .to_string();
     }
     filtered
         .iter()
-        .map(|s| format!("- {}: {} (path: {})", s.name, s.description, s.path.display()))
+        .map(|s| {
+            format!(
+                "- {}: {} (path: {})",
+                s.name,
+                s.description,
+                s.path.display()
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -167,11 +179,7 @@ pub async fn load_skill(name: &str) -> Result<String> {
         Some(skill) => Ok(skill.content.clone()),
         None => {
             let avail: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
-            anyhow::bail!(
-                "Skill not found: {}. Available: {}",
-                name,
-                avail.join(", ")
-            );
+            anyhow::bail!("Skill not found: {}. Available: {}", name, avail.join(", "));
         }
     }
 }

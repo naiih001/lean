@@ -67,7 +67,9 @@ impl Session {
         sessions_dir().join(format!("{}.json", self.id))
     }
 
-    fn sanitize_history(history: &Option<Vec<serde_json::Value>>) -> Option<Vec<serde_json::Value>> {
+    fn sanitize_history(
+        history: &Option<Vec<serde_json::Value>>,
+    ) -> Option<Vec<serde_json::Value>> {
         history.as_ref().map(|vec| {
             vec.iter().map(|v| {
                 let mut val = v.clone();

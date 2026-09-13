@@ -29,15 +29,21 @@ fn load_allowlist() -> std::collections::HashSet<String> {
 
 fn save_allowlist(set: &std::collections::HashSet<String>) {
     let path = allowlist_path();
-    if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     let vec: Vec<String> = set.iter().cloned().collect();
-    if let Ok(json) = serde_json::to_string_pretty(&vec) { let _ = std::fs::write(path, json); }
+    if let Ok(json) = serde_json::to_string_pretty(&vec) {
+        let _ = std::fs::write(path, json);
+    }
 }
 
 pub fn is_allowlisted(cmd: &str) -> bool {
     let set = load_allowlist();
     let trimmed = cmd.trim();
-    if set.contains(trimmed) { return true; }
+    if set.contains(trimmed) {
+        return true;
+    }
     for pat in &set {
         // Support glob '*' via wildmatch; also support prefix fallback
         if wildmatch::WildMatch::new(pat).matches(trimmed) {
@@ -76,8 +82,6 @@ pub fn allowlist_clear() {
     let path = allowlist_path();
     let _ = std::fs::remove_file(path);
 }
-
-
 
 /// Risk severity
 #[derive(Debug, Clone, PartialEq)]
@@ -158,13 +162,25 @@ fn tokenize(cmd: &str) -> Vec<String> {
 }
 
 fn has_flag(args: &[String], flag: &str) -> bool {
-    args.iter().any(|a| a == flag || (a.starts_with('-') && a.contains(flag.trim_start_matches('-')) && flag.len() == 2))
+    args.iter().any(|a| {
+        a == flag
+            || (a.starts_with('-') && a.contains(flag.trim_start_matches('-')) && flag.len() == 2)
+    })
 }
 
 pub fn analyze(command: &str) -> Option<Risk> {
-    if is_disabled() { return None; }
-    if std::env::var("LEAN_BASH_GUARD_DISABLED").map(|v| v == "1" || v == "true").unwrap_or(false) { return None; }
-    if is_allowlisted(command) { return None; }
+    if is_disabled() {
+        return None;
+    }
+    if std::env::var("LEAN_BASH_GUARD_DISABLED")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    if is_allowlisted(command) {
+        return None;
+    }
     let raw = command.trim();
     if raw.is_empty() {
         return None;
@@ -178,7 +194,9 @@ pub fn analyze(command: &str) -> Option<Risk> {
     let mut severity = Severity::Medium;
 
     // Split on ; && || | < > >> to get pipeline segments
-    let separators: HashSet<&str> = [";", "&&", "||", "|", ">", ">>", "<", "<<", "&", "(", ")"].into_iter().collect();
+    let separators: HashSet<&str> = [";", "&&", "||", "|", ">", ">>", "<", "<<", "&", "(", ")"]
+        .into_iter()
+        .collect();
     let mut segments: Vec<Vec<String>> = Vec::new();
     let mut cur = Vec::new();
     for t in &tokens {
@@ -202,13 +220,21 @@ pub fn analyze(command: &str) -> Option<Risk> {
     }
 
     // Global checks: pipe to shell
-    if raw.contains("|") && (raw.contains(" sh") || raw.contains(" bash") || raw.contains(" zsh") || raw.contains(" fish")) && tokens.contains(&"|".to_string()) {
+    if raw.contains("|")
+        && (raw.contains(" sh")
+            || raw.contains(" bash")
+            || raw.contains(" zsh")
+            || raw.contains(" fish"))
+        && tokens.contains(&"|".to_string())
+    {
         reasons.push("pipe to a shell (possible remote code execution)".to_string());
         severity = Severity::High;
     }
 
     // Check redirection to sensitive paths
-    if (raw.contains(">") || raw.contains(">>")) && (raw.contains("/etc/") || raw.contains("/dev/") || raw.contains("~/.ssh")) {
+    if (raw.contains(">") || raw.contains(">>"))
+        && (raw.contains("/etc/") || raw.contains("/dev/") || raw.contains("~/.ssh"))
+    {
         reasons.push("redirection to sensitive path".to_string());
         severity = Severity::High;
     }
@@ -229,7 +255,9 @@ pub fn analyze(command: &str) -> Option<Risk> {
         if cmd == "rm" || cmd == "rmdir" || cmd == "unlink" {
             reasons.push(format!("{} (file deletion)", cmd));
             severity = Severity::High;
-            if rest.iter().any(|a| a.contains('r') || a.contains('R')) && rest.iter().any(|a| a.starts_with('-')) {
+            if rest.iter().any(|a| a.contains('r') || a.contains('R'))
+                && rest.iter().any(|a| a.starts_with('-'))
+            {
                 reasons.push("recursive delete (-r/-R)".to_string());
             }
             if rest.iter().any(|a| a.contains('f') && a.starts_with('-')) {
@@ -254,12 +282,20 @@ pub fn analyze(command: &str) -> Option<Risk> {
         // git
         if cmd == "git" {
             let sub = rest.get(0).map(|s| s.as_str()).unwrap_or("");
-            reasons.push(if sub.is_empty() { "git (git command)".to_string() } else { format!("git {} (git command)", sub) });
+            reasons.push(if sub.is_empty() {
+                "git (git command)".to_string()
+            } else {
+                format!("git {} (git command)", sub)
+            });
             if sub == "rm" {
                 reasons.push("git rm (deletes files)".to_string());
                 severity = Severity::High;
             }
-            if sub == "clean" && rest.iter().any(|a| a.contains('f') || a == "-d" || a == "-x") {
+            if sub == "clean"
+                && rest
+                    .iter()
+                    .any(|a| a.contains('f') || a == "-d" || a == "-x")
+            {
                 reasons.push("git clean -f/-d/-x (deletes untracked files)".to_string());
                 severity = Severity::High;
             }
@@ -286,29 +322,51 @@ pub fn analyze(command: &str) -> Option<Risk> {
             reasons.push(format!("{} (disk operation)", cmd));
             severity = Severity::High;
         }
-        if cmd == "systemctl" && rest.iter().any(|a| ["stop", "disable", "mask"].contains(&a.as_str())) {
-            reasons.push(format!("systemctl {} (service disruption)", rest.get(0).unwrap_or(&"".to_string())));
+        if cmd == "systemctl"
+            && rest
+                .iter()
+                .any(|a| ["stop", "disable", "mask"].contains(&a.as_str()))
+        {
+            reasons.push(format!(
+                "systemctl {} (service disruption)",
+                rest.get(0).unwrap_or(&"".to_string())
+            ));
         }
         // env / export with secrets?
         // docker
-        if cmd == "docker" && rest.iter().any(|a| a == "rm" || a == "rmi" || a == "system") {
-            reasons.push(format!("docker {} (container/image removal)", rest.get(0).unwrap_or(&"".to_string())));
+        if cmd == "docker"
+            && rest
+                .iter()
+                .any(|a| a == "rm" || a == "rmi" || a == "system")
+        {
+            reasons.push(format!(
+                "docker {} (container/image removal)",
+                rest.get(0).unwrap_or(&"".to_string())
+            ));
             severity = Severity::High;
         }
     }
 
     // Filter low-signal: plain `ls`, `cat`, `echo`, `pwd`, `cargo check` etc should not trigger
-    let safe_cmds = ["ls", "cat", "echo", "pwd", "cargo", "git", "grep", "find", "head", "tail", "wc", "sort", "uniq", "awk", "sed", "jq", "rg", "fd"];
+    let safe_cmds = [
+        "ls", "cat", "echo", "pwd", "cargo", "git", "grep", "find", "head", "tail", "wc", "sort",
+        "uniq", "awk", "sed", "jq", "rg", "fd",
+    ];
     // But git is already flagged medium — keep it as prompt per pi behavior
     if reasons.is_empty() {
         return None;
     }
     // If only safe_cmds with no high severity, downgrade to None for trivial reads
-    let only_safe = segments.iter().all(|seg| seg.is_empty() || safe_cmds.contains(&seg[0].as_str()));
+    let only_safe = segments
+        .iter()
+        .all(|seg| seg.is_empty() || safe_cmds.contains(&seg[0].as_str()));
     if only_safe && severity != Severity::High {
         // Keep git prompts, but filter pure read-only: if command is just ls/cat/echo with no rm etc,
         // we already would have no reasons, so this is for git-only medium case — keep it
-        if !(segments.iter().any(|s| s.first().map(|c| c == "git").unwrap_or(false))) {
+        if !(segments
+            .iter()
+            .any(|s| s.first().map(|c| c == "git").unwrap_or(false)))
+        {
             return None;
         }
     }

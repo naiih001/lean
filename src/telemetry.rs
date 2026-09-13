@@ -26,7 +26,11 @@ fn now_unix() -> u64 {
 
 fn telemetry_path() -> PathBuf {
     dirs::config_dir()
-        .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("~")).join(".config"))
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("~"))
+                .join(".config")
+        })
         .join("lean")
         .join("hotkey_usage.json")
 }
@@ -83,10 +87,13 @@ pub fn record(action: &str) {
 /// Sync version for when we want to ensure write before exit (rare)
 pub fn record_sync(action: &str) {
     let mut file = load();
-    let entry = file.actions.entry(action.to_string()).or_insert(ActionStat {
-        uses: 0,
-        last_used_unix: now_unix(),
-    });
+    let entry = file
+        .actions
+        .entry(action.to_string())
+        .or_insert(ActionStat {
+            uses: 0,
+            last_used_unix: now_unix(),
+        });
     entry.uses += 1;
     entry.last_used_unix = now_unix();
     save(&file);

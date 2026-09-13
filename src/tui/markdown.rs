@@ -68,10 +68,7 @@ fn render_inline(text: &str, base: Style) -> Vec<Span<'static>> {
                             link_text,
                             base.fg(ASHEN.frost).add_modifier(Modifier::UNDERLINED),
                         ));
-                        spans.push(Span::styled(
-                            format!(" ({})", url),
-                            base.fg(ASHEN.deep_ash),
-                        ));
+                        spans.push(Span::styled(format!(" ({})", url), base.fg(ASHEN.deep_ash)));
                         i = paren_end + 1;
                         continue;
                     }
@@ -160,19 +157,14 @@ pub fn render_markdown(content: &str, indent: usize) -> Vec<Line<'static>> {
                         Span::styled(format!("{}  ", pad), Style::default()),
                         Span::styled(
                             cl.to_string(),
-                            Style::default()
-                                .fg(ASHEN.pale_ash)
-                                .bg(ASHEN.stone),
+                            Style::default().fg(ASHEN.pale_ash).bg(ASHEN.stone),
                         ),
                     ]));
                 }
                 if code_buf.is_empty() {
                     lines.push(Line::from(vec![
                         Span::styled(format!("{}  ", pad), Style::default()),
-                        Span::styled(
-                            " ",
-                            Style::default().bg(ASHEN.stone),
-                        ),
+                        Span::styled(" ", Style::default().bg(ASHEN.stone)),
                     ]));
                 }
                 in_code_block = false;
@@ -206,12 +198,10 @@ pub fn render_markdown(content: &str, indent: usize) -> Vec<Line<'static>> {
 
         // Horizontal rule: --- or *** or ___
         if is_horizontal_rule(trimmed) {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{}   {}", pad, "─".repeat(40)),
-                    Style::default().fg(ASHEN.charcoal),
-                ),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                format!("{}   {}", pad, "─".repeat(40)),
+                Style::default().fg(ASHEN.charcoal),
+            )]));
             continue;
         }
 
@@ -225,9 +215,10 @@ pub fn render_markdown(content: &str, indent: usize) -> Vec<Line<'static>> {
                 _ => (ASHEN.slate, Modifier::BOLD),
             };
             let prefix = "#".repeat(level);
-            let mut spans = vec![
-                Span::styled(format!("{} {} ", pad, prefix), Style::default().fg(fg).add_modifier(modifiers)),
-            ];
+            let mut spans = vec![Span::styled(
+                format!("{} {} ", pad, prefix),
+                Style::default().fg(fg).add_modifier(modifiers),
+            )];
             spans.extend(render_inline(
                 text,
                 Style::default().fg(fg).add_modifier(modifiers),
@@ -246,12 +237,12 @@ pub fn render_markdown(content: &str, indent: usize) -> Vec<Line<'static>> {
         // Blockquote: > ...
         if let Some(quote_text) = trimmed.strip_prefix('>') {
             let qt = quote_text.strip_prefix(' ').unwrap_or(quote_text);
-            let mut spans = vec![
-                Span::styled(
-                    format!("{} │ ", pad),
-                    Style::default().fg(ASHEN.frost).add_modifier(Modifier::ITALIC),
-                ),
-            ];
+            let mut spans = vec![Span::styled(
+                format!("{} │ ", pad),
+                Style::default()
+                    .fg(ASHEN.frost)
+                    .add_modifier(Modifier::ITALIC),
+            )];
             let base = Style::default()
                 .fg(ASHEN.smoke)
                 .add_modifier(Modifier::ITALIC);
@@ -262,12 +253,10 @@ pub fn render_markdown(content: &str, indent: usize) -> Vec<Line<'static>> {
 
         // Unordered list: - or *
         if let Some(item) = parse_unordered_list(trimmed) {
-            let mut spans = vec![
-                Span::styled(
-                    format!("{}   • ", pad),
-                    Style::default().fg(ASHEN.ember),
-                ),
-            ];
+            let mut spans = vec![Span::styled(
+                format!("{}   • ", pad),
+                Style::default().fg(ASHEN.ember),
+            )];
             spans.extend(render_inline(item, Style::default().fg(ASHEN.smoke)));
             lines.push(Line::from(spans));
             continue;
@@ -275,12 +264,10 @@ pub fn render_markdown(content: &str, indent: usize) -> Vec<Line<'static>> {
 
         // Ordered list: 1. or 1)
         if let Some((num, item)) = parse_ordered_list(trimmed) {
-            let mut spans = vec![
-                Span::styled(
-                    format!("{}   {}. ", pad, num),
-                    Style::default().fg(ASHEN.ember),
-                ),
-            ];
+            let mut spans = vec![Span::styled(
+                format!("{}   {}. ", pad, num),
+                Style::default().fg(ASHEN.ember),
+            )];
             spans.extend(render_inline(item, Style::default().fg(ASHEN.smoke)));
             lines.push(Line::from(spans));
             continue;
@@ -304,9 +291,7 @@ pub fn render_markdown(content: &str, indent: usize) -> Vec<Line<'static>> {
                 Span::styled(format!("{}  ", pad), Style::default()),
                 Span::styled(
                     cl.to_string(),
-                    Style::default()
-                        .fg(ASHEN.pale_ash)
-                        .bg(ASHEN.stone),
+                    Style::default().fg(ASHEN.pale_ash).bg(ASHEN.stone),
                 ),
             ]));
         }

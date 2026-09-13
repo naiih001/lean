@@ -63,7 +63,11 @@ impl Client {
         if self.is_anthropic() {
             // Anthropic native: https://api.anthropic.com/v1/messages
             let base = self.base_url.trim_end_matches('/');
-            if base.ends_with("/v1") { format!("{}/messages", base) } else { format!("{}/v1/messages", base) }
+            if base.ends_with("/v1") {
+                format!("{}/messages", base)
+            } else {
+                format!("{}/v1/messages", base)
+            }
         } else {
             format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
         }
@@ -73,7 +77,9 @@ impl Client {
         format!("{}/responses", self.base_url.trim_end_matches('/'))
     }
 
-    pub fn anthropic_url(&self) -> String { self.chat_url() }
+    pub fn anthropic_url(&self) -> String {
+        self.chat_url()
+    }
 
     /// Headers required for this provider. For OpenAI-compatible: Authorization: Bearer, for Anthropic: x-api-key + anthropic-version.
     pub fn auth_headers(&self) -> Vec<(String, String)> {
@@ -83,7 +89,10 @@ impl Client {
                 ("anthropic-version".to_string(), "2023-06-01".to_string()),
             ]
         } else {
-            vec![("Authorization".to_string(), format!("Bearer {}", self.api_key))]
+            vec![(
+                "Authorization".to_string(),
+                format!("Bearer {}", self.api_key),
+            )]
         }
     }
 
@@ -438,12 +447,18 @@ pub fn responses_tool_definitions_from(chat_defs: &[Value]) -> Vec<Value> {
             if f.is_null() || f == &Value::Null {
                 return v.clone();
             }
-            let name = f.get("name").cloned().unwrap_or(Value::String(String::new()));
+            let name = f
+                .get("name")
+                .cloned()
+                .unwrap_or(Value::String(String::new()));
             let desc = f
                 .get("description")
                 .cloned()
                 .unwrap_or(Value::String(String::new()));
-            let params = f.get("parameters").cloned().unwrap_or(json!({"type":"object","properties":{}}));
+            let params = f
+                .get("parameters")
+                .cloned()
+                .unwrap_or(json!({"type":"object","properties":{}}));
             json!({
                 "type": "function",
                 "name": name,
@@ -472,7 +487,10 @@ pub async fn tool_definitions_for(mode: &crate::models::ApiMode) -> Vec<Value> {
 /// Translate a chat `messages` Vec into (instructions, input) for Responses API.
 /// - `instructions` = concatenated system messages
 /// - `input` = array of Responses input items (user messages, function calls, outputs)
-pub fn chat_messages_to_responses_input(messages: &[Value], system_prompt: &str) -> (String, Vec<Value>) {
+pub fn chat_messages_to_responses_input(
+    messages: &[Value],
+    system_prompt: &str,
+) -> (String, Vec<Value>) {
     let mut instructions = system_prompt.to_string();
     let mut system_parts: Vec<String> = Vec::new();
     for m in messages {
@@ -514,8 +532,14 @@ pub fn chat_messages_to_responses_input(messages: &[Value], system_prompt: &str)
                                         }
                                     }
                                     "image_url" => {
-                                        if let Some(url) = p.get("image_url").and_then(|u| u.get("url")).and_then(|v| v.as_str()) {
-                                            parts.push(json!({"type":"input_image","image_url": url}));
+                                        if let Some(url) = p
+                                            .get("image_url")
+                                            .and_then(|u| u.get("url"))
+                                            .and_then(|v| v.as_str())
+                                        {
+                                            parts.push(
+                                                json!({"type":"input_image","image_url": url}),
+                                            );
                                         }
                                     }
                                     _ => {}
@@ -560,9 +584,17 @@ pub fn chat_messages_to_responses_input(messages: &[Value], system_prompt: &str)
                         // arguments should be JSON string; if already object, stringify
                         let args_str = if args.is_empty() {
                             if let Some(obj) = func.get("arguments") {
-                                if obj.is_object() { obj.to_string() } else { "{}".to_string() }
-                            } else { "{}".to_string() }
-                        } else { args.to_string() };
+                                if obj.is_object() {
+                                    obj.to_string()
+                                } else {
+                                    "{}".to_string()
+                                }
+                            } else {
+                                "{}".to_string()
+                            }
+                        } else {
+                            args.to_string()
+                        };
                         input.push(json!({
                             "type": "function_call",
                             "call_id": id,
@@ -574,16 +606,25 @@ pub fn chat_messages_to_responses_input(messages: &[Value], system_prompt: &str)
             }
             "tool" => {
                 let call_id = m.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or("");
-                let content_val = m.get("content").cloned().unwrap_or(Value::String(String::new()));
+                let content_val = m
+                    .get("content")
+                    .cloned()
+                    .unwrap_or(Value::String(String::new()));
                 let content_str = match &content_val {
                     Value::String(s) => s.clone(),
                     Value::Array(arr) => {
                         // image+text multimodal -> extract text part
                         let mut txt = String::new();
                         for p in arr {
-                            if let Some(t) = p.get("text").and_then(|v| v.as_str()) { txt.push_str(t); }
+                            if let Some(t) = p.get("text").and_then(|v| v.as_str()) {
+                                txt.push_str(t);
+                            }
                         }
-                        if txt.is_empty() { content_val.to_string() } else { txt }
+                        if txt.is_empty() {
+                            content_val.to_string()
+                        } else {
+                            txt
+                        }
                     }
                     _ => content_val.to_string(),
                 };
@@ -602,7 +643,12 @@ pub fn chat_messages_to_responses_input(messages: &[Value], system_prompt: &str)
     (instructions, input)
 }
 
-pub fn build_responses_request_body(model_id: &str, instructions: &str, input: &[Value], tools: &[Value]) -> Value {
+pub fn build_responses_request_body(
+    model_id: &str,
+    instructions: &str,
+    input: &[Value],
+    tools: &[Value],
+) -> Value {
     json!({
         "model": model_id,
         "instructions": instructions,
@@ -679,7 +725,11 @@ pub struct ResponsesCompleted {
 #[serde(tag = "type")]
 pub enum ResponsesEvent {
     #[serde(rename = "response.output_text.delta")]
-    OutputTextDelta { delta: String, #[serde(default)] item_id: Option<String> },
+    OutputTextDelta {
+        delta: String,
+        #[serde(default)]
+        item_id: Option<String>,
+    },
     #[serde(rename = "response.output_text.done")]
     OutputTextDone { text: String },
     #[serde(rename = "response.reasoning.delta")]
@@ -693,16 +743,22 @@ pub enum ResponsesEvent {
     #[serde(rename = "response.function_call_arguments.delta")]
     FunctionCallArgsDelta {
         delta: String,
-        #[serde(default)] item_id: Option<String>,
-        #[serde(default)] output_index: Option<u32>,
-        #[serde(default)] call_id: Option<String>,
+        #[serde(default)]
+        item_id: Option<String>,
+        #[serde(default)]
+        output_index: Option<u32>,
+        #[serde(default)]
+        call_id: Option<String>,
     },
     #[serde(rename = "response.function_call_arguments.done")]
     FunctionCallArgsDone {
         arguments: String,
-        #[serde(default)] item_id: Option<String>,
-        #[serde(default)] output_index: Option<u32>,
-        #[serde(default)] call_id: Option<String>,
+        #[serde(default)]
+        item_id: Option<String>,
+        #[serde(default)]
+        output_index: Option<u32>,
+        #[serde(default)]
+        call_id: Option<String>,
     },
     #[serde(rename = "response.completed")]
     Completed { response: ResponsesCompleted },

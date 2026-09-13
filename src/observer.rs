@@ -14,7 +14,8 @@ If chunk has no new information, return [].
 Timestamp format not needed — lean adds it.
 "#;
 
-const OBSERVER_KICKOFF: &str = "Compress the following conversation chunk into observations (JSON array only):";
+const OBSERVER_KICKOFF: &str =
+    "Compress the following conversation chunk into observations (JSON array only):";
 
 fn chunk_to_text(chunk: &str) -> String {
     chunk.chars().take(6000).collect()

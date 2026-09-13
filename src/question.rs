@@ -50,14 +50,22 @@ pub fn parse_questions(args: &Value) -> Vec<Question> {
     };
     let mut out = Vec::new();
     for raw in raw_questions.iter().take(MAX_QUESTIONS) {
-        let question = raw.get("question").and_then(|v| v.as_str()).unwrap_or("").trim();
+        let question = raw
+            .get("question")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
         if question.is_empty() {
             continue;
         }
         let mut options = Vec::new();
         if let Some(raw_options) = raw.get("options").and_then(|v| v.as_array()) {
             for raw_option in raw_options.iter().take(MAX_OPTIONS) {
-                let label = raw_option.get("label").and_then(|v| v.as_str()).unwrap_or("").trim();
+                let label = raw_option
+                    .get("label")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim();
                 if label.is_empty() {
                     continue;
                 }
@@ -66,7 +74,10 @@ pub fn parse_questions(args: &Value) -> Vec<Question> {
                     .and_then(|v| v.as_str())
                     .map(|d| truncate_chars(d.trim(), MAX_DESCRIPTION))
                     .filter(|d| !d.is_empty());
-                options.push(OptionItem { label: truncate_chars(label, MAX_LABEL), description });
+                options.push(OptionItem {
+                    label: truncate_chars(label, MAX_LABEL),
+                    description,
+                });
             }
         }
         if options.is_empty() {
@@ -80,7 +91,10 @@ pub fn parse_questions(args: &Value) -> Vec<Question> {
         out.push(Question {
             header,
             question: truncate_chars(question, MAX_QUESTION),
-            multi_select: raw.get("multi_select").and_then(|v| v.as_bool()).unwrap_or(false),
+            multi_select: raw
+                .get("multi_select")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
             options,
         });
     }
@@ -88,7 +102,10 @@ pub fn parse_questions(args: &Value) -> Vec<Question> {
 }
 
 fn question_label(question: &Question, index: usize) -> String {
-    question.header.clone().unwrap_or_else(|| format!("Q{}", index + 1))
+    question
+        .header
+        .clone()
+        .unwrap_or_else(|| format!("Q{}", index + 1))
 }
 
 pub fn format_answers(questions: &[Question], answers: &[Answer]) -> String {
@@ -99,7 +116,11 @@ pub fn format_answers(questions: &[Question], answers: &[Answer]) -> String {
         if let Some(other) = answer.other.filter(|o| !o.trim().is_empty()) {
             parts.push(format!("Other: {}", other.trim()));
         }
-        let rendered = if parts.is_empty() { "(no answer)".to_string() } else { parts.join(", ") };
+        let rendered = if parts.is_empty() {
+            "(no answer)".to_string()
+        } else {
+            parts.join(", ")
+        };
         lines.push(format!("- {}: {}", question_label(question, i), rendered));
     }
     lines.join("\n")
@@ -110,7 +131,11 @@ pub fn skipped_message(questions: &[Question]) -> String {
     if !questions.is_empty() {
         out.push_str("\nUnanswered:");
         for (i, question) in questions.iter().enumerate() {
-            out.push_str(&format!("\n- {}: {}", question_label(question, i), question.question));
+            out.push_str(&format!(
+                "\n- {}: {}",
+                question_label(question, i),
+                question.question
+            ));
         }
     }
     out
@@ -149,7 +174,10 @@ pub async fn ask(questions: Vec<Question>) -> String {
     let (tx, rx) = oneshot::channel();
     {
         let mut lock = pending_lock().lock().unwrap();
-        lock.push_back(AskRequest { questions: questions.clone(), tx: Some(tx) });
+        lock.push_back(AskRequest {
+            questions: questions.clone(),
+            tx: Some(tx),
+        });
     }
     match tokio::time::timeout(Duration::from_secs(300), rx).await {
         Ok(Ok(answers)) if !answers.is_empty() => format_answers(&questions, &answers),
@@ -185,7 +213,10 @@ impl Wizard {
     pub fn new(questions: Vec<Question>) -> Self {
         let count = questions.len();
         let mut wizard = Self {
-            toggles: questions.iter().map(|q| vec![false; q.options.len()]).collect(),
+            toggles: questions
+                .iter()
+                .map(|q| vec![false; q.options.len()])
+                .collect(),
             questions,
             idx: 0,
             opt_idx: 0,
@@ -214,11 +245,17 @@ impl Wizard {
 
     /// True when the cursor sits on the always-present "Other…" row.
     pub fn on_other(&self) -> bool {
-        self.current().map(|q| self.opt_idx >= q.options.len()).unwrap_or(false)
+        self.current()
+            .map(|q| self.opt_idx >= q.options.len())
+            .unwrap_or(false)
     }
 
     pub fn is_toggled(&self, option: usize) -> bool {
-        self.toggles.get(self.idx).and_then(|t| t.get(option)).copied().unwrap_or(false)
+        self.toggles
+            .get(self.idx)
+            .and_then(|t| t.get(option))
+            .copied()
+            .unwrap_or(false)
     }
 
     pub fn other_text(&self) -> &str {
@@ -241,7 +278,9 @@ impl Wizard {
     }
 
     pub fn toggle(&mut self) {
-        let Some(question) = self.current() else { return };
+        let Some(question) = self.current() else {
+            return;
+        };
         if !question.multi_select || self.on_other() {
             return;
         }
@@ -256,7 +295,9 @@ impl Wizard {
         if !self.on_other() {
             return;
         }
-        let Some(buf) = self.other.get_mut(self.idx) else { return };
+        let Some(buf) = self.other.get_mut(self.idx) else {
+            return;
+        };
         if buf.chars().count() >= MAX_OTHER || c.is_control() {
             return;
         }
@@ -299,7 +340,9 @@ impl Wizard {
     }
 
     fn store_current(&mut self) {
-        let Some(question) = self.questions.get(self.idx).cloned() else { return };
+        let Some(question) = self.questions.get(self.idx).cloned() else {
+            return;
+        };
         let mut selected = Vec::new();
         let mut other = None;
         if question.multi_select {
@@ -372,14 +415,19 @@ mod tests {
             multi_select,
             options: options
                 .iter()
-                .map(|l| OptionItem { label: l.to_string(), description: None })
+                .map(|l| OptionItem {
+                    label: l.to_string(),
+                    description: None,
+                })
                 .collect(),
         }
     }
 
     #[test]
     fn parse_clamps_question_and_option_counts() {
-        let options: Vec<Value> = (0..10).map(|i| json!({"label": format!("opt{i}")})).collect();
+        let options: Vec<Value> = (0..10)
+            .map(|i| json!({"label": format!("opt{i}")}))
+            .collect();
         let questions: Vec<Value> = (0..6)
             .map(|i| json!({"question": format!("q{i}"), "options": options}))
             .collect();
@@ -409,8 +457,14 @@ mod tests {
             question("Name", false, &["x"]),
         ];
         let answers = vec![
-            Answer { selected: vec!["small".into()], other: None },
-            Answer { selected: vec!["a".into(), "b".into()], other: Some("other thing".into()) },
+            Answer {
+                selected: vec!["small".into()],
+                other: None,
+            },
+            Answer {
+                selected: vec!["a".into(), "b".into()],
+                other: Some("other thing".into()),
+            },
             Answer::default(),
         ];
         let text = format_answers(&questions, &answers);
@@ -456,7 +510,10 @@ mod tests {
         wizard.move_down();
         wizard.toggle();
         assert_eq!(wizard.confirm(), WizardOutcome::Submit);
-        assert_eq!(wizard.answers()[0].selected, vec!["a".to_string(), "c".to_string()]);
+        assert_eq!(
+            wizard.answers()[0].selected,
+            vec!["a".to_string(), "c".to_string()]
+        );
     }
 
     #[test]

@@ -108,25 +108,37 @@ pub fn load_context_section() -> Option<String> {
         // Per-file truncation
         let content = if trimmed.chars().count() > MAX_FILE_CHARS {
             let truncated: String = trimmed.chars().take(MAX_FILE_CHARS).collect();
-            format!("{}…\n[truncated: file was {} chars, showing first {}]", truncated, trimmed.chars().count(), MAX_FILE_CHARS)
+            format!(
+                "{}…\n[truncated: file was {} chars, showing first {}]",
+                truncated,
+                trimmed.chars().count(),
+                MAX_FILE_CHARS
+            )
         } else {
             trimmed.to_string()
         };
 
         // Pretty display path
         let display = display_path(&path, &scope);
-        let label = path.file_name().and_then(|n| n.to_str()).unwrap_or("CONTEXT.md");
+        let label = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("CONTEXT.md");
         let header = format!("### {} ({}: {})", label, scope, display);
         let section = format!("{}\n{}", header, content);
         total += section.chars().count();
         if total > MAX_TOTAL_CHARS {
             let remaining = MAX_TOTAL_CHARS.saturating_sub(total - section.chars().count());
             if remaining < 500 {
-                sections.push("[additional context files omitted — total budget exceeded]".to_string());
+                sections
+                    .push("[additional context files omitted — total budget exceeded]".to_string());
                 break;
             } else {
                 let truncated: String = section.chars().take(remaining).collect();
-                sections.push(format!("{}…\n[truncated: total context budget {} chars exceeded]", truncated, MAX_TOTAL_CHARS));
+                sections.push(format!(
+                    "{}…\n[truncated: total context budget {} chars exceeded]",
+                    truncated, MAX_TOTAL_CHARS
+                ));
                 break;
             }
         }
@@ -170,17 +182,21 @@ pub fn load_summary() -> Option<String> {
     if files.is_empty() {
         return None;
     }
-    let names: Vec<String> = files.iter().map(|(p, scope)| {
-        let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-        format!("{} ({})", fname, scope)
-    }).collect();
+    let names: Vec<String> = files
+        .iter()
+        .map(|(p, scope)| {
+            let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            format!("{} ({})", fname, scope)
+        })
+        .collect();
     Some(names.join(", "))
 }
 
 // ── Init templates ───────────────────────────────────────────────
 
 pub fn agent_template(project_name: &str) -> String {
-    format!(r#"# AGENT.md — Project Context for lean
+    format!(
+        r#"# AGENT.md — Project Context for lean
 
 > This file is loaded on every lean session. Keep it concise and actionable.
 
@@ -237,7 +253,8 @@ cargo fmt --check
 ## Gotchas
 - [Common pitfalls, env vars needed, secrets handling]
 - [E.g., Requires `OPENAI_API_KEY` or `OPENCODE_API_KEY`, `libssl3` on Linux]
-"#)
+"#
+    )
 }
 
 #[allow(dead_code)]
@@ -288,7 +305,10 @@ pub fn memory_template() -> String {
 /// the primary `/init` flow spawns an agent to generate richer content.
 pub fn ensure_init_files() -> Vec<String> {
     let cwd = project_root();
-    let project_name = cwd.file_name().and_then(|n| n.to_str()).unwrap_or("project");
+    let project_name = cwd
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("project");
     let mut created = Vec::new();
 
     // AGENT.md — project only

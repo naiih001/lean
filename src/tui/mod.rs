@@ -1,6 +1,7 @@
 use crate::agent::{self, AgentEvent};
+use crate::dictate;
 use crate::theme::{ASHEN, THEME};
-use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -140,18 +141,37 @@ struct Msg {
 
 impl Msg {
     fn new(role: impl Into<String>, content: impl Into<String>) -> Self {
-        Self { role: role.into(), content: content.into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None }
+        Self {
+            role: role.into(),
+            content: content.into(),
+            tool_id: None,
+            tool_name: None,
+            tool_args: None,
+            elapsed_ms: None,
+        }
     }
     fn new_tool_start(name: String, args: String, id: String) -> Self {
-        Self { role: "tool".into(), content: format!("{} {}", name, args), tool_id: Some(id), tool_name: Some(name.clone()), tool_args: Some(args), elapsed_ms: None }
+        Self {
+            role: "tool".into(),
+            content: format!("{} {}", name, args),
+            tool_id: Some(id),
+            tool_name: Some(name.clone()),
+            tool_args: Some(args),
+            elapsed_ms: None,
+        }
     }
     fn format_elapsed(&self) -> String {
         if let Some(ms) = self.elapsed_ms {
-            if ms < 1000 { format!("{}ms", ms) } else { format!("{:.2}s", ms as f64 / 1000.0) }
-        } else { String::new() }
+            if ms < 1000 {
+                format!("{}ms", ms)
+            } else {
+                format!("{:.2}s", ms as f64 / 1000.0)
+            }
+        } else {
+            String::new()
+        }
     }
 }
-
 
 fn shorten_path(p: &str) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
@@ -168,59 +188,139 @@ fn format_tool_preview(name: &str, args_str: &str) -> String {
     let s = shorten_path;
     match name {
         "bash" => {
-            let cmd = obj.and_then(|o| o.get("command")).and_then(|v| v.as_str()).unwrap_or("...");
-            let preview = if cmd.len() > 60 { format!("{}…", &cmd[..60]) } else { cmd.to_string() };
+            let cmd = obj
+                .and_then(|o| o.get("command"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("...");
+            let preview = if cmd.len() > 60 {
+                format!("{}…", &cmd[..60])
+            } else {
+                cmd.to_string()
+            };
             format!("$ {}", preview)
-        },
+        }
         "read" => {
-            let path = obj.and_then(|o| o.get("path")).and_then(|v| v.as_str()).unwrap_or("...");
+            let path = obj
+                .and_then(|o| o.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("...");
             let off = obj.and_then(|o| o.get("offset")).and_then(|v| v.as_u64());
             let lim = obj.and_then(|o| o.get("limit")).and_then(|v| v.as_u64());
             let mut txt = s(path);
             if off.is_some() || lim.is_some() {
                 let start = off.unwrap_or(1);
-                let end = lim.map(|l| start + l - 1).map(|e| e.to_string()).unwrap_or_default();
-                txt = format!("{}:{}{}", txt, start, if end.is_empty() { "".to_string() } else { format!("-{}", end) });
+                let end = lim
+                    .map(|l| start + l - 1)
+                    .map(|e| e.to_string())
+                    .unwrap_or_default();
+                txt = format!(
+                    "{}:{}{}",
+                    txt,
+                    start,
+                    if end.is_empty() {
+                        "".to_string()
+                    } else {
+                        format!("-{}", end)
+                    }
+                );
             }
             format!("read {}", txt)
-        },
+        }
         "write" => {
-            let path = obj.and_then(|o| o.get("path")).and_then(|v| v.as_str()).unwrap_or("...");
-            let content = obj.and_then(|o| o.get("content")).and_then(|v| v.as_str()).unwrap_or("");
+            let path = obj
+                .and_then(|o| o.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("...");
+            let content = obj
+                .and_then(|o| o.get("content"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let lines = content.lines().count();
-            if lines > 1 { format!("write {} ({} lines)", s(path), lines) } else { format!("write {}", s(path)) }
-        },
+            if lines > 1 {
+                format!("write {} ({} lines)", s(path), lines)
+            } else {
+                format!("write {}", s(path))
+            }
+        }
         "edit" => {
-            let path = obj.and_then(|o| o.get("path")).and_then(|v| v.as_str()).unwrap_or("...");
+            let path = obj
+                .and_then(|o| o.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("...");
             format!("edit {}", s(path))
-        },
+        }
         "ls" => {
-            let path = obj.and_then(|o| o.get("path")).and_then(|v| v.as_str()).unwrap_or(".");
+            let path = obj
+                .and_then(|o| o.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(".");
             format!("ls {}", s(path))
-        },
+        }
         "find" => {
-            let pat = obj.and_then(|o| o.get("pattern")).and_then(|v| v.as_str()).unwrap_or("*");
-            let path = obj.and_then(|o| o.get("path")).and_then(|v| v.as_str()).unwrap_or(".");
-            if path == "." { format!("find {}", pat) } else { format!("find {} in {}", pat, s(path)) }
-        },
+            let pat = obj
+                .and_then(|o| o.get("pattern"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("*");
+            let path = obj
+                .and_then(|o| o.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(".");
+            if path == "." {
+                format!("find {}", pat)
+            } else {
+                format!("find {} in {}", pat, s(path))
+            }
+        }
         "grep" => {
-            let pat = obj.and_then(|o| o.get("pattern")).and_then(|v| v.as_str()).unwrap_or("");
-            let path = obj.and_then(|o| o.get("path")).and_then(|v| v.as_str()).unwrap_or(".");
-            if path == "." { format!("grep /{}/", pat) } else { format!("grep /{}/ in {}", pat, s(path)) }
-        },
+            let pat = obj
+                .and_then(|o| o.get("pattern"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let path = obj
+                .and_then(|o| o.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(".");
+            if path == "." {
+                format!("grep /{}/", pat)
+            } else {
+                format!("grep /{}/ in {}", pat, s(path))
+            }
+        }
         "web_fetch" => {
-            let url = obj.and_then(|o| o.get("url")).and_then(|v| v.as_str()).unwrap_or("...");
-            let short = if url.len() > 50 { format!("{}…", &url[..50]) } else { url.to_string() };
+            let url = obj
+                .and_then(|o| o.get("url"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("...");
+            let short = if url.len() > 50 {
+                format!("{}…", &url[..50])
+            } else {
+                url.to_string()
+            };
             format!("fetch {}", short)
-        },
+        }
         "web_search" => {
-            let q = obj.and_then(|o| o.get("query")).and_then(|v| v.as_str()).unwrap_or("");
-            let short = if q.len() > 40 { format!("{}…", &q[..40]) } else { q.to_string() };
+            let q = obj
+                .and_then(|o| o.get("query"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let short = if q.len() > 40 {
+                format!("{}…", &q[..40])
+            } else {
+                q.to_string()
+            };
             format!("search {}", short)
-        },
+        }
         _ => {
-            let preview = if args_str.len() > 50 { format!("{}…", &args_str[..50]) } else { args_str.to_string() };
-            if preview == "null" || preview == "{}" { name.to_string() } else { format!("{} {}", name, preview) }
+            let preview = if args_str.len() > 50 {
+                format!("{}…", &args_str[..50])
+            } else {
+                args_str.to_string()
+            };
+            if preview == "null" || preview == "{}" {
+                name.to_string()
+            } else {
+                format!("{} {}", name, preview)
+            }
         }
     }
 }
@@ -234,16 +334,26 @@ fn sanitize_display_content(s: &str) -> String {
             let end_idx = start + end + 2;
             let marker = &out[start..end_idx];
             let placeholder = if marker.starts_with("<<IMAGE_URL:") {
-                let url = marker.trim_start_matches("<<IMAGE_URL:").trim_end_matches(">>");
-                let short = if url.len() > 40 { format!("{}…", &url[..40]) } else { url.to_string() };
+                let url = marker
+                    .trim_start_matches("<<IMAGE_URL:")
+                    .trim_end_matches(">>");
+                let short = if url.len() > 40 {
+                    format!("{}…", &url[..40])
+                } else {
+                    url.to_string()
+                };
                 format!("[img: {}]", short)
             } else if marker.starts_with("<<IMAGE:") {
                 let inner = marker.trim_start_matches("<<IMAGE:").trim_end_matches(">>");
                 let mime = inner.split(':').next().unwrap_or("image");
                 format!("[img: {}]", mime)
-            } else { "[img]".to_string() };
+            } else {
+                "[img]".to_string()
+            };
             out.replace_range(start..end_idx, &placeholder);
-        } else { break; }
+        } else {
+            break;
+        }
     }
     out
 }
@@ -288,11 +398,17 @@ impl Msg {
                     };
                     while i < chars.len() {
                         if (chars[i] == '@' || chars[i] == '$')
-                            && (i == 0 || chars[i - 1].is_whitespace() || "(\"'`".contains(chars[i - 1]))
+                            && (i == 0
+                                || chars[i - 1].is_whitespace()
+                                || "(\"'`".contains(chars[i - 1]))
                         {
                             let prefix_char = chars[i];
                             // for $ require next char to be letter to avoid $5 etc.
-                            if prefix_char == '$' && i + 1 < chars.len() && !chars[i + 1].is_ascii_alphabetic() && chars[i+1] != '_' {
+                            if prefix_char == '$'
+                                && i + 1 < chars.len()
+                                && !chars[i + 1].is_ascii_alphabetic()
+                                && chars[i + 1] != '_'
+                            {
                                 buf.push(chars[i]);
                                 i += 1;
                                 continue;
@@ -307,7 +423,9 @@ impl Msg {
                                 let style = if prefix_char == '$' {
                                     Style::default().fg(ASHEN.moss).add_modifier(Modifier::BOLD)
                                 } else {
-                                    Style::default().fg(ASHEN.ember).add_modifier(Modifier::BOLD)
+                                    Style::default()
+                                        .fg(ASHEN.ember)
+                                        .add_modifier(Modifier::BOLD)
                                 };
                                 spans.push(Span::styled(m, style));
                                 i = j;
@@ -366,7 +484,13 @@ impl Msg {
                     ])]
                 }
             }
-            "tool" => { if self.tool_id.is_some() { self.render_tool_box() } else { self.render_tool_lines() } },
+            "tool" => {
+                if self.tool_id.is_some() {
+                    self.render_tool_box()
+                } else {
+                    self.render_tool_lines()
+                }
+            }
             "system" => self
                 .content
                 .lines()
@@ -392,23 +516,53 @@ impl Msg {
 
     fn render_tool_box(&self) -> Vec<Line<'static>> {
         let name = self.tool_name.clone().unwrap_or_else(|| {
-            if let Some(pos) = self.content.find(" → ") { self.content[..pos].trim().to_string() }
-            else if let Some(pos) = self.content.find(' ') { self.content[..pos].to_string() }
-            else { self.content.clone() }
+            if let Some(pos) = self.content.find(" → ") {
+                self.content[..pos].trim().to_string()
+            } else if let Some(pos) = self.content.find(' ') {
+                self.content[..pos].to_string()
+            } else {
+                self.content.clone()
+            }
         });
         let args_str = self.tool_args.clone().unwrap_or_else(|| {
-            if let Some(pos) = self.content.find(' ') { self.content[pos..].trim().to_string() } else { String::new() }
+            if let Some(pos) = self.content.find(' ') {
+                self.content[pos..].trim().to_string()
+            } else {
+                String::new()
+            }
         });
         let has_result = self.content.contains(" → ");
         let result = if has_result {
-            if let Some(pos) = self.content.find(" → ") { self.content[pos + " → ".len()..].to_string() } else { String::new() }
-        } else { String::new() };
+            if let Some(pos) = self.content.find(" → ") {
+                self.content[pos + " → ".len()..].to_string()
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
         let is_running = self.elapsed_ms.is_none();
         let elapsed = self.format_elapsed();
-        let is_error = result.contains("Error:") || result.contains("BLOCKED") || result.to_lowercase().contains("error");
-        let border_col = if is_running { ASHEN.charcoal } else if is_error { ASHEN.ember } else { ASHEN.moss };
-        let timer_str = if is_running { "… running".to_string() } else { elapsed.clone() };
-        let header_title = if timer_str.is_empty() { name.clone() } else { format!("{} · {}", name, timer_str) };
+        let is_error = result.contains("Error:")
+            || result.contains("BLOCKED")
+            || result.to_lowercase().contains("error");
+        let border_col = if is_running {
+            ASHEN.charcoal
+        } else if is_error {
+            ASHEN.ember
+        } else {
+            ASHEN.moss
+        };
+        let timer_str = if is_running {
+            "… running".to_string()
+        } else {
+            elapsed.clone()
+        };
+        let header_title = if timer_str.is_empty() {
+            name.clone()
+        } else {
+            format!("{} · {}", name, timer_str)
+        };
         let mut inner: Vec<Line<'static>> = Vec::new();
         if !args_str.is_empty() && args_str != "{}" {
             let preview = format_tool_preview(&name, &args_str);
@@ -418,24 +572,45 @@ impl Msg {
             ]));
         }
         if has_result {
-            inner.push(Line::from(Span::styled("─".repeat(28), Style::default().fg(ASHEN.charcoal))));
+            inner.push(Line::from(Span::styled(
+                "─".repeat(28),
+                Style::default().fg(ASHEN.charcoal),
+            )));
             let result_lines: Vec<&str> = result.lines().collect();
-            let is_diff = (name == "edit" || name == "edit_file") || result.contains("diff:") || result.contains("@@");
+            let is_diff = (name == "edit" || name == "edit_file")
+                || result.contains("diff:")
+                || result.contains("@@");
             let max_lines = if is_diff { 12 } else { 3 };
             let show = result_lines.len().min(max_lines);
             for l in &result_lines[..show] {
-                let style = if l.starts_with('+') && !l.starts_with("+++") { Style::default().fg(ASHEN.moss) }
-                    else if l.starts_with('-') && !l.starts_with("---") { Style::default().fg(ASHEN.ember) }
-                    else if l.starts_with("@@") { Style::default().fg(ASHEN.frost).add_modifier(Modifier::BOLD) }
-                    else if is_diff { Style::default().fg(ASHEN.deep_ash) }
-                    else { Style::default().fg(ASHEN.smoke) };
+                let style = if l.starts_with('+') && !l.starts_with("+++") {
+                    Style::default().fg(ASHEN.moss)
+                } else if l.starts_with('-') && !l.starts_with("---") {
+                    Style::default().fg(ASHEN.ember)
+                } else if l.starts_with("@@") {
+                    Style::default()
+                        .fg(ASHEN.frost)
+                        .add_modifier(Modifier::BOLD)
+                } else if is_diff {
+                    Style::default().fg(ASHEN.deep_ash)
+                } else {
+                    Style::default().fg(ASHEN.smoke)
+                };
                 inner.push(Line::from(Span::styled(l.to_string(), style)));
             }
             if result_lines.len() > max_lines {
-                inner.push(Line::from(Span::styled(format!("… +{} more lines", result_lines.len() - max_lines), Style::default().fg(ASHEN.charcoal))));
+                inner.push(Line::from(Span::styled(
+                    format!("… +{} more lines", result_lines.len() - max_lines),
+                    Style::default().fg(ASHEN.charcoal),
+                )));
             }
         } else if is_running {
-            inner.push(Line::from(Span::styled("  ● running", Style::default().fg(ASHEN.charcoal).add_modifier(Modifier::ITALIC))));
+            inner.push(Line::from(Span::styled(
+                "  ● running",
+                Style::default()
+                    .fg(ASHEN.charcoal)
+                    .add_modifier(Modifier::ITALIC),
+            )));
         }
         let width_est: usize = 60;
         let top = format!("┌─ {} ─", header_title);
@@ -445,13 +620,22 @@ impl Msg {
         };
         let bottom = format!("└{}┘", "─".repeat(width_est));
         let mut lines: Vec<Line<'static>> = Vec::new();
-        lines.push(Line::from(Span::styled(top_border, Style::default().fg(border_col))));
+        lines.push(Line::from(Span::styled(
+            top_border,
+            Style::default().fg(border_col),
+        )));
         for l in inner {
-            let mut spans = vec![Span::styled("│ ".to_string(), Style::default().fg(border_col))];
+            let mut spans = vec![Span::styled(
+                "│ ".to_string(),
+                Style::default().fg(border_col),
+            )];
             spans.extend(l.spans);
             lines.push(Line::from(spans));
         }
-        lines.push(Line::from(Span::styled(bottom, Style::default().fg(border_col))));
+        lines.push(Line::from(Span::styled(
+            bottom,
+            Style::default().fg(border_col),
+        )));
         lines
     }
 
@@ -466,7 +650,9 @@ impl Msg {
 
             // Truncate long results — show more for diffs (edit_file)
             let result_lines: Vec<&str> = result.lines().collect();
-            let is_diff = (name == "edit" || name == "edit_file") || result.contains("diff:") || result.contains("@@");
+            let is_diff = (name == "edit" || name == "edit_file")
+                || result.contains("diff:")
+                || result.contains("@@");
             let max_lines = if is_diff { 12 } else { 3 };
             let show = result_lines.len().min(max_lines);
 
@@ -489,16 +675,15 @@ impl Msg {
                 } else if l.starts_with('-') && !l.starts_with("---") {
                     Style::default().fg(ASHEN.ember)
                 } else if l.starts_with("@@") {
-                    Style::default().fg(ASHEN.frost).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(ASHEN.frost)
+                        .add_modifier(Modifier::BOLD)
                 } else if is_diff {
                     Style::default().fg(ASHEN.deep_ash)
                 } else {
                     Style::default().fg(ASHEN.smoke)
                 };
-                lines.push(Line::from(Span::styled(
-                    format!("      {}", l),
-                    style,
-                )));
+                lines.push(Line::from(Span::styled(format!("      {}", l), style)));
             }
             if result_lines.len() > max_lines {
                 lines.push(Line::from(Span::styled(
@@ -776,7 +961,11 @@ fn is_banner(s: &str) -> bool {
 fn build_content_lines(messages: &[Msg]) -> Vec<Line<'static>> {
     let mut all_lines: Vec<Line<'static>> = Vec::new();
     // Filter out server banner noise anywhere — user asked to never show it
-    let filtered: Vec<Msg> = messages.iter().filter(|m| !is_banner(&m.content)).cloned().collect();
+    let filtered: Vec<Msg> = messages
+        .iter()
+        .filter(|m| !is_banner(&m.content))
+        .cloned()
+        .collect();
     let merged = merge_thinking(&filtered);
 
     for (i, m) in merged.iter().enumerate() {
@@ -983,11 +1172,17 @@ fn api_suffix_for_alias(alias: &str) -> String {
 
 fn context_window_for_model(model: &str) -> usize {
     let lower = model.to_lowercase();
-    if lower.contains("128k") { 128_000 }
-    else if lower.contains("200k") { 200_000 }
-    else if lower.contains("32k") { 32_000 }
-    else if lower.contains("1m") || lower.contains("1000k") || lower.contains("1.0m") { 1_000_000 }
-    else { 1_000_000 }
+    if lower.contains("128k") {
+        128_000
+    } else if lower.contains("200k") {
+        200_000
+    } else if lower.contains("32k") {
+        32_000
+    } else if lower.contains("1m") || lower.contains("1000k") || lower.contains("1.0m") {
+        1_000_000
+    } else {
+        1_000_000
+    }
 }
 
 fn estimate_tokens(messages: &[Msg], model: &str) -> usize {
@@ -1004,27 +1199,46 @@ fn estimate_tokens(messages: &[Msg], model: &str) -> usize {
 fn format_context_label(est: usize, window: usize) -> String {
     let pct = ((est as f64 / window as f64) * 100.0).min(100.0);
     // Format window as 1.0M, 128k, etc.
-    let window_str = if window >= 1_000_000 { format!("{:.1}M", window as f64 / 1_000_000.0) }
-        else if window >= 1000 { format!("{}k", window / 1000) }
-        else { format!("{}", window) };
+    let window_str = if window >= 1_000_000 {
+        format!("{:.1}M", window as f64 / 1_000_000.0)
+    } else if window >= 1000 {
+        format!("{}k", window / 1000)
+    } else {
+        format!("{}", window)
+    };
     // Show pct as integer, but keep one decimal if <10%
-    let pct_str = if pct < 10.0 { format!("{:.1}%", pct) } else { format!("{:.0}%", pct) };
+    let pct_str = if pct < 10.0 {
+        format!("{:.1}%", pct)
+    } else {
+        format!("{:.0}%", pct)
+    };
     format!("{} / {}", pct_str, window_str)
 }
 
-
 fn draw_subagent_summary(f: &mut Frame, area: Rect, tick: usize) {
-    let subs: Vec<_> = crate::agents::list_subagents().into_iter().filter(|s| s.status == "running").collect();
-    if subs.is_empty() { return; }
+    let subs: Vec<_> = crate::agents::list_subagents()
+        .into_iter()
+        .filter(|s| s.status == "running")
+        .collect();
+    if subs.is_empty() {
+        return;
+    }
     let running = subs.len();
     let total = running;
-    let spinner = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"][tick % 10];
+    let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][tick % 10];
     let txt = if running > 0 {
-        format!(" {}  ⬢ {} agents • {} running  {}", spinner, total, running, spinner)
+        format!(
+            " {}  ⬢ {} agents • {} running  {}",
+            spinner, total, running, spinner
+        )
     } else {
         format!(" ⬢ {} agents • all done ", total)
     };
-    let style = if running > 0 { Style::default().fg(ASHEN.frost).bg(THEME.page_bg) } else { Style::default().fg(ASHEN.moss).bg(THEME.page_bg) };
+    let style = if running > 0 {
+        Style::default().fg(ASHEN.frost).bg(THEME.page_bg)
+    } else {
+        Style::default().fg(ASHEN.moss).bg(THEME.page_bg)
+    };
     let para = Paragraph::new(Line::from(Span::styled(txt, style)));
     f.render_widget(para, area);
 }
@@ -1037,33 +1251,58 @@ fn wrap_task_preview(task: &str, width: usize, max_lines: usize) -> Vec<String> 
             if cur.len() + word.len() + 1 > width {
                 lines.push(cur);
                 cur = word.to_string();
-                if lines.len() >= max_lines { break; }
+                if lines.len() >= max_lines {
+                    break;
+                }
             } else {
-                if !cur.is_empty() { cur.push(' '); }
+                if !cur.is_empty() {
+                    cur.push(' ');
+                }
                 cur.push_str(word);
             }
         }
-        if !cur.is_empty() { lines.push(cur); }
-        if lines.len() >= max_lines { break; }
+        if !cur.is_empty() {
+            lines.push(cur);
+        }
+        if lines.len() >= max_lines {
+            break;
+        }
     }
-    if lines.len() > max_lines { lines.truncate(max_lines); }
+    if lines.len() > max_lines {
+        lines.truncate(max_lines);
+    }
     if task.lines().count() > max_lines || task.len() > width * max_lines {
-        if let Some(last) = lines.last_mut() { *last = format!("{}…", last); }
+        if let Some(last) = lines.last_mut() {
+            *last = format!("{}…", last);
+        }
     }
     lines
 }
 
 fn draw_subagent_list(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
-    let mut subs: Vec<_> = crate::agents::list_subagents().into_iter().filter(|s| s.status == "running").collect();
+    let mut subs: Vec<_> = crate::agents::list_subagents()
+        .into_iter()
+        .filter(|s| s.status == "running")
+        .collect();
     // only running shown — done/killed are out of current session
-    subs.sort_by(|a,b| a.started_at.cmp(&b.started_at));
+    subs.sort_by(|a, b| a.started_at.cmp(&b.started_at));
     let area = centered_rect(70, 60, area);
     f.render_widget(Clear, area);
-    let block = Block::default().borders(Borders::ALL).title(format!(" Subagents ({}) — Enter: view  Esc: close  Shift+K: kill ", subs.len())).style(Style::default().bg(THEME.page_bg)).border_style(Style::default().fg(ASHEN.frost));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(
+            " Subagents ({}) — Enter: view  Esc: close  Shift+K: kill ",
+            subs.len()
+        ))
+        .style(Style::default().bg(THEME.page_bg))
+        .border_style(Style::default().fg(ASHEN.frost));
     let inner = block.inner(area);
     f.render_widget(block, area);
     if subs.is_empty() {
-        let para = Paragraph::new(Line::from(Span::styled("  No subagents — spawn via worker", Style::default().fg(ASHEN.charcoal))));
+        let para = Paragraph::new(Line::from(Span::styled(
+            "  No subagents — spawn via worker",
+            Style::default().fg(ASHEN.charcoal),
+        )));
         f.render_widget(para, inner);
         return;
     }
@@ -1075,54 +1314,146 @@ fn draw_subagent_list(f: &mut Frame, area: Rect, selected: usize, scroll: usize)
     for (idx, sub) in subs[start..end].iter().enumerate() {
         let abs_idx = start + idx;
         let is_sel = abs_idx == selected;
-        let bg = if is_sel { THEME.input_bg } else { THEME.page_bg };
-        let row_area = Rect { x: inner.x, y, width: inner.width, height: row_h };
-        let icon = if sub.status=="running" { "●" } else if sub.status=="done" { "✓" } else if sub.status=="killed" { "✕" } else { "✗" };
-        let status_style = if sub.status=="running" { Style::default().fg(ASHEN.frost).add_modifier(Modifier::BOLD) } else if sub.status=="done" { Style::default().fg(ASHEN.moss) } else { Style::default().fg(ASHEN.ember) };
-        let style = if is_sel { Style::default().fg(ASHEN.bone).bg(bg).add_modifier(Modifier::BOLD) } else { Style::default().fg(ASHEN.smoke).bg(bg) };
+        let bg = if is_sel {
+            THEME.input_bg
+        } else {
+            THEME.page_bg
+        };
+        let row_area = Rect {
+            x: inner.x,
+            y,
+            width: inner.width,
+            height: row_h,
+        };
+        let icon = if sub.status == "running" {
+            "●"
+        } else if sub.status == "done" {
+            "✓"
+        } else if sub.status == "killed" {
+            "✕"
+        } else {
+            "✗"
+        };
+        let status_style = if sub.status == "running" {
+            Style::default()
+                .fg(ASHEN.frost)
+                .add_modifier(Modifier::BOLD)
+        } else if sub.status == "done" {
+            Style::default().fg(ASHEN.moss)
+        } else {
+            Style::default().fg(ASHEN.ember)
+        };
+        let style = if is_sel {
+            Style::default()
+                .fg(ASHEN.bone)
+                .bg(bg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(ASHEN.smoke).bg(bg)
+        };
         let header = Line::from(vec![
             Span::styled(format!(" {} ", icon), status_style.bg(bg)),
-            Span::styled(sub.agent.clone(), Style::default().fg(ASHEN.frost).bg(bg).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                sub.agent.clone(),
+                Style::default()
+                    .fg(ASHEN.frost)
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(format!("  [{}]", sub.status), status_style.bg(bg)),
-            Span::styled(format!("  {}", if is_sel {"◀"} else {""}), Style::default().fg(ASHEN.charcoal).bg(bg)),
+            Span::styled(
+                format!("  {}", if is_sel { "◀" } else { "" }),
+                Style::default().fg(ASHEN.charcoal).bg(bg),
+            ),
         ]);
-        f.render_widget(Paragraph::new(header).style(style), Rect { x: row_area.x, y: row_area.y, width: row_area.width, height: 1 });
+        f.render_widget(
+            Paragraph::new(header).style(style),
+            Rect {
+                x: row_area.x,
+                y: row_area.y,
+                width: row_area.width,
+                height: 1,
+            },
+        );
         let previews = wrap_task_preview(&sub.task, (inner.width as usize).saturating_sub(4), 5);
         for (i, line) in previews.iter().enumerate() {
-            let para = Paragraph::new(Line::from(Span::styled(format!("  {}", line), Style::default().fg(ASHEN.deep_ash).bg(bg))));
-            f.render_widget(para, Rect { x: row_area.x, y: row_area.y + 1 + i as u16, width: row_area.width, height: 1 });
+            let para = Paragraph::new(Line::from(Span::styled(
+                format!("  {}", line),
+                Style::default().fg(ASHEN.deep_ash).bg(bg),
+            )));
+            f.render_widget(
+                para,
+                Rect {
+                    x: row_area.x,
+                    y: row_area.y + 1 + i as u16,
+                    width: row_area.width,
+                    height: 1,
+                },
+            );
         }
         y += row_h;
     }
 }
 
 fn draw_subagent_detail(f: &mut Frame, area: Rect, idx: usize, scroll: u16) {
-    let subs: Vec<_> = crate::agents::list_subagents().into_iter().filter(|s| s.status == "running").collect();
-    if idx >= subs.len() { return; }
+    let subs: Vec<_> = crate::agents::list_subagents()
+        .into_iter()
+        .filter(|s| s.status == "running")
+        .collect();
+    if idx >= subs.len() {
+        return;
+    }
     let sub = &subs[idx];
     f.render_widget(Clear, area);
-    let block = Block::default().borders(Borders::ALL).title(format!(" {} — {} [{}] — Esc: back  Shift+K: kill ", sub.agent, &sub.id[..8.min(sub.id.len())], sub.status)).style(Style::default().bg(THEME.page_bg)).border_style(Style::default().fg(ASHEN.frost));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(
+            " {} — {} [{}] — Esc: back  Shift+K: kill ",
+            sub.agent,
+            &sub.id[..8.min(sub.id.len())],
+            sub.status
+        ))
+        .style(Style::default().bg(THEME.page_bg))
+        .border_style(Style::default().fg(ASHEN.frost));
     let inner = block.inner(area);
     f.render_widget(block, area);
     // Header lines (task/status) rendered above transcript
     let mut header_lines: Vec<Line> = Vec::new();
-    header_lines.push(Line::from(vec![Span::styled("Task: ", Style::default().fg(ASHEN.charcoal)), Span::styled(sub.task.clone(), Style::default().fg(ASHEN.bone))]));
-    header_lines.push(Line::from(Span::styled(format!("Status: {}  Started: {:?}", sub.status, sub.started_at), Style::default().fg(ASHEN.deep_ash))));
-    header_lines.push(Line::from(Span::styled("─".repeat(inner.width as usize), Style::default().fg(ASHEN.charcoal))));
+    header_lines.push(Line::from(vec![
+        Span::styled("Task: ", Style::default().fg(ASHEN.charcoal)),
+        Span::styled(sub.task.clone(), Style::default().fg(ASHEN.bone)),
+    ]));
+    header_lines.push(Line::from(Span::styled(
+        format!("Status: {}  Started: {:?}", sub.status, sub.started_at),
+        Style::default().fg(ASHEN.deep_ash),
+    )));
+    header_lines.push(Line::from(Span::styled(
+        "─".repeat(inner.width as usize),
+        Style::default().fg(ASHEN.charcoal),
+    )));
     let mut all_lines: Vec<Line> = Vec::new();
     all_lines.extend(header_lines);
     if sub.transcript.is_empty() {
-        all_lines.push(Line::from(Span::styled("(no transcript yet — waiting for updates…)", Style::default().fg(ASHEN.charcoal).add_modifier(Modifier::ITALIC))));
+        all_lines.push(Line::from(Span::styled(
+            "(no transcript yet — waiting for updates…)",
+            Style::default()
+                .fg(ASHEN.charcoal)
+                .add_modifier(Modifier::ITALIC),
+        )));
     } else {
         // Convert SubagentMsg -> Msg and reuse regular message rendering pipeline
-        let msgs: Vec<Msg> = sub.transcript.iter().map(|m| Msg {
-            role: m.role.clone(),
-            content: m.content.clone(),
-            tool_id: m.tool_id.clone(),
-            tool_name: m.tool_name.clone(),
-            tool_args: m.tool_args.clone(),
-            elapsed_ms: m.elapsed_ms,
-        }).collect();
+        let msgs: Vec<Msg> = sub
+            .transcript
+            .iter()
+            .map(|m| Msg {
+                role: m.role.clone(),
+                content: m.content.clone(),
+                tool_id: m.tool_id.clone(),
+                tool_name: m.tool_name.clone(),
+                tool_args: m.tool_args.clone(),
+                elapsed_ms: m.elapsed_ms,
+            })
+            .collect();
         let content_lines = build_content_lines(&msgs);
         all_lines.extend(content_lines);
     }
@@ -1138,21 +1469,57 @@ fn draw_subagent_detail(f: &mut Frame, area: Rect, idx: usize, scroll: u16) {
 
 fn detail_total_for_width(sub: &crate::agents::SubagentStatus, width: usize) -> usize {
     let mut header = 3usize; // task/status/separator
-    if sub.transcript.is_empty() { return header + 1; }
-    let msgs: Vec<Msg> = sub.transcript.iter().map(|m| Msg { role: m.role.clone(), content: m.content.clone(), tool_id: m.tool_id.clone(), tool_name: m.tool_name.clone(), tool_args: m.tool_args.clone(), elapsed_ms: m.elapsed_ms }).collect();
+    if sub.transcript.is_empty() {
+        return header + 1;
+    }
+    let msgs: Vec<Msg> = sub
+        .transcript
+        .iter()
+        .map(|m| Msg {
+            role: m.role.clone(),
+            content: m.content.clone(),
+            tool_id: m.tool_id.clone(),
+            tool_name: m.tool_name.clone(),
+            tool_args: m.tool_args.clone(),
+            elapsed_ms: m.elapsed_ms,
+        })
+        .collect();
     let lines = build_content_lines(&msgs);
     // header + content
     let mut all: Vec<Line> = Vec::with_capacity(header + lines.len());
-    all.push(Line::from(vec![Span::styled("Task: ", Style::default().fg(ASHEN.charcoal)), Span::styled(sub.task.clone(), Style::default().fg(ASHEN.bone))]));
-    all.push(Line::from(Span::styled(format!("Status: {}  Started: {:?}", sub.status, sub.started_at), Style::default().fg(ASHEN.deep_ash))));
-    all.push(Line::from(Span::styled("─".repeat(width), Style::default().fg(ASHEN.charcoal))));
+    all.push(Line::from(vec![
+        Span::styled("Task: ", Style::default().fg(ASHEN.charcoal)),
+        Span::styled(sub.task.clone(), Style::default().fg(ASHEN.bone)),
+    ]));
+    all.push(Line::from(Span::styled(
+        format!("Status: {}  Started: {:?}", sub.status, sub.started_at),
+        Style::default().fg(ASHEN.deep_ash),
+    )));
+    all.push(Line::from(Span::styled(
+        "─".repeat(width),
+        Style::default().fg(ASHEN.charcoal),
+    )));
     all.extend(lines);
     wrap_lines(all, width).len()
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::default().direction(Direction::Vertical).constraints([Constraint::Percentage((100 - percent_y)/2), Constraint::Percentage(percent_y), Constraint::Percentage((100 - percent_y)/2)]).split(r);
-    Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage((100 - percent_x)/2), Constraint::Percentage(percent_x), Constraint::Percentage((100 - percent_x)/2)]).split(popup_layout[1])[1]
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
 }
 
 fn draw_footer(
@@ -1163,43 +1530,110 @@ fn draw_footer(
     cwd: &str,
     agent_busy: bool,
     spinner_tick: usize,
+    dictate_state: crate::dictate::State,
+    dictate_meter: &[f32; 6],
 ) {
     // Always clear footer area first to avoid ghosting when popup was over it
     f.render_widget(Clear, area);
     let width = area.width as usize;
     // Split footer into 2 rows: top = main footer, bottom = context window
-    let top_area = if area.height >= 2 { Rect { x: area.x, y: area.y, width: area.width, height: 1 } } else { area };
-    let bottom_area = if area.height >= 2 { Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 } } else { Rect { x: area.x, y: area.y, width: 0, height: 0 } };
+    let top_area = if area.height >= 2 {
+        Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: 1,
+        }
+    } else {
+        area
+    };
+    let bottom_area = if area.height >= 2 {
+        Rect {
+            x: area.x,
+            y: area.y + 1,
+            width: area.width,
+            height: 1,
+        }
+    } else {
+        Rect {
+            x: area.x,
+            y: area.y,
+            width: 0,
+            height: 0,
+        }
+    };
     // Footer never shows MCP status — check via /mcp only (as requested)
     // Narrow terminal (<10 cols) – just show truncated model to avoid overflow/wrap bleed
     if width < 15 {
         let txt = if model.chars().count() > width.saturating_sub(2) {
-            format!(" {}… ", model.chars().take(width.saturating_sub(3)).collect::<String>())
+            format!(
+                " {}… ",
+                model
+                    .chars()
+                    .take(width.saturating_sub(3))
+                    .collect::<String>()
+            )
         } else {
             format!(" {} ", model)
         };
-        let para = Paragraph::new(Line::from(Span::styled(txt, Style::default().fg(ASHEN.smoke).bg(THEME.page_bg))));
+        let para = Paragraph::new(Line::from(Span::styled(
+            txt,
+            Style::default().fg(ASHEN.smoke).bg(THEME.page_bg),
+        )));
         f.render_widget(para, top_area);
         if area.height >= 2 {
             let est = estimate_tokens(messages, model);
             let window = context_window_for_model(model);
             let ctx = format_context_label(est, window);
-            let ctx_txt = if ctx.chars().count() > width.saturating_sub(2) { format!(" {}… ", ctx.chars().take(width.saturating_sub(3)).collect::<String>()) } else { format!(" {} ", ctx) };
-            let cpara = Paragraph::new(Line::from(Span::styled(ctx_txt, Style::default().fg(ASHEN.deep_ash).bg(THEME.page_bg))));
+            let ctx_txt = if ctx.chars().count() > width.saturating_sub(2) {
+                format!(
+                    " {}… ",
+                    ctx.chars()
+                        .take(width.saturating_sub(3))
+                        .collect::<String>()
+                )
+            } else {
+                format!(" {} ", ctx)
+            };
+            let cpara = Paragraph::new(Line::from(Span::styled(
+                ctx_txt,
+                Style::default().fg(ASHEN.deep_ash).bg(THEME.page_bg),
+            )));
             f.render_widget(cpara, bottom_area);
         }
         return;
     }
 
-    let spinner = [
-        "\u{280b}", "\u{2819}", "\u{2813}", "\u{2827}", "\u{2836}", "\u{2834}", "\u{2826}",
-        "\u{282e}",
-    ];
+    let spinner = dictate::SPINNER_FRAMES;
     let (mode_badge, mode_style) = match crate::agent::current_mode() {
-        crate::agent::Mode::Norm => (format!(" NORM "), Style::default().fg(ASHEN.slate).bg(THEME.header_bg).add_modifier(Modifier::BOLD)),
-        crate::agent::Mode::Plan => (format!(" PLAN "), Style::default().fg(ASHEN.bone).bg(ASHEN.frost).add_modifier(Modifier::BOLD)),
-        crate::agent::Mode::Ask => (format!(" ASK "), Style::default().fg(ASHEN.bone).bg(ASHEN.moss).add_modifier(Modifier::BOLD)),
-        crate::agent::Mode::Auto => (format!(" AUTO "), Style::default().fg(ASHEN.bone).bg(ASHEN.ember).add_modifier(Modifier::BOLD)),
+        crate::agent::Mode::Norm => (
+            format!(" NORM "),
+            Style::default()
+                .fg(ASHEN.slate)
+                .bg(THEME.header_bg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        crate::agent::Mode::Plan => (
+            format!(" PLAN "),
+            Style::default()
+                .fg(ASHEN.bone)
+                .bg(ASHEN.frost)
+                .add_modifier(Modifier::BOLD),
+        ),
+        crate::agent::Mode::Ask => (
+            format!(" ASK "),
+            Style::default()
+                .fg(ASHEN.bone)
+                .bg(ASHEN.moss)
+                .add_modifier(Modifier::BOLD),
+        ),
+        crate::agent::Mode::Auto => (
+            format!(" AUTO "),
+            Style::default()
+                .fg(ASHEN.bone)
+                .bg(ASHEN.ember)
+                .add_modifier(Modifier::BOLD),
+        ),
     };
     let spinner_char = if agent_busy {
         format!("{} ", spinner[spinner_tick % spinner.len()])
@@ -1225,7 +1659,13 @@ fn draw_footer(
     };
     let center = format!(" {} ", short_cwd);
 
-    let used = spinner_char.len() + mode_badge.len() + 1 + model.len() + 2 + center.len() + right.len();
+    let used = spinner_char.chars().count()
+        + mode_badge.chars().count()
+        + 1
+        + model.chars().count()
+        + 2
+        + center.chars().count()
+        + right.chars().count();
     let gap = if used < width { width - used } else { 0 };
     let gap_left = gap / 2;
     let gap_right = gap - gap_left;
@@ -1266,44 +1706,175 @@ fn draw_footer(
 
     let footer = Paragraph::new(Line::from(spans));
     f.render_widget(footer, top_area);
-    // Second row: context window
+    // Second row: context window + dictate meter (dictate shares bottom row, bar shrinks to fit)
     if area.height >= 2 {
         let est = estimate_tokens(messages, model);
         let window = context_window_for_model(model);
         let ctx_label = format_context_label(est, window);
         let pct = ((est as f64 / window as f64) * 100.0).min(100.0);
-        let bar_width = width.saturating_sub(ctx_label.chars().count() + 4).max(6);
+        // Dictate on context row: resize bar to make room
+        let dictate_prefix_bottom: Option<String> = match dictate_state {
+            crate::dictate::State::Recording => {
+                let meter_str = dictate::meter_string(dictate_meter);
+                Some(format!("● {} listening…", meter_str))
+            }
+            crate::dictate::State::Transcribing => {
+                let frame = spinner[spinner_tick % spinner.len()];
+                Some(format!("{} transcribing…", frame))
+            }
+            crate::dictate::State::Idle => None,
+        };
+        let dictate_len_bottom = dictate_prefix_bottom
+            .as_ref()
+            .map(|s| s.chars().count() + 2)
+            .unwrap_or(0);
+        let bar_width = width
+            .saturating_sub(ctx_label.chars().count() + 4 + dictate_len_bottom)
+            .max(6);
         let filled = ((pct / 100.0) * bar_width as f64).round() as usize;
         let empty = bar_width.saturating_sub(filled);
         let bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
-        let ctx_line = format!(" {} {} ", bar, ctx_label);
-        let display = if ctx_line.chars().count() > width { ctx_line.chars().take(width).collect::<String>() } else { ctx_line };
-        let ctx_style = if pct > 85.0 { Style::default().fg(ASHEN.ember).bg(THEME.page_bg) } else if pct > 60.0 { Style::default().fg(ASHEN.frost).bg(THEME.page_bg) } else { Style::default().fg(ASHEN.deep_ash).bg(THEME.page_bg) };
-        let cpara = Paragraph::new(Line::from(Span::styled(display, ctx_style)));
+        let ctx_style = if pct > 85.0 {
+            Style::default().fg(ASHEN.ember).bg(THEME.page_bg)
+        } else if pct > 60.0 {
+            Style::default().fg(ASHEN.frost).bg(THEME.page_bg)
+        } else {
+            Style::default().fg(ASHEN.deep_ash).bg(THEME.page_bg)
+        };
+        let mut bottom_spans: Vec<Span> = Vec::new();
+        if let Some(prefix) = dictate_prefix_bottom {
+            let is_recording = dictate_state == crate::dictate::State::Recording;
+            if is_recording {
+                if let Some(pos) = prefix.find('●') {
+                    let before = &prefix[..pos];
+                    let rest_start = pos + '●'.len_utf8();
+                    let after = &prefix[rest_start..];
+                    if !before.is_empty() {
+                        bottom_spans.push(Span::styled(
+                            format!(" {}", before),
+                            Style::default().fg(ASHEN.smoke).bg(THEME.page_bg),
+                        ));
+                    } else {
+                        bottom_spans.push(Span::styled(
+                            " ".to_string(),
+                            Style::default().bg(THEME.page_bg),
+                        ));
+                    }
+                    bottom_spans.push(Span::styled(
+                        "●".to_string(),
+                        Style::default()
+                            .fg(ASHEN.ember)
+                            .bg(THEME.page_bg)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                    if !after.is_empty() {
+                        bottom_spans.push(Span::styled(
+                            format!("{} ", after),
+                            Style::default().fg(ASHEN.smoke).bg(THEME.page_bg),
+                        ));
+                    } else {
+                        bottom_spans.push(Span::styled(
+                            " ".to_string(),
+                            Style::default().bg(THEME.page_bg),
+                        ));
+                    }
+                } else {
+                    bottom_spans.push(Span::styled(
+                        format!(" {} ", prefix),
+                        Style::default()
+                            .fg(ASHEN.ember)
+                            .bg(THEME.page_bg)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                }
+            } else {
+                bottom_spans.push(Span::styled(
+                    format!(" {} ", prefix),
+                    Style::default()
+                        .fg(ASHEN.frost)
+                        .bg(THEME.page_bg)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+        }
+        bottom_spans.push(Span::styled(format!(" {}", bar), ctx_style));
+        bottom_spans.push(Span::styled(format!(" {} ", ctx_label), ctx_style));
+        let used_bottom = bottom_spans
+            .iter()
+            .map(|s| s.content.chars().count())
+            .sum::<usize>();
+        if used_bottom < width {
+            bottom_spans.push(Span::styled(
+                " ".repeat(width - used_bottom),
+                Style::default().bg(THEME.page_bg),
+            ));
+        }
+        let cpara = Paragraph::new(Line::from(bottom_spans));
         f.render_widget(cpara, bottom_area);
     }
 }
 
 fn draw_scrollbar(f: &mut Frame, area: Rect, total_lines: usize, viewport_h: usize, scroll: u16) {
-    if total_lines <= viewport_h { return; }
+    if total_lines <= viewport_h {
+        return;
+    }
     let max_scroll = total_lines.saturating_sub(viewport_h);
-    if scroll as usize >= max_scroll { return; } // hide when at bottom — only while not at bottom per spec
+    if scroll as usize >= max_scroll {
+        return;
+    } // hide when at bottom — only while not at bottom per spec
     let track_h = area.height as usize;
-    if track_h == 0 { return; }
-    let thumb_h = (((viewport_h as f64 / total_lines as f64) * track_h as f64).max(1.0).min(track_h as f64)).round() as usize;
-    let thumb_y = if max_scroll == 0 { 0 } else { ((scroll as f64 / max_scroll as f64) * (track_h.saturating_sub(thumb_h)) as f64).round() as usize };
+    if track_h == 0 {
+        return;
+    }
+    let thumb_h = (((viewport_h as f64 / total_lines as f64) * track_h as f64)
+        .max(1.0)
+        .min(track_h as f64))
+    .round() as usize;
+    let thumb_y = if max_scroll == 0 {
+        0
+    } else {
+        ((scroll as f64 / max_scroll as f64) * (track_h.saturating_sub(thumb_h)) as f64).round()
+            as usize
+    };
     for y in 0..track_h {
         let is_thumb = y >= thumb_y && y < thumb_y + thumb_h;
         let ch = if is_thumb { "█" } else { "░" };
-        let style = if is_thumb { Style::default().fg(ASHEN.frost).bg(THEME.page_bg) } else { Style::default().fg(ASHEN.charcoal).bg(THEME.page_bg) };
-        let cell = Rect { x: area.x + area.width.saturating_sub(1), y: area.y + y as u16, width: 1, height: 1 };
+        let style = if is_thumb {
+            Style::default().fg(ASHEN.frost).bg(THEME.page_bg)
+        } else {
+            Style::default().fg(ASHEN.charcoal).bg(THEME.page_bg)
+        };
+        let cell = Rect {
+            x: area.x + area.width.saturating_sub(1),
+            y: area.y + y as u16,
+            width: 1,
+            height: 1,
+        };
         f.render_widget(Paragraph::new(ch).style(style), cell);
     }
 }
 
 // ── Autocomplete + @-mentions ─────────────────────────────────
 
-const COMMANDS: &[&str] = &["/help", "/new", "/clear", "/exit", "/quit", "/model", "/sessions", "/resume", "/allowlist", "/allowlist clear", "/mcp", "/memory", "/memory stats", "/memory consolidate", "/auto-accept", "/plan", "/init"];
+const COMMANDS: &[&str] = &[
+    "/help",
+    "/new",
+    "/clear",
+    "/exit",
+    "/quit",
+    "/model",
+    "/sessions",
+    "/resume",
+    "/allowlist",
+    "/allowlist clear",
+    "/mcp",
+    "/memory",
+    "/memory stats",
+    "/memory consolidate",
+    "/auto-accept",
+    "/plan",
+    "/init",
+];
 
 /// Filter commands matching the current input prefix.
 /// Also completes model aliases after `/model `.
@@ -1397,7 +1968,13 @@ fn collect_files() -> Vec<String> {
         .into_iter()
         .filter_entry(|e| {
             let name = e.file_name().to_string_lossy();
-            if name == ".git" || name == "target" || name == "node_modules" || name == ".next" || name == "dist" || name == "build" {
+            if name == ".git"
+                || name == "target"
+                || name == "node_modules"
+                || name == ".next"
+                || name == "dist"
+                || name == "build"
+            {
                 return false;
             }
             // skip hidden except .env-ish
@@ -1460,7 +2037,12 @@ fn parse_skill_name(raw: &str) -> Option<String> {
     for line in fm.lines() {
         if let Some((k, v)) = line.split_once(':') {
             if k.trim() == "name" {
-                let val = v.trim().trim_matches('"').trim_matches('\'').trim().to_string();
+                let val = v
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .trim()
+                    .to_string();
                 if !val.is_empty() {
                     return Some(val);
                 }
@@ -1485,12 +2067,20 @@ fn list_skill_names_sync() -> Vec<String> {
         let is_local = base.starts_with(&cwd);
         if let Ok(rd) = std::fs::read_dir(base) {
             for entry in rd.filter_map(|e| e.ok()) {
-                let ft = match entry.file_type() { Ok(ft) => ft, Err(_) => continue };
-                if !ft.is_dir() { continue; }
+                let ft = match entry.file_type() {
+                    Ok(ft) => ft,
+                    Err(_) => continue,
+                };
+                if !ft.is_dir() {
+                    continue;
+                }
                 let skill_path = entry.path().join("SKILL.md");
-                if !skill_path.exists() { continue; }
+                if !skill_path.exists() {
+                    continue;
+                }
                 let raw = std::fs::read_to_string(&skill_path).unwrap_or_default();
-                let name = parse_skill_name(&raw).unwrap_or_else(|| entry.file_name().to_string_lossy().to_string());
+                let name = parse_skill_name(&raw)
+                    .unwrap_or_else(|| entry.file_name().to_string_lossy().to_string());
                 if !map.contains_key(&name) || is_local {
                     map.insert(name.clone(), name);
                 }
@@ -1502,29 +2092,44 @@ fn list_skill_names_sync() -> Vec<String> {
     v
 }
 
-fn collect_agent_names_sync() -> Vec<(String,String)> {
+fn collect_agent_names_sync() -> Vec<(String, String)> {
     use std::collections::HashMap;
     use std::path::PathBuf;
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
-    let bases = vec![ cwd.join("agents"), cwd.join(".lean").join("agents"), home.join(".lean").join("agents") ];
+    let bases = vec![
+        cwd.join("agents"),
+        cwd.join(".lean").join("agents"),
+        home.join(".lean").join("agents"),
+    ];
     let mut map: HashMap<String, String> = HashMap::new();
     for base in &bases {
         if let Ok(rd) = std::fs::read_dir(base) {
             for entry in rd.filter_map(|e| e.ok()) {
-                let ft = match entry.file_type() { Ok(ft) => ft, Err(_) => continue };
-                if !ft.is_dir() { continue; }
+                let ft = match entry.file_type() {
+                    Ok(ft) => ft,
+                    Err(_) => continue,
+                };
+                if !ft.is_dir() {
+                    continue;
+                }
                 let ag = entry.path().join("AGENT.md");
-                if !ag.exists() { continue; }
+                if !ag.exists() {
+                    continue;
+                }
                 let raw = std::fs::read_to_string(&ag).unwrap_or_default();
                 let mut name = entry.file_name().to_string_lossy().to_string();
                 let mut desc = String::new();
                 for line in raw.lines() {
-                    if let Some((k,v)) = line.split_once(':') {
+                    if let Some((k, v)) = line.split_once(':') {
                         let k = k.trim();
                         let v = v.trim().trim_matches('"').trim_matches('\'');
-                        if k=="name" && !v.is_empty() { name = v.to_string(); }
-                        if k=="description" && !v.is_empty() && desc.is_empty() { desc = v.to_string(); }
+                        if k == "name" && !v.is_empty() {
+                            name = v.to_string();
+                        }
+                        if k == "description" && !v.is_empty() && desc.is_empty() {
+                            desc = v.to_string();
+                        }
                     }
                 }
                 if !map.contains_key(&name) {
@@ -1533,8 +2138,8 @@ fn collect_agent_names_sync() -> Vec<(String,String)> {
             }
         }
     }
-    let mut v: Vec<(String,String)> = map.into_iter().collect();
-    v.sort_by(|a,b| a.0.cmp(&b.0));
+    let mut v: Vec<(String, String)> = map.into_iter().collect();
+    v.sort_by(|a, b| a.0.cmp(&b.0));
     v
 }
 
@@ -1543,13 +2148,24 @@ fn agent_autocomplete_matches(prefix: &str) -> Vec<String> {
     let lower = prefix.to_lowercase();
     let mut out = Vec::new();
     for (name, desc) in all {
-        if lower.is_empty() || name.to_lowercase().starts_with(&lower) || name.to_lowercase().contains(&lower) {
-            let display = if desc.is_empty() { format!("#{}", name) } else {
-                let d = if desc.len() > 40 { format!("{}…", &desc[..40]) } else { desc };
+        if lower.is_empty()
+            || name.to_lowercase().starts_with(&lower)
+            || name.to_lowercase().contains(&lower)
+        {
+            let display = if desc.is_empty() {
+                format!("#{}", name)
+            } else {
+                let d = if desc.len() > 40 {
+                    format!("{}…", &desc[..40])
+                } else {
+                    desc
+                };
                 format!("#{} — {}", name, d)
             };
             out.push(display);
-            if out.len() >= 20 { break; }
+            if out.len() >= 20 {
+                break;
+            }
         }
     }
     out
@@ -1560,17 +2176,26 @@ fn detect_agent_mention(textarea: &TextArea<'_>) -> Option<AtMention> {
     let row = c.0;
     let col = c.1;
     let lines = textarea.lines();
-    if row >= lines.len() { return None; }
+    if row >= lines.len() {
+        return None;
+    }
     let line = &lines[row];
     let chars: Vec<char> = line.chars().collect();
-    if col > chars.len() { return None; }
+    if col > chars.len() {
+        return None;
+    }
     let target = "#";
     let mut at_col: Option<usize> = None;
     for i in (0..col).rev() {
         if i + target.len() <= chars.len() {
-            let slice: String = chars[i..i+target.len()].iter().collect();
+            let slice: String = chars[i..i + target.len()].iter().collect();
             if slice == target {
-                let prev_ok = if i==0 { true } else { let pc = chars[i-1]; pc.is_whitespace() || "(\"'`".contains(pc) };
+                let prev_ok = if i == 0 {
+                    true
+                } else {
+                    let pc = chars[i - 1];
+                    pc.is_whitespace() || "(\"'`".contains(pc)
+                };
                 if prev_ok {
                     at_col = Some(i);
                     break;
@@ -1580,11 +2205,20 @@ fn detect_agent_mention(textarea: &TextArea<'_>) -> Option<AtMention> {
     }
     let at = at_col?;
     let prefix_start = at + target.len();
-    if prefix_start > col { return None; }
+    if prefix_start > col {
+        return None;
+    }
     let prefix_chars = &chars[prefix_start..col];
-    if prefix_chars.iter().any(|c| c.is_whitespace()) { return None; }
+    if prefix_chars.iter().any(|c| c.is_whitespace()) {
+        return None;
+    }
     let prefix: String = prefix_chars.iter().collect();
-    Some(AtMention { prefix, row, col, at_col: at })
+    Some(AtMention {
+        prefix,
+        row,
+        col,
+        at_col: at,
+    })
 }
 
 fn parse_forced_agent(input: &str) -> Option<(String, String)> {
@@ -1594,17 +2228,29 @@ fn parse_forced_agent(input: &str) -> Option<(String, String)> {
 
 fn parse_all_forced_agents(input: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    let known: std::collections::HashSet<String> = collect_agent_names_sync().into_iter().map(|(n,_)| n).collect();
+    let known: std::collections::HashSet<String> = collect_agent_names_sync()
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
     let mut i = 0usize;
     let chars: Vec<char> = input.chars().collect();
     while i < chars.len() {
         if chars[i] == '#' {
-            let prev_ok = if i==0 { true } else { let pc = chars[i-1]; pc.is_whitespace() || "(\"'`".contains(pc) };
+            let prev_ok = if i == 0 {
+                true
+            } else {
+                let pc = chars[i - 1];
+                pc.is_whitespace() || "(\"'`".contains(pc)
+            };
             if prev_ok {
-                let mut j = i+1;
-                while j < chars.len() && (chars[j].is_ascii_alphanumeric() || chars[j]=='-' || chars[j]=='_') { j+=1; }
-                if j > i+1 {
-                    let name: String = chars[i+1..j].iter().collect();
+                let mut j = i + 1;
+                while j < chars.len()
+                    && (chars[j].is_ascii_alphanumeric() || chars[j] == '-' || chars[j] == '_')
+                {
+                    j += 1;
+                }
+                if j > i + 1 {
+                    let name: String = chars[i + 1..j].iter().collect();
                     if known.contains(&name) {
                         // task is the rest of the sentence after name, but for inline hint we just want name
                         out.push((name, String::new()));
@@ -1614,7 +2260,7 @@ fn parse_all_forced_agents(input: &str) -> Vec<(String, String)> {
                 }
             }
         }
-        i+=1;
+        i += 1;
     }
     out
 }
@@ -1645,14 +2291,23 @@ fn detect_skill_mention(textarea: &TextArea<'_>) -> Option<AtMention> {
     let row = c.0;
     let col = c.1;
     let lines = textarea.lines();
-    if row >= lines.len() { return None; }
+    if row >= lines.len() {
+        return None;
+    }
     let line = &lines[row];
     let chars: Vec<char> = line.chars().collect();
-    if col > chars.len() { return None; }
+    if col > chars.len() {
+        return None;
+    }
     let mut at_col: Option<usize> = None;
     for i in (0..col).rev() {
         if chars[i] == '$' {
-            let prev_ok = if i == 0 { true } else { let pc = chars[i-1]; pc.is_whitespace() || "(\"'`".contains(pc) };
+            let prev_ok = if i == 0 {
+                true
+            } else {
+                let pc = chars[i - 1];
+                pc.is_whitespace() || "(\"'`".contains(pc)
+            };
             if prev_ok {
                 // require next char is alpha after $ if prefix empty? allow empty but check
                 at_col = Some(i);
@@ -1662,15 +2317,26 @@ fn detect_skill_mention(textarea: &TextArea<'_>) -> Option<AtMention> {
     }
     let at = at_col?;
     let prefix_chars = &chars[at + 1..col];
-    if prefix_chars.iter().any(|c| c.is_whitespace()) { return None; }
+    if prefix_chars.iter().any(|c| c.is_whitespace()) {
+        return None;
+    }
     // prefix for skills should be alphanumeric/_- only; reject if contains other punctuation like @ prefix contains /
     // allow empty prefix to show all
     let prefix: String = prefix_chars.iter().collect();
     // filter out purely numeric or with symbols that can't be skill names
-    if !prefix.is_empty() && prefix.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '-' || c == '_' )) {
+    if !prefix.is_empty()
+        && prefix
+            .chars()
+            .any(|c| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+    {
         // still allow but we already filtered whitespace; keep it simple allow any but autocomplete will just not match
     }
-    Some(AtMention { prefix, row, col, at_col: at })
+    Some(AtMention {
+        prefix,
+        row,
+        col,
+        at_col: at,
+    })
 }
 
 fn find_skill_content(name: &str) -> Option<String> {
@@ -1689,12 +2355,20 @@ fn find_skill_content(name: &str) -> Option<String> {
         let is_local = base.starts_with(&cwd);
         if let Ok(rd) = std::fs::read_dir(base) {
             for entry in rd.filter_map(|e| e.ok()) {
-                let ft = match entry.file_type() { Ok(ft) => ft, Err(_) => continue };
-                if !ft.is_dir() { continue; }
+                let ft = match entry.file_type() {
+                    Ok(ft) => ft,
+                    Err(_) => continue,
+                };
+                if !ft.is_dir() {
+                    continue;
+                }
                 let skill_path = entry.path().join("SKILL.md");
-                if !skill_path.exists() { continue; }
+                if !skill_path.exists() {
+                    continue;
+                }
                 let raw = std::fs::read_to_string(&skill_path).unwrap_or_default();
-                let sname = parse_skill_name(&raw).unwrap_or_else(|| entry.file_name().to_string_lossy().to_string());
+                let sname = parse_skill_name(&raw)
+                    .unwrap_or_else(|| entry.file_name().to_string_lossy().to_string());
                 if sname == name {
                     if found.is_none() || (is_local && !found_is_local) {
                         found = Some(skill_path);
@@ -1717,7 +2391,9 @@ fn find_skill_content(name: &str) -> Option<String> {
 
 use std::sync::{Mutex, OnceLock};
 static PASTED_IMAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
-fn pasted_store() -> &'static Mutex<Vec<String>> { PASTED_IMAGES.get_or_init(|| Mutex::new(Vec::new())) }
+fn pasted_store() -> &'static Mutex<Vec<String>> {
+    PASTED_IMAGES.get_or_init(|| Mutex::new(Vec::new()))
+}
 
 fn clipboard_image_marker() -> Option<String> {
     const MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -1726,26 +2402,39 @@ fn clipboard_image_marker() -> Option<String> {
     {
         let tmp = std::env::temp_dir().join(format!("lean_clip_{}.png", std::process::id()));
         let ps = format!("$img = Get-Clipboard -Format Image -ErrorAction SilentlyContinue; if ($img -ne $null) {{ $img.Save('{}'); Write-Host 'ok' }} else {{ Write-Host 'no' }}", tmp.display().to_string().replace('\\', "/"));
-        let out = std::process::Command::new("powershell").args(["-NoProfile", "-Command", &ps]).output().ok()?;
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &ps])
+            .output()
+            .ok()?;
         if String::from_utf8_lossy(&out.stdout).contains("ok") {
             if let Ok(bytes) = std::fs::read(&tmp) {
                 let _ = std::fs::remove_file(&tmp);
                 if !bytes.is_empty() && bytes.len() <= MAX_BYTES {
-                    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+                    let b64 =
+                        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
                     return Some(format!("<<IMAGE:image/png:{}>>", b64));
                 } else if bytes.len() > MAX_BYTES {
-                    return Some(format!("[image skipped: clipboard {} — over 4MB]", crate::tools::human_size(bytes.len())));
+                    return Some(format!(
+                        "[image skipped: clipboard {} — over 4MB]",
+                        crate::tools::human_size(bytes.len())
+                    ));
                 }
             }
         }
         // also try pwsh
-        let out2 = std::process::Command::new("pwsh").args(["-NoProfile", "-Command", &ps]).output().ok();
+        let out2 = std::process::Command::new("pwsh")
+            .args(["-NoProfile", "-Command", &ps])
+            .output()
+            .ok();
         if let Some(o) = out2 {
             if String::from_utf8_lossy(&o.stdout).contains("ok") {
                 if let Ok(bytes) = std::fs::read(&tmp) {
                     let _ = std::fs::remove_file(&tmp);
                     if !bytes.is_empty() {
-                        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+                        let b64 = base64::Engine::encode(
+                            &base64::engine::general_purpose::STANDARD,
+                            &bytes,
+                        );
                         return Some(format!("<<IMAGE:image/png:{}>>", b64));
                     }
                 }
@@ -1757,17 +2446,27 @@ fn clipboard_image_marker() -> Option<String> {
     #[cfg(target_os = "macos")]
     {
         let tmp = std::env::temp_dir().join(format!("lean_clip_{}.png", std::process::id()));
-        for prog in ["pngpaste", "/opt/homebrew/bin/pngpaste", "/usr/local/bin/pngpaste"] {
+        for prog in [
+            "pngpaste",
+            "/opt/homebrew/bin/pngpaste",
+            "/usr/local/bin/pngpaste",
+        ] {
             let out = std::process::Command::new(prog).arg(&tmp).output().ok();
             if let Some(o) = out {
                 if o.status.success() && tmp.exists() {
                     if let Ok(bytes) = std::fs::read(&tmp) {
                         let _ = std::fs::remove_file(&tmp);
                         if !bytes.is_empty() && bytes.len() <= MAX_BYTES {
-                            let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+                            let b64 = base64::Engine::encode(
+                                &base64::engine::general_purpose::STANDARD,
+                                &bytes,
+                            );
                             return Some(format!("<<IMAGE:image/png:{}>>", b64));
                         } else if bytes.len() > MAX_BYTES {
-                            return Some(format!("[image skipped: clipboard {} — over 4MB]", crate::tools::human_size(bytes.len())));
+                            return Some(format!(
+                                "[image skipped: clipboard {} — over 4MB]",
+                                crate::tools::human_size(bytes.len())
+                            ));
                         }
                     }
                 }
@@ -1775,12 +2474,16 @@ fn clipboard_image_marker() -> Option<String> {
         }
         // osascript fallback: save clipboard PNG to temp
         let osa = format!("set f to \"{}\"\ntry\n  set img to the clipboard as «class PNGf»\n  set out to open for access f with write permission\n  set eof of out to 0\n  write img to out\n  close access out\n  return \"ok\"\non error\n  return \"no\"\nend try", tmp.display());
-        let out = std::process::Command::new("osascript").args(["-e", &osa]).output().ok()?;
+        let out = std::process::Command::new("osascript")
+            .args(["-e", &osa])
+            .output()
+            .ok()?;
         if String::from_utf8_lossy(&out.stdout).contains("ok") {
             if let Ok(bytes) = std::fs::read(&tmp) {
                 let _ = std::fs::remove_file(&tmp);
                 if !bytes.is_empty() {
-                    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+                    let b64 =
+                        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
                     return Some(format!("<<IMAGE:image/png:{}>>", b64));
                 }
             }
@@ -1798,54 +2501,97 @@ fn clipboard_image_marker() -> Option<String> {
             } else if std::path::Path::new("/run/user/1000/wayland-1").exists() {
                 cmd.env("WAYLAND_DISPLAY", "wayland-1");
             }
-            if std::env::var("XDG_RUNTIME_DIR").is_err() && std::path::Path::new("/run/user/1000").exists() {
+            if std::env::var("XDG_RUNTIME_DIR").is_err()
+                && std::path::Path::new("/run/user/1000").exists()
+            {
                 cmd.env("XDG_RUNTIME_DIR", "/run/user/1000");
             }
         } else if std::env::var("XDG_RUNTIME_DIR").is_err() {
             cmd.env("XDG_RUNTIME_DIR", "/run/user/1000");
         }
         let out = cmd.output().ok()?;
-        if !out.status.success() || out.stdout.is_empty() { return None; }
-        if out.stdout.len() > 8 && (out.stdout.starts_with(&[0x89, b'P', b'N', b'G']) || out.stdout[0]==0xFF && out.stdout[1]==0xD8 || out.stdout.starts_with(b"GIF")) {
+        if !out.status.success() || out.stdout.is_empty() {
+            return None;
+        }
+        if out.stdout.len() > 8
+            && (out.stdout.starts_with(&[0x89, b'P', b'N', b'G'])
+                || out.stdout[0] == 0xFF && out.stdout[1] == 0xD8
+                || out.stdout.starts_with(b"GIF"))
+        {
             Some(out.stdout)
         } else if out.stdout.len() > 100 {
             Some(out.stdout)
-        } else { None }
+        } else {
+            None
+        }
     };
     let try_types = || -> Vec<String> {
         let mut cmd = std::process::Command::new("wl-paste");
         cmd.arg("--list-types");
-        if std::env::var("WAYLAND_DISPLAY").is_err() && std::path::Path::new("/run/user/1000/wayland-0").exists() {
+        if std::env::var("WAYLAND_DISPLAY").is_err()
+            && std::path::Path::new("/run/user/1000/wayland-0").exists()
+        {
             cmd.env("WAYLAND_DISPLAY", "wayland-0");
         }
-        cmd.output().ok().and_then(|o| if o.status.success() { Some(String::from_utf8_lossy(&o.stdout).to_string()) } else { None })
-            .unwrap_or_default().lines().map(|s| s.trim().to_string()).collect()
+        cmd.output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    Some(String::from_utf8_lossy(&o.stdout).to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default()
+            .lines()
+            .map(|s| s.trim().to_string())
+            .collect()
     };
     let types = try_types();
     let has_png = types.iter().any(|t| t == "image/png");
-    let has_jpeg = types.iter().any(|t| t.contains("jpeg") || t.contains("jpg"));
+    let has_jpeg = types
+        .iter()
+        .any(|t| t.contains("jpeg") || t.contains("jpg"));
     // Wayland first, then X11 variants — prefer detected mime
     let mut candidates: Vec<Option<Vec<u8>>> = Vec::new();
-    if has_png || types.is_empty() { candidates.push(try_bytes("wl-paste", &["--type", "image/png"])); }
-    if has_jpeg { candidates.push(try_bytes("wl-paste", &["--type", "image/jpeg"])); }
+    if has_png || types.is_empty() {
+        candidates.push(try_bytes("wl-paste", &["--type", "image/png"]));
+    }
+    if has_jpeg {
+        candidates.push(try_bytes("wl-paste", &["--type", "image/jpeg"]));
+    }
     candidates.push(try_bytes("wl-paste", &["-t", "image/png"]));
     candidates.push(try_bytes("wl-paste", &["--type", "image/jpeg"]));
     candidates.push(try_bytes("wl-paste", &[])); // raw, let compositor pick
-    candidates.push(try_bytes("xclip", &["-selection", "clipboard", "-t", "image/png", "-o"]));
+    candidates.push(try_bytes(
+        "xclip",
+        &["-selection", "clipboard", "-t", "image/png", "-o"],
+    ));
     candidates.push(try_bytes("xsel", &["--clipboard", "--output"]));
     for maybe in candidates {
         if let Some(bytes) = maybe {
-            if bytes.is_empty() { continue; }
+            if bytes.is_empty() {
+                continue;
+            }
             if bytes.len() > MAX_BYTES {
                 // over cap — skip with hint instead of marker
-                return Some(format!("[image skipped: clipboard {} — over 4MB]", crate::tools::human_size(bytes.len())));
+                return Some(format!(
+                    "[image skipped: clipboard {} — over 4MB]",
+                    crate::tools::human_size(bytes.len())
+                ));
             }
             // sniff mime
-            let mime = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) { "image/png" }
-                else if bytes.starts_with(&[0xFF, 0xD8]) { "image/jpeg" }
-                else if bytes.starts_with(b"GIF") { "image/gif" }
-                else if bytes.len() > 12 && bytes[8..12] == *b"WEBP" { "image/webp" }
-                else { "image/png" };
+            let mime = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+                "image/png"
+            } else if bytes.starts_with(&[0xFF, 0xD8]) {
+                "image/jpeg"
+            } else if bytes.starts_with(b"GIF") {
+                "image/gif"
+            } else if bytes.len() > 12 && bytes[8..12] == *b"WEBP" {
+                "image/webp"
+            } else {
+                "image/png"
+            };
             let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
             return Some(format!("<<IMAGE:{}:{}>>", mime, b64));
         }
@@ -1863,7 +2609,11 @@ fn current_completions(textarea: &TextArea<'_>) -> Vec<String> {
     if let Some(m) = detect_at_mention(textarea) {
         return file_autocomplete_matches(&m.prefix);
     }
-    let cur = textarea.lines().get(textarea.cursor().0).cloned().unwrap_or_default();
+    let cur = textarea
+        .lines()
+        .get(textarea.cursor().0)
+        .cloned()
+        .unwrap_or_default();
     autocomplete_matches(&cur)
 }
 
@@ -1879,17 +2629,46 @@ fn expand_at_mentions(prompt: &str) -> String {
     let mut i = 0;
     while i < chars.len() {
         if chars[i] == '$' {
-            let prev_ok = if i == 0 { true } else { chars[i - 1].is_whitespace() || "(\"'`".contains(chars[i - 1]) };
-            let next_is_alpha = i + 1 < chars.len() && (chars[i + 1].is_ascii_alphabetic() || chars[i + 1] == '_');
+            let prev_ok = if i == 0 {
+                true
+            } else {
+                chars[i - 1].is_whitespace() || "(\"'`".contains(chars[i - 1])
+            };
+            let next_is_alpha =
+                i + 1 < chars.len() && (chars[i + 1].is_ascii_alphabetic() || chars[i + 1] == '_');
             if prev_ok && next_is_alpha {
                 let mut j = i + 1;
-                while j < chars.len() && !chars[j].is_whitespace() { j += 1; }
+                while j < chars.len() && !chars[j].is_whitespace() {
+                    j += 1;
+                }
                 let mut raw: String = chars[i + 1..j].iter().collect();
-                while raw.ends_with(',') || raw.ends_with('.') || raw.ends_with(';') || raw.ends_with(':') || raw.ends_with('!') || raw.ends_with('?') || raw.ends_with(')') || raw.ends_with(']') || raw.ends_with('"') || raw.ends_with('\'') { raw.pop(); }
+                while raw.ends_with(',')
+                    || raw.ends_with('.')
+                    || raw.ends_with(';')
+                    || raw.ends_with(':')
+                    || raw.ends_with('!')
+                    || raw.ends_with('?')
+                    || raw.ends_with(')')
+                    || raw.ends_with(']')
+                    || raw.ends_with('"')
+                    || raw.ends_with('\'')
+                {
+                    raw.pop();
+                }
                 // skill names allowed chars: alnum - _
-                let cleaned: String = raw.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
-                let skill_name = if !cleaned.is_empty() { cleaned } else { raw.clone() };
-                if !skill_name.is_empty() && !skills.contains(&skill_name) && find_skill_content(&skill_name).is_some() {
+                let cleaned: String = raw
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                    .collect();
+                let skill_name = if !cleaned.is_empty() {
+                    cleaned
+                } else {
+                    raw.clone()
+                };
+                if !skill_name.is_empty()
+                    && !skills.contains(&skill_name)
+                    && find_skill_content(&skill_name).is_some()
+                {
                     skills.push(skill_name);
                 }
                 i = j;
@@ -1963,13 +2742,19 @@ fn expand_at_mentions(prompt: &str) -> String {
     const MAX_IMAGE_BYTES: usize = 4 * 1024 * 1024;
     const MAX_IMAGES_PER_TURN: usize = 5;
     let mut image_count = out.matches("<<IMAGE").count(); // count already-expanded pasted images
-    // If pasted images already hit cap, warn
+                                                          // If pasted images already hit cap, warn
     if image_count >= MAX_IMAGES_PER_TURN && (!files.is_empty() || !remotes.is_empty()) {
-        out.push_str(&format!("\n\n[image note: already {} images from paste — max {} /turn, @files may be skipped]", image_count, MAX_IMAGES_PER_TURN));
+        out.push_str(&format!(
+            "\n\n[image note: already {} images from paste — max {} /turn, @files may be skipped]",
+            image_count, MAX_IMAGES_PER_TURN
+        ));
     }
     for rel in files {
         if image_count >= MAX_IMAGES_PER_TURN {
-            out.push_str(&format!("\n\n[image skipped: {} — max {} images/turn]", rel, MAX_IMAGES_PER_TURN));
+            out.push_str(&format!(
+                "\n\n[image skipped: {} — max {} images/turn]",
+                rel, MAX_IMAGES_PER_TURN
+            ));
             continue;
         }
         let p = std::path::Path::new(&rel);
@@ -1986,46 +2771,91 @@ fn expand_at_mentions(prompt: &str) -> String {
                         out.push_str(&format!("\n\n[image skipped: {} ({}) — over 4MB, compress or use smaller image]", rel, crate::tools::human_size(bytes.len())));
                         continue;
                     }
-                    let ext = full.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                    let ext = full
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("")
+                        .to_lowercase();
                     let mime = crate::tools::image_mime_type(&ext).unwrap_or("image/png");
-                    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
-                    out.push_str(&format!("\n\n[File: {} ({}, {})]\n<<IMAGE:{}:{}>>", rel, mime, crate::tools::human_size(bytes.len()), mime, b64));
+                    let b64 =
+                        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+                    out.push_str(&format!(
+                        "\n\n[File: {} ({}, {})]\n<<IMAGE:{}:{}>>",
+                        rel,
+                        mime,
+                        crate::tools::human_size(bytes.len()),
+                        mime,
+                        b64
+                    ));
                 }
                 Err(e) => out.push_str(&format!("\n\n[read error: {}: {}]", rel, e)),
             }
         } else {
-            let content = std::fs::read_to_string(&full).unwrap_or_else(|e| format!("[read error: {}]", e));
+            let content =
+                std::fs::read_to_string(&full).unwrap_or_else(|e| format!("[read error: {}]", e));
             let truncated = if content.len() > 8000 {
-                format!("{}… [truncated {} chars]", &content[..8000], content.len() - 8000)
+                format!(
+                    "{}… [truncated {} chars]",
+                    &content[..8000],
+                    content.len() - 8000
+                )
             } else {
                 content
             };
             let ext = full.extension().and_then(|e| e.to_str()).unwrap_or("");
-            out.push_str(&format!("\n\n[File: {}]\n```{}\n{}```", rel, ext, truncated));
+            out.push_str(&format!(
+                "\n\n[File: {}]\n```{}\n{}```",
+                rel, ext, truncated
+            ));
         }
     }
     for url in remotes {
         if image_count >= MAX_IMAGES_PER_TURN {
-            out.push_str(&format!("\n\n[image skipped: {} — max {} images/turn]", url, MAX_IMAGES_PER_TURN));
+            out.push_str(&format!(
+                "\n\n[image skipped: {} — max {} images/turn]",
+                url, MAX_IMAGES_PER_TURN
+            ));
             continue;
         }
         // For @https:// URLs, pass through as image_url placeholder (agent will send as input_image URL).
         // If extension looks like image or URL is likely image, treat as image; otherwise as file reference.
         let lower = url.to_lowercase();
-        let is_image_url = lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") || lower.ends_with(".gif") || lower.ends_with(".webp") || lower.ends_with(".bmp") || lower.contains("images.unsplash") || lower.contains("image") || true; // default to image for vision UX
+        let is_image_url = lower.ends_with(".png")
+            || lower.ends_with(".jpg")
+            || lower.ends_with(".jpeg")
+            || lower.ends_with(".gif")
+            || lower.ends_with(".webp")
+            || lower.ends_with(".bmp")
+            || lower.contains("images.unsplash")
+            || lower.contains("image")
+            || true; // default to image for vision UX
         if is_image_url {
             image_count += 1;
             // Keep URL as-is; agent.rs will forward as image_url without base64 if we embed marker with URL.
             // We use a lightweight marker that llm.rs can map to input_image url.
-            out.push_str(&format!("\n\n[Remote image: {}]\n<<IMAGE_URL:{}>>", url, url));
+            out.push_str(&format!(
+                "\n\n[Remote image: {}]\n<<IMAGE_URL:{}>>",
+                url, url
+            ));
         } else {
             out.push_str(&format!("\n\n[Remote file: {}]", url));
         }
     }
     for skill_name in skills {
         if let Some(content) = find_skill_content(&skill_name) {
-            let truncated = if content.len() > 12000 { format!("{}… [truncated {} chars]", &content[..12000], content.len() - 12000) } else { content };
-            out.push_str(&format!("\n\n[Forced skill: {} — follow its workflow explicitly]\n{}", skill_name, truncated));
+            let truncated = if content.len() > 12000 {
+                format!(
+                    "{}… [truncated {} chars]",
+                    &content[..12000],
+                    content.len() - 12000
+                )
+            } else {
+                content
+            };
+            out.push_str(&format!(
+                "\n\n[Forced skill: {} — follow its workflow explicitly]\n{}",
+                skill_name, truncated
+            ));
         }
     }
     out
@@ -2100,15 +2930,39 @@ fn draw_autocomplete(
 fn draw_approval(f: &mut Frame, area: Rect, req: &crate::approval::ApprovalRequest) {
     let width = (area.width.saturating_sub(4)).min(90);
     let queued = crate::approval::queue_len();
-    let queue_label = if queued > 0 { format!(" [{}/{}]", 1, queued + 1) } else { String::new() };
+    let queue_label = if queued > 0 {
+        format!(" [{}/{}]", 1, queued + 1)
+    } else {
+        String::new()
+    };
     let height = 9.min(area.height.saturating_sub(4));
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
-    let rect = Rect { x, y, width, height };
+    let rect = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
     let is_dir = req.reasons.iter().any(|r| r.contains("outside CWD"));
     let is_mcp = req.reasons.iter().any(|r| r.contains("MCP tool"));
-    let title = if is_mcp { format!(" MCP Guard — Approval Required{} ", queue_label) } else if is_dir { format!(" Dir Guard — Approval Required{} (outside CWD) ", queue_label) } else { format!(" Bash Guard — Approval Required{} ", queue_label) };
-    let border_col = if is_mcp { ASHEN.moss } else if is_dir { ASHEN.frost } else { ASHEN.ember };
+    let title = if is_mcp {
+        format!(" MCP Guard — Approval Required{} ", queue_label)
+    } else if is_dir {
+        format!(
+            " Dir Guard — Approval Required{} (outside CWD) ",
+            queue_label
+        )
+    } else {
+        format!(" Bash Guard — Approval Required{} ", queue_label)
+    };
+    let border_col = if is_mcp {
+        ASHEN.moss
+    } else if is_dir {
+        ASHEN.frost
+    } else {
+        ASHEN.ember
+    };
     let block = Block::default()
         .title(title.as_str())
         .borders(Borders::ALL)
@@ -2117,20 +2971,46 @@ fn draw_approval(f: &mut Frame, area: Rect, req: &crate::approval::ApprovalReque
     let inner = block.inner(rect);
     f.render_widget(Clear, rect);
     f.render_widget(block, rect);
-    let sev = match req.severity { crate::bash_guard::Severity::High => "HIGH", crate::bash_guard::Severity::Medium => "MEDIUM" };
-    let sev_style = if sev == "HIGH" { Style::default().fg(ASHEN.ember).add_modifier(Modifier::BOLD) } else { Style::default().fg(ASHEN.frost) };
-    let cmd_label = if is_mcp { format!("  MCP: {}", req.cmd) } else if is_dir && req.cmd.contains(' ') && !req.cmd.contains('/') { format!("  $ {}", req.cmd) } else if is_dir { format!("  path: {}", req.cmd) } else { format!("  $ {}", req.cmd) };
+    let sev = match req.severity {
+        crate::bash_guard::Severity::High => "HIGH",
+        crate::bash_guard::Severity::Medium => "MEDIUM",
+    };
+    let sev_style = if sev == "HIGH" {
+        Style::default()
+            .fg(ASHEN.ember)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(ASHEN.frost)
+    };
+    let cmd_label = if is_mcp {
+        format!("  MCP: {}", req.cmd)
+    } else if is_dir && req.cmd.contains(' ') && !req.cmd.contains('/') {
+        format!("  $ {}", req.cmd)
+    } else if is_dir {
+        format!("  path: {}", req.cmd)
+    } else {
+        format!("  $ {}", req.cmd)
+    };
     let lines = vec![
-        Line::from(vec![Span::styled(format!("  {} risk:  ", sev), sev_style), Span::styled(req.reasons.join("; "), Style::default().fg(ASHEN.smoke))]),
+        Line::from(vec![
+            Span::styled(format!("  {} risk:  ", sev), sev_style),
+            Span::styled(req.reasons.join("; "), Style::default().fg(ASHEN.smoke)),
+        ]),
         Line::from(Span::styled(cmd_label, Style::default().fg(ASHEN.whisper))),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  [a] Allow once  ", Style::default().fg(ASHEN.moss).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  [a] Allow once  ",
+                Style::default().fg(ASHEN.moss).add_modifier(Modifier::BOLD),
+            ),
             Span::styled("[d] Deny  ", Style::default().fg(ASHEN.ember)),
             Span::styled("[A] Allow always  ", Style::default().fg(ASHEN.slate)),
             Span::styled("Esc deny", Style::default().fg(ASHEN.charcoal)),
         ]),
-        Line::from(Span::styled("  Press a/d/A or Enter to allow, Esc to deny", Style::default().fg(ASHEN.deep_ash))),
+        Line::from(Span::styled(
+            "  Press a/d/A or Enter to allow, Esc to deny",
+            Style::default().fg(ASHEN.deep_ash),
+        )),
     ];
     let para = Paragraph::new(lines);
     f.render_widget(para, inner);
@@ -2152,24 +3032,35 @@ fn draw_question(
         if let Some(h) = &q.header {
             body.push(Line::from(Span::styled(
                 format!("  {}", h),
-                Style::default().fg(ASHEN.frost).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(ASHEN.frost)
+                    .add_modifier(Modifier::BOLD),
             )));
         }
         for l in hard_wrap_str(&q.question, wrap_cols).lines() {
-            body.push(Line::from(Span::styled(format!("  {}", l), Style::default().fg(ASHEN.bone))));
+            body.push(Line::from(Span::styled(
+                format!("  {}", l),
+                Style::default().fg(ASHEN.bone),
+            )));
         }
         body.push(Line::from(""));
         if q.multi_select {
             body.push(Line::from(Span::styled(
                 "  select all that apply",
-                Style::default().fg(ASHEN.deep_ash).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(ASHEN.deep_ash)
+                    .add_modifier(Modifier::ITALIC),
             )));
         }
         for (i, opt) in q.options.iter().enumerate() {
             let current = wizard.opt_idx() == i;
             let cursor = if current { "›" } else { " " };
             let marker = if q.multi_select {
-                if wizard.is_toggled(i) { "[x]" } else { "[ ]" }
+                if wizard.is_toggled(i) {
+                    "[x]"
+                } else {
+                    "[ ]"
+                }
             } else if current {
                 "◉"
             } else {
@@ -2181,7 +3072,10 @@ fn draw_question(
                 Style::default().fg(ASHEN.smoke)
             };
             body.push(Line::from(vec![
-                Span::styled(format!("  {} {} ", cursor, marker), Style::default().fg(ASHEN.frost)),
+                Span::styled(
+                    format!("  {} {} ", cursor, marker),
+                    Style::default().fg(ASHEN.frost),
+                ),
                 Span::styled(opt.label.clone(), style),
             ]));
             if let Some(desc) = &opt.description {
@@ -2197,7 +3091,11 @@ fn draw_question(
         let cursor = if other_current { "›" } else { " " };
         let other_text = wizard.other_text();
         let marker = if q.multi_select {
-            if other_text.trim().is_empty() { "[ ]" } else { "[x]" }
+            if other_text.trim().is_empty() {
+                "[ ]"
+            } else {
+                "[x]"
+            }
         } else if other_current {
             "◉"
         } else {
@@ -2216,7 +3114,10 @@ fn draw_question(
             Style::default().fg(ASHEN.smoke)
         };
         body.push(Line::from(vec![
-            Span::styled(format!("  {} {} ", cursor, marker), Style::default().fg(ASHEN.frost)),
+            Span::styled(
+                format!("  {} {} ", cursor, marker),
+                Style::default().fg(ASHEN.frost),
+            ),
             Span::styled(shown, style),
         ]));
     }
@@ -2230,9 +3131,18 @@ fn draw_question(
         .min(area.height.saturating_sub(4))
         .max(5);
     let y = area.y + (area.height.saturating_sub(height)) / 2;
-    let rect = Rect { x, y, width, height };
+    let rect = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
 
-    let title = format!(" Question [{}/{}] ", wizard.idx() + 1, wizard.total().max(1));
+    let title = format!(
+        " Question [{}/{}] ",
+        wizard.idx() + 1,
+        wizard.total().max(1)
+    );
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -2244,38 +3154,63 @@ fn draw_question(
     f.render_widget(Paragraph::new(body), inner);
 }
 
-
-fn draw_sessions(f: &mut Frame, area: Rect, selected: usize, scroll: usize, filter: &str, show_all: bool, cwd: &str) {
+fn draw_sessions(
+    f: &mut Frame,
+    area: Rect,
+    selected: usize,
+    scroll: usize,
+    filter: &str,
+    show_all: bool,
+    cwd: &str,
+) {
     let all = crate::session::Session::list();
     // Per-directory filtering: default shows only sessions for current cwd, Tab toggles all
     let cwd_norm = cwd.trim_end_matches('/');
     let dir_filtered: Vec<crate::session::Session> = if show_all {
         all
     } else {
-        all.into_iter().filter(|s| s.cwd.trim_end_matches('/') == cwd_norm).collect()
+        all.into_iter()
+            .filter(|s| s.cwd.trim_end_matches('/') == cwd_norm)
+            .collect()
     };
     let filtered: Vec<crate::session::Session> = if filter.is_empty() {
         dir_filtered
     } else {
         let lower = filter.to_lowercase();
-        dir_filtered.into_iter().filter(|s| {
-            s.id.to_lowercase().contains(&lower)
-                || s.cwd.to_lowercase().contains(&lower)
-                || s.messages.iter().any(|m| m.content.to_lowercase().contains(&lower))
-        }).collect()
+        dir_filtered
+            .into_iter()
+            .filter(|s| {
+                s.id.to_lowercase().contains(&lower)
+                    || s.cwd.to_lowercase().contains(&lower)
+                    || s.messages
+                        .iter()
+                        .any(|m| m.content.to_lowercase().contains(&lower))
+            })
+            .collect()
     };
     let sessions = &filtered;
     let width = (area.width.saturating_sub(4)).min(80);
     let height = (14.min(sessions.len() + 6) as u16).min(area.height.saturating_sub(4));
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
-    let rect = Rect { x, y, width, height };
+    let rect = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
     let mode_label = if show_all { "all" } else { "this dir" };
     let toggle_label = if show_all { "this dir" } else { "all" };
     let title = if filter.is_empty() {
-        format!(" Sessions [{}] — Enter resume, Esc close, Tab:{} ", mode_label, toggle_label)
+        format!(
+            " Sessions [{}] — Enter resume, Esc close, Tab:{} ",
+            mode_label, toggle_label
+        )
     } else {
-        format!(" Sessions [{}] — filter: {} (Tab:{}) ", mode_label, filter, toggle_label)
+        format!(
+            " Sessions [{}] — filter: {} (Tab:{}) ",
+            mode_label, filter, toggle_label
+        )
     };
     let block = Block::default()
         .title(title)
@@ -2293,22 +3228,49 @@ fn draw_sessions(f: &mut Frame, area: Rect, selected: usize, scroll: usize, filt
         } else {
             "  No sessions"
         };
-        let para = Paragraph::new(Line::from(Span::styled(msg, Style::default().fg(ASHEN.deep_ash))));
+        let para = Paragraph::new(Line::from(Span::styled(
+            msg,
+            Style::default().fg(ASHEN.deep_ash),
+        )));
         f.render_widget(para, inner);
         return;
     }
     let visible_h = inner.height as usize;
     let start = scroll.min(sessions.len().saturating_sub(1));
     let end = (start + visible_h).min(sessions.len());
-    let items: Vec<Line> = sessions[start..end].iter().enumerate().map(|(i, sess)| {
-        let idx = start + i;
-        let sel = idx == selected;
-        let style = if sel { Style::default().fg(ASHEN.bone).add_modifier(Modifier::BOLD).bg(ASHEN.stone) } else { Style::default().fg(ASHEN.smoke) };
-        let ts = sess.updated_at;
-        let preview = sess.messages.first().map(|m| m.content.chars().take(30).collect::<String>().replace("\n", " ")).unwrap_or_else(|| "-".to_string());
-        let id_short = sess.id.chars().take(8).collect::<String>();
-        Line::from(Span::styled(format!(" {} {} {}m {} ", id_short, preview, sess.messages.len(), ts), style))
-    }).collect();
+    let items: Vec<Line> = sessions[start..end]
+        .iter()
+        .enumerate()
+        .map(|(i, sess)| {
+            let idx = start + i;
+            let sel = idx == selected;
+            let style = if sel {
+                Style::default()
+                    .fg(ASHEN.bone)
+                    .add_modifier(Modifier::BOLD)
+                    .bg(ASHEN.stone)
+            } else {
+                Style::default().fg(ASHEN.smoke)
+            };
+            let ts = sess.updated_at;
+            let preview = sess
+                .messages
+                .first()
+                .map(|m| {
+                    m.content
+                        .chars()
+                        .take(30)
+                        .collect::<String>()
+                        .replace("\n", " ")
+                })
+                .unwrap_or_else(|| "-".to_string());
+            let id_short = sess.id.chars().take(8).collect::<String>();
+            Line::from(Span::styled(
+                format!(" {} {} {}m {} ", id_short, preview, sess.messages.len(), ts),
+                style,
+            ))
+        })
+        .collect();
     let para = Paragraph::new(items);
     f.render_widget(para, inner);
 }
@@ -2319,20 +3281,37 @@ fn draw_mcp(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
     let height = (18.min(servers.len() * 2 + 7) as u16).min(area.height.saturating_sub(4));
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
-    let rect = Rect { x, y, width, height };
-    let connected = servers.iter().filter(|s| matches!(s.status, crate::mcp::ServerStatus::Connected)).count();
+    let rect = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+    let connected = servers
+        .iter()
+        .filter(|s| matches!(s.status, crate::mcp::ServerStatus::Connected))
+        .count();
     let total = servers.len();
     let global_off = crate::mcp::is_global_disabled();
     let mut title = if total == 0 {
         " MCP Servers — No servers configured ".to_string()
     } else if global_off {
-        format!(" MCP Servers [GLOBAL OFF] ({}/{} connected) — g/enable, Esc close ", connected, total)
+        format!(
+            " MCP Servers [GLOBAL OFF] ({}/{} connected) — g/enable, Esc close ",
+            connected, total
+        )
     } else {
-        format!(" MCP Servers ({}/{} connected) — d/toggle, g/global, r/reconnect, Esc close ", connected, total)
+        format!(
+            " MCP Servers ({}/{} connected) — d/toggle, g/global, r/reconnect, Esc close ",
+            connected, total
+        )
     };
     // Truncate title to fit popup width for narrow terminals (<10 cols)
     if title.chars().count() > width as usize - 4 {
-        title = format!("{}… ", title.chars().take(width as usize - 5).collect::<String>());
+        title = format!(
+            "{}… ",
+            title.chars().take(width as usize - 5).collect::<String>()
+        );
     }
     let block = Block::default()
         .title(title)
@@ -2344,9 +3323,18 @@ fn draw_mcp(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
     f.render_widget(block, rect);
     if servers.is_empty() {
         let para = Paragraph::new(vec![
-            Line::from(Span::styled("  No MCP servers configured", Style::default().fg(ASHEN.deep_ash))),
-            Line::from(Span::styled("  Create ~/.lean/mcp.json or .lean/mcp.json", Style::default().fg(ASHEN.charcoal))),
-            Line::from(Span::styled("  See mcp.json.example for format", Style::default().fg(ASHEN.charcoal))),
+            Line::from(Span::styled(
+                "  No MCP servers configured",
+                Style::default().fg(ASHEN.deep_ash),
+            )),
+            Line::from(Span::styled(
+                "  Create ~/.lean/mcp.json or .lean/mcp.json",
+                Style::default().fg(ASHEN.charcoal),
+            )),
+            Line::from(Span::styled(
+                "  See mcp.json.example for format",
+                Style::default().fg(ASHEN.charcoal),
+            )),
         ]);
         f.render_widget(para, inner);
         return;
@@ -2358,10 +3346,19 @@ fn draw_mcp(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
     for (i, srv) in servers[start..end].iter().enumerate() {
         let idx = start + i;
         let sel = idx == selected;
-        let style = if sel { Style::default().fg(ASHEN.bone).add_modifier(Modifier::BOLD).bg(ASHEN.stone) } else { Style::default().fg(ASHEN.smoke) };
+        let style = if sel {
+            Style::default()
+                .fg(ASHEN.bone)
+                .add_modifier(Modifier::BOLD)
+                .bg(ASHEN.stone)
+        } else {
+            Style::default().fg(ASHEN.smoke)
+        };
         let (status_str, status_style) = match srv.status {
             crate::mcp::ServerStatus::Connected => ("connected", Style::default().fg(ASHEN.moss)),
-            crate::mcp::ServerStatus::Connecting => ("connecting", Style::default().fg(ASHEN.frost)),
+            crate::mcp::ServerStatus::Connecting => {
+                ("connecting", Style::default().fg(ASHEN.frost))
+            }
             crate::mcp::ServerStatus::Error(_) => ("error", Style::default().fg(ASHEN.ember)),
             crate::mcp::ServerStatus::Disabled => ("disabled", Style::default().fg(ASHEN.charcoal)),
         };
@@ -2369,7 +3366,10 @@ fn draw_mcp(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
         let header = Line::from(vec![
             Span::styled(format!("  {} ", srv.name), style),
             Span::styled(format!("[{}] ", status_str), status_style),
-            Span::styled(format!("{} tools", tool_cnt), Style::default().fg(ASHEN.charcoal)),
+            Span::styled(
+                format!("{} tools", tool_cnt),
+                Style::default().fg(ASHEN.charcoal),
+            ),
         ]);
         lines.push(header);
         // detail line — truncated to inner width to avoid wrapping/bleed, especially for <10 cols
@@ -2380,7 +3380,14 @@ fn draw_mcp(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
         } else if srv.status.as_str() == "connected" && tool_cnt > 0 {
             let preview: Vec<String> = srv.tools.iter().take(3).map(|t| t.name.clone()).collect();
             let mut txt = preview.join(", ");
-            if txt.chars().count() > detail_max { txt = format!("{}…", txt.chars().take(detail_max.saturating_sub(1)).collect::<String>()); }
+            if txt.chars().count() > detail_max {
+                txt = format!(
+                    "{}…",
+                    txt.chars()
+                        .take(detail_max.saturating_sub(1))
+                        .collect::<String>()
+                );
+            }
             Span::styled(format!("    {}", txt), Style::default().fg(ASHEN.deep_ash))
         } else if let Some(url) = &srv.config.url {
             let t = url.chars().take(detail_max).collect::<String>();
@@ -2403,15 +3410,28 @@ fn draw_allowlist(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
     let bash_list = crate::bash_guard::allowlist_list();
     let dir_list = crate::dir_guard::allowlist_list();
     let mut combined: Vec<(String, String)> = Vec::new(); // (kind, pat)
-    for p in bash_list { combined.push(("bash".into(), p)); }
-    for p in dir_list { combined.push(("dir".into(), p)); }
-    combined.sort_by(|a,b| a.1.cmp(&b.1));
+    for p in bash_list {
+        combined.push(("bash".into(), p));
+    }
+    for p in dir_list {
+        combined.push(("dir".into(), p));
+    }
+    combined.sort_by(|a, b| a.1.cmp(&b.1));
     let width = (area.width.saturating_sub(4)).min(80);
     let height = (16.min(combined.len() + 7) as u16).min(area.height.saturating_sub(4));
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
-    let rect = Rect { x, y, width, height };
-    let title = format!(" Allowlist (bash:{}, dir:{}) — Enter keep, d delete, c clear all, Esc close ", crate::bash_guard::allowlist_list().len(), crate::dir_guard::allowlist_list().len());
+    let rect = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+    let title = format!(
+        " Allowlist (bash:{}, dir:{}) — Enter keep, d delete, c clear all, Esc close ",
+        crate::bash_guard::allowlist_list().len(),
+        crate::dir_guard::allowlist_list().len()
+    );
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -2422,8 +3442,14 @@ fn draw_allowlist(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
     f.render_widget(block, rect);
     if combined.is_empty() {
         let para = Paragraph::new(vec![
-            Line::from(Span::styled("  No allowlisted patterns", Style::default().fg(ASHEN.deep_ash))),
-            Line::from(Span::styled("  Approve a bash/dir command with 'A' to add", Style::default().fg(ASHEN.charcoal))),
+            Line::from(Span::styled(
+                "  No allowlisted patterns",
+                Style::default().fg(ASHEN.deep_ash),
+            )),
+            Line::from(Span::styled(
+                "  Approve a bash/dir command with 'A' to add",
+                Style::default().fg(ASHEN.charcoal),
+            )),
         ]);
         f.render_widget(para, inner);
         return;
@@ -2431,20 +3457,34 @@ fn draw_allowlist(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
     let visible_h = inner.height as usize;
     let start = scroll.min(combined.len().saturating_sub(1));
     let end = (start + visible_h).min(combined.len());
-    let items: Vec<Line> = combined[start..end].iter().enumerate().map(|(i, (kind, pat))| {
-        let idx = start + i;
-        let sel = idx == selected;
-        let style = if sel { Style::default().fg(ASHEN.bone).add_modifier(Modifier::BOLD).bg(ASHEN.stone) } else { Style::default().fg(ASHEN.smoke) };
-        let kind_style = if kind == "dir" { Style::default().fg(ASHEN.frost) } else { Style::default().fg(ASHEN.moss) };
-        Line::from(vec![
-            Span::styled(format!("  [{}] ", kind), kind_style),
-            Span::styled(pat.clone(), style),
-        ])
-    }).collect();
+    let items: Vec<Line> = combined[start..end]
+        .iter()
+        .enumerate()
+        .map(|(i, (kind, pat))| {
+            let idx = start + i;
+            let sel = idx == selected;
+            let style = if sel {
+                Style::default()
+                    .fg(ASHEN.bone)
+                    .add_modifier(Modifier::BOLD)
+                    .bg(ASHEN.stone)
+            } else {
+                Style::default().fg(ASHEN.smoke)
+            };
+            let kind_style = if kind == "dir" {
+                Style::default().fg(ASHEN.frost)
+            } else {
+                Style::default().fg(ASHEN.moss)
+            };
+            Line::from(vec![
+                Span::styled(format!("  [{}] ", kind), kind_style),
+                Span::styled(pat.clone(), style),
+            ])
+        })
+        .collect();
     let para = Paragraph::new(items);
     f.render_widget(para, inner);
 }
-
 
 /// Spawn the agent task, always sending a done signal on completion (including panics).
 fn spawn_agent(
@@ -2491,10 +3531,15 @@ fn history_from_messages(msgs: &[Msg]) -> Vec<serde_json::Value> {
     }).collect()
 }
 
-fn llm_history_for_spawn(session: &Option<crate::session::Session>, msgs: &[Msg]) -> Vec<serde_json::Value> {
+fn llm_history_for_spawn(
+    session: &Option<crate::session::Session>,
+    msgs: &[Msg],
+) -> Vec<serde_json::Value> {
     if let Some(sess) = session {
         if let Some(ref hist) = sess.llm_history {
-            if !hist.is_empty() { return hist.clone(); }
+            if !hist.is_empty() {
+                return hist.clone();
+            }
         }
     }
     history_from_messages(msgs)
@@ -2517,19 +3562,48 @@ async fn app_loop(
         let found = list.into_iter().find(|sess| sess.id.starts_with(rid));
         match found {
             Some(sess) => {
-                messages = sess.messages.iter().map(|m| Msg { role: m.role.clone(), content: m.content.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None}).collect();
+                messages = sess
+                    .messages
+                    .iter()
+                    .map(|m| Msg {
+                        role: m.role.clone(),
+                        content: m.content.clone(),
+                        tool_id: None,
+                        tool_name: None,
+                        tool_args: None,
+                        elapsed_ms: None,
+                    })
+                    .collect();
                 Some(sess)
             }
             None => {
                 // not found, start new but warn
-                let m = Msg { role: "system".into(), content: format!("[session {} not found, started new]", rid), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None};
+                let m = Msg {
+                    role: "system".into(),
+                    content: format!("[session {} not found, started new]", rid),
+                    tool_id: None,
+                    tool_name: None,
+                    tool_args: None,
+                    elapsed_ms: None,
+                };
                 messages.push(m);
                 Some(crate::session::Session::new(&model))
             }
         }
     } else if opts.continue_session {
         if let Some(sess) = crate::session::Session::latest() {
-            messages = sess.messages.iter().map(|m| Msg { role: m.role.clone(), content: m.content.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None}).collect();
+            messages = sess
+                .messages
+                .iter()
+                .map(|m| Msg {
+                    role: m.role.clone(),
+                    content: m.content.clone(),
+                    tool_id: None,
+                    tool_name: None,
+                    tool_args: None,
+                    elapsed_ms: None,
+                })
+                .collect();
             Some(sess)
         } else {
             Some(crate::session::Session::new(&model))
@@ -2542,7 +3616,16 @@ async fn app_loop(
         if crate::models::resolve(Some(&sess.model)).is_err() {
             messages.push(Msg {
                 role: "system".into(),
-                content: format!("[warn: session model '{}' not in {} — use /model to switch]", sess.model, crate::models::path_display()), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                content: format!(
+                    "[warn: session model '{}' not in {} — use /model to switch]",
+                    sess.model,
+                    crate::models::path_display()
+                ),
+                tool_id: None,
+                tool_name: None,
+                tool_args: None,
+                elapsed_ms: None,
+            });
         }
     }
 
@@ -2550,8 +3633,16 @@ async fn app_loop(
     let persist = |msgs: &Vec<Msg>, sess: &mut Option<crate::session::Session>, cur_model: &str| {
         if let Some(s) = sess {
             s.model = cur_model.to_string();
-            s.cwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
-            s.messages = msgs.iter().map(|m| crate::session::SavedMsg { role: m.role.clone(), content: m.content.clone() }).collect();
+            s.cwd = std::env::current_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            s.messages = msgs
+                .iter()
+                .map(|m| crate::session::SavedMsg {
+                    role: m.role.clone(),
+                    content: m.content.clone(),
+                })
+                .collect();
             let _ = s.save();
             crate::session::Session::prune(50);
         }
@@ -2624,8 +3715,23 @@ async fn app_loop(
     let mut subagent_detail_viewport_h: usize = 0;
     let mut subagent_list_auto_scroll = true;
     let mut subagent_kill_confirm = false;
+    // ── Dictate (voice) state ──────────────────────────────────
+    let mut dictate_state = crate::dictate::State::Idle;
+    let mut dictate_chunks: Vec<Vec<u8>> = Vec::new();
+    let mut dictate_child: Option<tokio::process::Child> = None;
+    let mut dictate_meter: [f32; 6] = [0.0; 6];
+    let mut dictate_current_level: f32 = 0.0;
+    let mut dictate_generation: u64 = 0;
+    let mut dictate_task: Option<tokio::task::JoinHandle<()>> = None;
+    let (dictate_audio_tx, mut dictate_audio_rx) =
+        tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let (dictate_result_tx, mut dictate_result_rx) =
+        tokio::sync::mpsc::unbounded_channel::<Result<String, String>>();
+    let mut dictate_meter_last = std::time::Instant::now();
     // Eager MCP init (background)
-    tokio::spawn(async move { crate::mcp::init().await; });
+    tokio::spawn(async move {
+        crate::mcp::init().await;
+    });
 
     // Redraw only when something changed; the spinner forces redraws while busy.
     let mut dirty = true;
@@ -2634,7 +3740,12 @@ async fn app_loop(
     let mut cached_total_lines: usize = 0;
     let mut cached_content_height: usize = 0;
     let mut cached_chunks: Vec<Rect> = Vec::new();
-    let mut cached_content_area: Rect = Rect { x: 0, y: 3, width: 80, height: 10 };
+    let mut cached_content_area: Rect = Rect {
+        x: 0,
+        y: 3,
+        width: 80,
+        height: 10,
+    };
     let mut cached_term_size_width: u16 = 0;
     let mut cached_content_fingerprint: usize = 0; // sum of content lens + msg count
     let mut last_persist_fingerprint: usize = 0;
@@ -2659,16 +3770,153 @@ async fn app_loop(
         let wakes = crate::agents::take_wake_messages();
         if !wakes.is_empty() {
             for w in wakes {
-                messages.push(Msg { role: "system".into(), content: w, tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None });
+                messages.push(Msg {
+                    role: "system".into(),
+                    content: w,
+                    tool_id: None,
+                    tool_name: None,
+                    tool_args: None,
+                    elapsed_ms: None,
+                });
             }
             dirty = true;
+        }
+        // ── Dictate: drain audio chunks + update meter ─────────
+        while let Ok(chunk) = dictate_audio_rx.try_recv() {
+            let lvl = crate::dictate::rms_from_pcm16(&chunk);
+            dictate_current_level = lvl;
+            dictate_chunks.push(chunk);
+        }
+        // meter tick every 60ms while recording
+        if dictate_state == crate::dictate::State::Recording
+            && dictate_meter_last.elapsed().as_millis() >= 60
+        {
+            dictate_meter_last = std::time::Instant::now();
+            // shift left and push current level
+            for i in 0..dictate_meter.len() - 1 {
+                dictate_meter[i] = dictate_meter[i + 1];
+            }
+            dictate_meter[dictate_meter.len() - 1] = dictate_current_level;
+            dirty = true;
+        }
+        // drain dictate results (transcription done)
+        while let Ok(res) = dictate_result_rx.try_recv() {
+            let gen_at_result = dictate_generation;
+            match res {
+                Ok(text) => {
+                    let trimmed = text.trim().to_string();
+                    if !trimmed.is_empty() {
+                        // Focus-aware delivery: if question wizard on Other -> push into wizard, else textarea, else clipboard
+                        if let Some(wizard) = question_wizard.as_mut() {
+                            if wizard.on_other() {
+                                for c in trimmed.chars() {
+                                    wizard.push_char(c);
+                                }
+                                // also keep a space separator if needed
+                            } else {
+                                // wizard not on Other: try textarea as fallback, else notify
+                                let cur = textarea.lines().join("\n");
+                                let sep = if cur.is_empty()
+                                    || cur.ends_with(' ')
+                                    || cur.ends_with('\n')
+                                {
+                                    ""
+                                } else {
+                                    " "
+                                };
+                                textarea.insert_str(format!("{}{}", sep, trimmed));
+                                if !wizard.on_other() {
+                                    messages.push(Msg { role: "system".into(), content: "Dictation: wizard not on Other field — also inserted into main input (Tab into Other first for direct entry)".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None });
+                                }
+                            }
+                        } else {
+                            let cur = textarea.lines().join("\n");
+                            let sep = if cur.is_empty() || cur.ends_with(' ') || cur.ends_with('\n')
+                            {
+                                ""
+                            } else {
+                                " "
+                            };
+                            textarea.insert_str(format!("{}{}", sep, trimmed));
+                        }
+                    }
+                    // always reset to idle after delivery
+                    dictate_state = crate::dictate::State::Idle;
+                    dictate_chunks.clear();
+                    dictate_current_level = 0.0;
+                    dictate_meter = [0.0; 6];
+                    dirty = true;
+                }
+                Err(e) => {
+                    messages.push(Msg {
+                        role: "system".into(),
+                        content: format!("Dictation failed: {}", e),
+                        tool_id: None,
+                        tool_name: None,
+                        tool_args: None,
+                        elapsed_ms: None,
+                    });
+                    dictate_state = crate::dictate::State::Idle;
+                    dictate_chunks.clear();
+                    dictate_current_level = 0.0;
+                    dictate_meter = [0.0; 6];
+                    dirty = true;
+                    // generation already incremented on cleanup logic above; no extra
+                    let _ = gen_at_result;
+                }
+            }
+        }
+        // Check if ffmpeg child exited unexpectedly while recording
+        if dictate_state == crate::dictate::State::Recording {
+            if let Some(child) = dictate_child.as_mut() {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        if !status.success() {
+                            messages.push(Msg {
+                                role: "system".into(),
+                                content: format!(
+                                    "Dictation: ffmpeg exited unexpectedly (status {:?})",
+                                    status
+                                ),
+                                tool_id: None,
+                                tool_name: None,
+                                tool_args: None,
+                                elapsed_ms: None,
+                            });
+                        }
+                        // cleanup handles dictate reset; keep chunks for transcribe if any
+                        if dictate_chunks.is_empty() {
+                            dictate_state = crate::dictate::State::Idle;
+                            dictate_child = None;
+                            dictate_task = None;
+                            dictate_generation += 1;
+                        } else {
+                            // treat as stop -> transcribe what we have
+                            dictate_state = crate::dictate::State::Transcribing;
+                            let wav = crate::dictate::build_wav(&dictate_chunks);
+                            let tx = dictate_result_tx.clone();
+                            let gen = dictate_generation;
+                            tokio::spawn(async move {
+                                let res = crate::dictate::transcribe_with_groq(wav).await;
+                                let _ = tx.send(res);
+                                let _ = gen;
+                            });
+                            dictate_child = None;
+                            dictate_task = None;
+                        }
+                        dirty = true;
+                    }
+                    Ok(None) => {}
+                    Err(_) => {}
+                }
+            }
         }
         let term_size = terminal.size()?;
         let queue_rows = msg_queue.len().min(2) as u16;
         // Dynamic input height 1..6 (auto-grow like pi/jcode, clamped)
         let input_height = (textarea.lines().len() as u16).clamp(1, 6);
         let overhead = 7 + queue_rows + input_height; // indicator(1) + header + sep + sep + queue + summary(1) + input + footer(2 rows)
-                                       // Content area: starts after indicator + header + sep
+                                                      // Content area: starts after indicator + header + sep
         let content_area = Rect {
             x: 0,
             y: 3,
@@ -2681,15 +3929,15 @@ async fn app_loop(
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(1),              // running indicator (top, touches borders, always reserved)
-                    Constraint::Length(1),              // header
-                    Constraint::Length(1),              // separator
-                    Constraint::Min(1),                 // content
-                    Constraint::Length(1),              // separator
-                    Constraint::Length(queue_rows),     // queue (0-2)
-                    Constraint::Length(1),              // subagent summary bar (always reserved, empty when none)
-                    Constraint::Length(input_height),   // input (auto-grow 1..5)
-                    Constraint::Length(2),              // footer (2 rows: main + context)
+                    Constraint::Length(1), // running indicator (top, touches borders, always reserved)
+                    Constraint::Length(1), // header
+                    Constraint::Length(1), // separator
+                    Constraint::Min(1),    // content
+                    Constraint::Length(1), // separator
+                    Constraint::Length(queue_rows), // queue (0-2)
+                    Constraint::Length(1), // subagent summary bar (always reserved, empty when none)
+                    Constraint::Length(input_height), // input (auto-grow 1..5)
+                    Constraint::Length(2), // footer (2 rows: main + context)
                 ])
                 .split(Rect {
                     x: 0,
@@ -2702,7 +3950,9 @@ async fn app_loop(
         let content_height = chunks[3].height as usize;
 
         // Only rebuild wrapped content when dirty and fingerprint/size changed; reuse cached otherwise
-        let fingerprint: usize = messages.len().wrapping_add(messages.iter().map(|m| m.content.len()).sum::<usize>());
+        let fingerprint: usize = messages
+            .len()
+            .wrapping_add(messages.iter().map(|m| m.content.len()).sum::<usize>());
         let needs_rebuild = dirty
             && (cached_wrapped_content.is_empty()
                 || fingerprint != cached_content_fingerprint
@@ -2742,7 +3992,9 @@ async fn app_loop(
                     } else {
                         // clamp if content shrank
                         let max = total.saturating_sub(inner_h) as u16;
-                        if subagent_detail_scroll > max { subagent_detail_scroll = max; }
+                        if subagent_detail_scroll > max {
+                            subagent_detail_scroll = max;
+                        }
                     }
                 }
             }
@@ -2776,7 +4028,13 @@ async fn app_loop(
                 f.render_widget(para, chunks[3]);
                 // Scrollbar overlay — thin, read-only, only while not at bottom (A + #2), thumb encodes % (no footer text)
                 if cached_total_lines > cached_content_height && !auto_scroll {
-                    draw_scrollbar(f, chunks[3], cached_total_lines, cached_content_height, scroll);
+                    draw_scrollbar(
+                        f,
+                        chunks[3],
+                        cached_total_lines,
+                        cached_content_height,
+                        scroll,
+                    );
                 }
 
                 // Separator
@@ -2807,7 +4065,15 @@ async fn app_loop(
                     }
                 }
                 if show_sessions {
-                    draw_sessions(f, f.area(), sessions_selected, sessions_scroll, &sessions_filter, sessions_show_all, &cwd);
+                    draw_sessions(
+                        f,
+                        f.area(),
+                        sessions_selected,
+                        sessions_scroll,
+                        &sessions_filter,
+                        sessions_show_all,
+                        &cwd,
+                    );
                 }
                 if show_allowlist {
                     draw_allowlist(f, f.area(), allowlist_selected, allowlist_scroll);
@@ -2821,11 +4087,22 @@ async fn app_loop(
                         if subagent_kill_confirm {
                             let area = centered_rect(50, 20, f.area());
                             f.render_widget(Clear, area);
-                            let block = Block::default().borders(Borders::ALL).title(" Confirm Kill ").border_style(Style::default().fg(ASHEN.ember));
+                            let block = Block::default()
+                                .borders(Borders::ALL)
+                                .title(" Confirm Kill ")
+                                .border_style(Style::default().fg(ASHEN.ember));
                             let para = Paragraph::new(vec![
-                                Line::from(Span::styled("Kill this subagent? (y/n)", Style::default().fg(ASHEN.bone).add_modifier(Modifier::BOLD))),
-                                Line::from(Span::styled("This will mark it as killed (no process kill yet).", Style::default().fg(ASHEN.charcoal))),
-                            ]).block(block).style(Style::default().bg(THEME.page_bg));
+                                Line::from(Span::styled(
+                                    "Kill this subagent? (y/n)",
+                                    Style::default().fg(ASHEN.bone).add_modifier(Modifier::BOLD),
+                                )),
+                                Line::from(Span::styled(
+                                    "This will mark it as killed (no process kill yet).",
+                                    Style::default().fg(ASHEN.charcoal),
+                                )),
+                            ])
+                            .block(block)
+                            .style(Style::default().bg(THEME.page_bg));
                             f.render_widget(para, area);
                         }
                     } else {
@@ -2833,7 +4110,7 @@ async fn app_loop(
                     }
                 }
 
-                // Footer (2 rows)
+                // Footer (2 rows) — includes dictate meter/spinner (shifts bar as requested)
                 draw_footer(
                     f,
                     chunks[8],
@@ -2842,14 +4119,24 @@ async fn app_loop(
                     &cwd,
                     agent_busy,
                     spinner_tick,
+                    dictate_state,
+                    &dictate_meter,
                 );
             })?;
             dirty = false;
         }
 
         // Handle keyboard and mouse events
-        // Poll fast while the spinner is animating (10fps), slower when idle (4fps) — saves ~75% CPU idle
-        let poll_ms = if agent_busy { 100 } else { 250 };
+        // Poll faster while dictate is active (60ms for meter, 80ms for transcribing spinner), else 10fps when busy, 4fps idle
+        let poll_ms = if dictate_state == crate::dictate::State::Recording {
+            60
+        } else if dictate_state == crate::dictate::State::Transcribing {
+            80
+        } else if agent_busy {
+            100
+        } else {
+            250
+        };
         if event::poll(std::time::Duration::from_millis(poll_ms))? {
             let term_event = event::read()?;
             dirty = true;
@@ -2868,27 +4155,37 @@ async fn app_loop(
                         match m.kind {
                             MouseEventKind::ScrollUp => {
                                 if let Some(_) = subagent_detail {
-                                    subagent_detail_scroll = subagent_detail_scroll.saturating_sub(3);
+                                    subagent_detail_scroll =
+                                        subagent_detail_scroll.saturating_sub(3);
                                     subagent_detail_auto_scroll = false;
                                 } else {
                                     // list: scroll by 1 row (7 lines per card)
-                                    if subagent_scroll > 0 { subagent_scroll = subagent_scroll.saturating_sub(1); }
+                                    if subagent_scroll > 0 {
+                                        subagent_scroll = subagent_scroll.saturating_sub(1);
+                                    }
                                     subagent_list_auto_scroll = false;
                                 }
-                            },
+                            }
                             MouseEventKind::ScrollDown => {
                                 if let Some(_) = subagent_detail {
-                                    let max = subagent_detail_total.saturating_sub(subagent_detail_viewport_h) as u16;
+                                    let max = subagent_detail_total
+                                        .saturating_sub(subagent_detail_viewport_h)
+                                        as u16;
                                     subagent_detail_scroll = (subagent_detail_scroll + 3).min(max);
-                                    if subagent_detail_scroll >= max { subagent_detail_auto_scroll = true; }
+                                    if subagent_detail_scroll >= max {
+                                        subagent_detail_auto_scroll = true;
+                                    }
                                 } else {
                                     let total = crate::agents::list_subagents().len();
-                                    let vis_rows = (cached_content_height / 7).max(1).min(total.max(1));
+                                    let vis_rows =
+                                        (cached_content_height / 7).max(1).min(total.max(1));
                                     let max = total.saturating_sub(vis_rows);
                                     subagent_scroll = (subagent_scroll + 1).min(max);
-                                    if subagent_scroll >= max { subagent_list_auto_scroll = true; }
+                                    if subagent_scroll >= max {
+                                        subagent_list_auto_scroll = true;
+                                    }
                                 }
-                            },
+                            }
                             _ => {}
                         }
                         continue;
@@ -2913,6 +4210,148 @@ async fn app_loop(
                     }
                 }
                 Event::Key(k) => {
+                    // Global dictate hotkeys: Alt+M toggle, Alt+N cancel — before any modal hijack so they work inside dialogs
+                    // Filter Kitty release/repeat for dictate only — one physical press = one toggle (PI parity)
+                    let is_alt_m =
+                        k.code == KeyCode::Char('m') && k.modifiers.contains(KeyModifiers::ALT);
+                    let is_alt_n =
+                        k.code == KeyCode::Char('n') && k.modifiers.contains(KeyModifiers::ALT);
+                    if (is_alt_m || is_alt_n) && k.kind != KeyEventKind::Press {
+                        continue;
+                    }
+                    if is_alt_m {
+                        // Alt+M toggle
+                        match dictate_state {
+                            crate::dictate::State::Idle => {
+                                // Start guard: GROQ key required
+                                if std::env::var("GROQ_API_KEY")
+                                    .unwrap_or_default()
+                                    .trim()
+                                    .is_empty()
+                                {
+                                    messages.push(Msg { role: "system".into(), content: "Dictation: GROQ_API_KEY not set in environment — add to .env or export".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None });
+                                } else {
+                                    match crate::dictate::spawn_ffmpeg() {
+                                        Ok(mut child) => {
+                                            dictate_generation = dictate_generation.wrapping_add(1);
+                                            let gen = dictate_generation;
+                                            dictate_chunks.clear();
+                                            dictate_meter = [0.0; 6];
+                                            dictate_current_level = 0.0;
+                                            dictate_meter_last = std::time::Instant::now();
+                                            dictate_state = crate::dictate::State::Recording;
+                                            // Spawn reader task for stdout
+                                            if let Some(stdout) = child.stdout.take() {
+                                                dictate_child = Some(child);
+                                                let tx = dictate_audio_tx.clone();
+                                                let err_tx = dictate_audio_tx.clone(); // not used but keep gen
+                                                let _ = err_tx; // silence unused
+                                                let _ = gen;
+                                                dictate_task = Some(tokio::spawn(async move {
+                                                    use tokio::io::AsyncReadExt;
+                                                    let mut reader = stdout;
+                                                    let mut buf = [0u8; 4096];
+                                                    loop {
+                                                        match reader.read(&mut buf).await {
+                                                            Ok(0) => break,
+                                                            Ok(n) => {
+                                                                let chunk = buf[..n].to_vec();
+                                                                if tx.send(chunk).is_err() {
+                                                                    break;
+                                                                }
+                                                            }
+                                                            Err(_) => break,
+                                                        }
+                                                    }
+                                                }));
+                                            } else {
+                                                dictate_child = Some(child);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            messages.push(Msg {
+                                                role: "system".into(),
+                                                content: format!("Dictation: {}", e),
+                                                tool_id: None,
+                                                tool_name: None,
+                                                tool_args: None,
+                                                elapsed_ms: None,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            crate::dictate::State::Recording => {
+                                // Stop -> transcribe
+                                dictate_generation = dictate_generation.wrapping_add(1);
+                                dictate_state = crate::dictate::State::Transcribing;
+                                // Kill ffmpeg
+                                if let Some(mut child) = dictate_child.take() {
+                                    let _ = child.kill().await;
+                                    let _ = child.wait().await;
+                                }
+                                if let Some(t) = dictate_task.take() {
+                                    t.abort();
+                                }
+                                // Drain any pending audio still in channel before building wav
+                                while let Ok(chunk) = dictate_audio_rx.try_recv() {
+                                    dictate_chunks.push(chunk);
+                                }
+                                if dictate_chunks.is_empty() {
+                                    messages.push(Msg {
+                                        role: "system".into(),
+                                        content: "Dictation: no audio captured".into(),
+                                        tool_id: None,
+                                        tool_name: None,
+                                        tool_args: None,
+                                        elapsed_ms: None,
+                                    });
+                                    dictate_state = crate::dictate::State::Idle;
+                                } else {
+                                    let wav = crate::dictate::build_wav(&dictate_chunks);
+                                    let tx = dictate_result_tx.clone();
+                                    tokio::spawn(async move {
+                                        let res = crate::dictate::transcribe_with_groq(wav).await;
+                                        let _ = tx.send(res);
+                                    });
+                                }
+                            }
+                            crate::dictate::State::Transcribing => {
+                                // Ignore Alt+M while transcribing
+                            }
+                        }
+                        dirty = true;
+                        continue;
+                    }
+                    if is_alt_n {
+                        // Alt+N cancel
+                        if dictate_state != crate::dictate::State::Idle {
+                            dictate_generation = dictate_generation.wrapping_add(1);
+                            if let Some(mut child) = dictate_child.take() {
+                                let _ = child.kill().await;
+                            }
+                            if let Some(t) = dictate_task.take() {
+                                t.abort();
+                            }
+                            dictate_chunks.clear();
+                            dictate_meter = [0.0; 6];
+                            dictate_current_level = 0.0;
+                            dictate_state = crate::dictate::State::Idle;
+                            // drain channels
+                            while dictate_audio_rx.try_recv().is_ok() {}
+                            while dictate_result_rx.try_recv().is_ok() {}
+                            messages.push(Msg {
+                                role: "system".into(),
+                                content: "Dictation cancelled".into(),
+                                tool_id: None,
+                                tool_name: None,
+                                tool_args: None,
+                                elapsed_ms: None,
+                            });
+                            dirty = true;
+                        }
+                        continue;
+                    }
                     // Global mode cycle: Shift+Tab circles NORM → PLAN → ASK → AUTO → NORM — must be before any modal hijack, wins over wizard BackTab
                     let is_shift_tab = k.code == KeyCode::BackTab
                         || (k.code == KeyCode::Tab && k.modifiers.contains(KeyModifiers::SHIFT));
@@ -2922,22 +4361,26 @@ async fn app_loop(
                             crate::agent::Mode::Auto => {
                                 // AUTO takes effect immediately: drain pending approvals
                                 if let Some(mut req) = pending_approval.take() {
-                                    if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
+                                    if let Some(tx) = req.tx.take() {
+                                        let _ = tx.send(true);
+                                    }
                                 }
                                 while let Some(mut req) = crate::approval::take_pending() {
-                                    if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
+                                    if let Some(tx) = req.tx.take() {
+                                        let _ = tx.send(true);
+                                    }
                                 }
                                 crate::telemetry::record("mode_auto");
-                            },
+                            }
                             crate::agent::Mode::Plan => {
                                 crate::telemetry::record("mode_plan");
-                            },
+                            }
                             crate::agent::Mode::Ask => {
                                 crate::telemetry::record("mode_ask");
-                            },
+                            }
                             crate::agent::Mode::Norm => {
                                 crate::telemetry::record("mode_norm");
-                            },
+                            }
                         }
                         continue;
                     }
@@ -2953,53 +4396,65 @@ async fn app_loop(
                                         }
                                     }
                                     subagent_kill_confirm = false;
-                                },
+                                }
                                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                                     subagent_kill_confirm = false;
-                                },
+                                }
                                 _ => {}
                             }
                             continue;
                         }
                         if let Some(idx) = subagent_detail {
-                            let max = subagent_detail_total.saturating_sub(subagent_detail_viewport_h) as u16;
+                            let max = subagent_detail_total
+                                .saturating_sub(subagent_detail_viewport_h)
+                                as u16;
                             match k.code {
                                 KeyCode::Esc => {
                                     // back to list, not close entirely
                                     subagent_detail = None;
                                     subagent_detail_scroll = 0;
                                     subagent_detail_auto_scroll = true;
-                                },
+                                }
                                 KeyCode::Char('K') if k.modifiers.contains(KeyModifiers::SHIFT) => {
                                     subagent_kill_confirm = true;
-                                },
+                                }
                                 KeyCode::Char('k') if k.modifiers.contains(KeyModifiers::SHIFT) => {
                                     subagent_kill_confirm = true;
-                                },
+                                }
                                 KeyCode::Up | KeyCode::Char('k') => {
-                                    subagent_detail_scroll = subagent_detail_scroll.saturating_sub(1);
+                                    subagent_detail_scroll =
+                                        subagent_detail_scroll.saturating_sub(1);
                                     subagent_detail_auto_scroll = false;
-                                },
+                                }
                                 KeyCode::Down | KeyCode::Char('j') => {
                                     subagent_detail_scroll = (subagent_detail_scroll + 1).min(max);
-                                    if subagent_detail_scroll >= max { subagent_detail_auto_scroll = true; } else { subagent_detail_auto_scroll = false; }
-                                },
+                                    if subagent_detail_scroll >= max {
+                                        subagent_detail_auto_scroll = true;
+                                    } else {
+                                        subagent_detail_auto_scroll = false;
+                                    }
+                                }
                                 KeyCode::PageUp => {
-                                    subagent_detail_scroll = subagent_detail_scroll.saturating_sub(10);
+                                    subagent_detail_scroll =
+                                        subagent_detail_scroll.saturating_sub(10);
                                     subagent_detail_auto_scroll = false;
-                                },
+                                }
                                 KeyCode::PageDown => {
                                     subagent_detail_scroll = (subagent_detail_scroll + 10).min(max);
-                                    if subagent_detail_scroll >= max { subagent_detail_auto_scroll = true; } else { subagent_detail_auto_scroll = false; }
-                                },
+                                    if subagent_detail_scroll >= max {
+                                        subagent_detail_auto_scroll = true;
+                                    } else {
+                                        subagent_detail_auto_scroll = false;
+                                    }
+                                }
                                 KeyCode::Home => {
                                     subagent_detail_scroll = 0;
                                     subagent_detail_auto_scroll = false;
-                                },
+                                }
                                 KeyCode::End => {
                                     subagent_detail_scroll = max;
                                     subagent_detail_auto_scroll = true;
-                                },
+                                }
                                 _ => {}
                             }
                             continue;
@@ -3010,54 +4465,73 @@ async fn app_loop(
                                 show_subagents = false;
                                 subagent_detail = None;
                                 subagent_list_auto_scroll = true;
-                            },
+                            }
                             KeyCode::Up => {
-                                if subagent_selected > 0 { subagent_selected -= 1; if subagent_selected < subagent_scroll { subagent_scroll = subagent_selected; } }
+                                if subagent_selected > 0 {
+                                    subagent_selected -= 1;
+                                    if subagent_selected < subagent_scroll {
+                                        subagent_scroll = subagent_selected;
+                                    }
+                                }
                                 subagent_list_auto_scroll = false;
-                            },
+                            }
                             KeyCode::Down => {
                                 let len = crate::agents::list_subagents().len();
-                                if subagent_selected + 1 < len { subagent_selected += 1; if subagent_selected >= subagent_scroll + 8 { subagent_scroll += 1; } }
+                                if subagent_selected + 1 < len {
+                                    subagent_selected += 1;
+                                    if subagent_selected >= subagent_scroll + 8 {
+                                        subagent_scroll += 1;
+                                    }
+                                }
                                 let total = crate::agents::list_subagents().len();
                                 let vis = 8usize;
                                 let max = total.saturating_sub(vis);
-                                if subagent_scroll >= max { subagent_list_auto_scroll = true; } else { subagent_list_auto_scroll = false; }
-                            },
+                                if subagent_scroll >= max {
+                                    subagent_list_auto_scroll = true;
+                                } else {
+                                    subagent_list_auto_scroll = false;
+                                }
+                            }
                             KeyCode::PageUp => {
                                 let step = 8usize;
                                 subagent_selected = subagent_selected.saturating_sub(step);
                                 subagent_scroll = subagent_scroll.saturating_sub(step);
                                 subagent_list_auto_scroll = false;
-                            },
+                            }
                             KeyCode::PageDown => {
                                 let step = 8usize;
                                 let len = crate::agents::list_subagents().len();
-                                subagent_selected = (subagent_selected + step).min(len.saturating_sub(1));
+                                subagent_selected =
+                                    (subagent_selected + step).min(len.saturating_sub(1));
                                 let total = len;
                                 let vis = 8usize;
                                 let max = total.saturating_sub(vis);
                                 subagent_scroll = (subagent_scroll + step).min(max);
-                                if subagent_scroll >= max { subagent_list_auto_scroll = true; }
-                            },
+                                if subagent_scroll >= max {
+                                    subagent_list_auto_scroll = true;
+                                }
+                            }
                             KeyCode::Home => {
                                 subagent_selected = 0;
                                 subagent_scroll = 0;
                                 subagent_list_auto_scroll = false;
-                            },
+                            }
                             KeyCode::End => {
                                 let len = crate::agents::list_subagents().len();
-                                if len > 0 { subagent_selected = len - 1; }
+                                if len > 0 {
+                                    subagent_selected = len - 1;
+                                }
                                 let total = len;
                                 let vis = 8usize;
                                 let max = total.saturating_sub(vis);
                                 subagent_scroll = max;
                                 subagent_list_auto_scroll = true;
-                            },
+                            }
                             KeyCode::Enter => {
                                 subagent_detail = Some(subagent_selected);
                                 subagent_detail_scroll = 0;
                                 subagent_detail_auto_scroll = true;
-                            },
+                            }
                             _ => {}
                         }
                         continue;
@@ -3075,7 +4549,9 @@ async fn app_loop(
                             KeyCode::Up => {
                                 if allowlist_selected > 0 {
                                     allowlist_selected -= 1;
-                                    if allowlist_selected < allowlist_scroll { allowlist_scroll = allowlist_selected; }
+                                    if allowlist_selected < allowlist_scroll {
+                                        allowlist_scroll = allowlist_selected;
+                                    }
                                 }
                             }
                             KeyCode::Down => {
@@ -3084,7 +4560,9 @@ async fn app_loop(
                                 let len = bash_len + dir_len;
                                 if allowlist_selected + 1 < len {
                                     allowlist_selected += 1;
-                                    if allowlist_selected >= allowlist_scroll + 10 { allowlist_scroll += 1; }
+                                    if allowlist_selected >= allowlist_scroll + 10 {
+                                        allowlist_scroll += 1;
+                                    }
                                 }
                             }
                             KeyCode::Char('d') | KeyCode::Delete => {
@@ -3092,13 +4570,25 @@ async fn app_loop(
                                 let bash_list = crate::bash_guard::allowlist_list();
                                 let dir_list = crate::dir_guard::allowlist_list();
                                 let mut combined: Vec<(String, String)> = Vec::new();
-                                for p in &bash_list { combined.push(("bash".into(), p.clone())); }
-                                for p in &dir_list { combined.push(("dir".into(), p.clone())); }
-                                combined.sort_by(|a,b| a.1.cmp(&b.1));
-                                if let Some((kind, pat)) = combined.get(allowlist_selected).cloned() {
-                                    if kind == "dir" { crate::dir_guard::allowlist_remove(&pat); } else { crate::bash_guard::allowlist_remove(&pat); }
-                                    let new_len = crate::bash_guard::allowlist_list().len() + crate::dir_guard::allowlist_list().len();
-                                    if allowlist_selected >= new_len && allowlist_selected > 0 { allowlist_selected -= 1; }
+                                for p in &bash_list {
+                                    combined.push(("bash".into(), p.clone()));
+                                }
+                                for p in &dir_list {
+                                    combined.push(("dir".into(), p.clone()));
+                                }
+                                combined.sort_by(|a, b| a.1.cmp(&b.1));
+                                if let Some((kind, pat)) = combined.get(allowlist_selected).cloned()
+                                {
+                                    if kind == "dir" {
+                                        crate::dir_guard::allowlist_remove(&pat);
+                                    } else {
+                                        crate::bash_guard::allowlist_remove(&pat);
+                                    }
+                                    let new_len = crate::bash_guard::allowlist_list().len()
+                                        + crate::dir_guard::allowlist_list().len();
+                                    if allowlist_selected >= new_len && allowlist_selected > 0 {
+                                        allowlist_selected -= 1;
+                                    }
                                 }
                             }
                             KeyCode::Char('c') => {
@@ -3129,18 +4619,51 @@ async fn app_loop(
                                 // Apply same ordering as draw: dir filter + text filter
                                 let all = crate::session::Session::list();
                                 let cwd_norm = cwd.trim_end_matches('/');
-                                let dir_filtered: Vec<crate::session::Session> = if sessions_show_all {
-                                    all
-                                } else {
-                                    all.into_iter().filter(|s| s.cwd.trim_end_matches('/') == cwd_norm).collect()
-                                };
-                                let filtered: Vec<crate::session::Session> = if sessions_filter.is_empty() { dir_filtered } else {
-                                    let lower = sessions_filter.to_lowercase();
-                                    dir_filtered.into_iter().filter(|s| s.id.to_lowercase().contains(&lower) || s.cwd.to_lowercase().contains(&lower) || s.messages.iter().any(|m| m.content.to_lowercase().contains(&lower))).collect()
-                                };
+                                let dir_filtered: Vec<crate::session::Session> =
+                                    if sessions_show_all {
+                                        all
+                                    } else {
+                                        all.into_iter()
+                                            .filter(|s| s.cwd.trim_end_matches('/') == cwd_norm)
+                                            .collect()
+                                    };
+                                let filtered: Vec<crate::session::Session> =
+                                    if sessions_filter.is_empty() {
+                                        dir_filtered
+                                    } else {
+                                        let lower = sessions_filter.to_lowercase();
+                                        dir_filtered
+                                            .into_iter()
+                                            .filter(|s| {
+                                                s.id.to_lowercase().contains(&lower)
+                                                    || s.cwd.to_lowercase().contains(&lower)
+                                                    || s.messages.iter().any(|m| {
+                                                        m.content.to_lowercase().contains(&lower)
+                                                    })
+                                            })
+                                            .collect()
+                                    };
                                 if let Some(sess) = filtered.get(sessions_selected).cloned() {
-                                    messages = sess.messages.iter().map(|m| Msg { role: m.role.clone(), content: m.content.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None}).collect();
-                                    messages.push(Msg { role: "system".into(), content: format!("[resumed session {}]", sess.id), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                    messages = sess
+                                        .messages
+                                        .iter()
+                                        .map(|m| Msg {
+                                            role: m.role.clone(),
+                                            content: m.content.clone(),
+                                            tool_id: None,
+                                            tool_name: None,
+                                            tool_args: None,
+                                            elapsed_ms: None,
+                                        })
+                                        .collect();
+                                    messages.push(Msg {
+                                        role: "system".into(),
+                                        content: format!("[resumed session {}]", sess.id),
+                                        tool_id: None,
+                                        tool_name: None,
+                                        tool_args: None,
+                                        elapsed_ms: None,
+                                    });
                                     session = Some(sess);
                                 }
                                 show_sessions = false;
@@ -3151,26 +4674,44 @@ async fn app_loop(
                             KeyCode::Up => {
                                 if sessions_selected > 0 {
                                     sessions_selected -= 1;
-                                    if sessions_selected < sessions_scroll { sessions_scroll = sessions_selected; }
+                                    if sessions_selected < sessions_scroll {
+                                        sessions_scroll = sessions_selected;
+                                    }
                                 }
                             }
                             KeyCode::Down => {
                                 // Compute filtered len with dir + text filters
                                 let all = crate::session::Session::list();
                                 let cwd_norm = cwd.trim_end_matches('/');
-                                let dir_filtered: Vec<crate::session::Session> = if sessions_show_all {
-                                    all
+                                let dir_filtered: Vec<crate::session::Session> =
+                                    if sessions_show_all {
+                                        all
+                                    } else {
+                                        all.into_iter()
+                                            .filter(|s| s.cwd.trim_end_matches('/') == cwd_norm)
+                                            .collect()
+                                    };
+                                let filtered_len = if sessions_filter.is_empty() {
+                                    dir_filtered.len()
                                 } else {
-                                    all.into_iter().filter(|s| s.cwd.trim_end_matches('/') == cwd_norm).collect()
-                                };
-                                let filtered_len = if sessions_filter.is_empty() { dir_filtered.len() } else {
                                     let lower = sessions_filter.to_lowercase();
-                                    dir_filtered.iter().filter(|s| s.id.to_lowercase().contains(&lower) || s.cwd.to_lowercase().contains(&lower) || s.messages.iter().any(|m| m.content.to_lowercase().contains(&lower))).count()
+                                    dir_filtered
+                                        .iter()
+                                        .filter(|s| {
+                                            s.id.to_lowercase().contains(&lower)
+                                                || s.cwd.to_lowercase().contains(&lower)
+                                                || s.messages.iter().any(|m| {
+                                                    m.content.to_lowercase().contains(&lower)
+                                                })
+                                        })
+                                        .count()
                                 };
                                 if sessions_selected + 1 < filtered_len {
                                     sessions_selected += 1;
                                     let visible = 10;
-                                    if sessions_selected >= sessions_scroll + visible { sessions_scroll += 1; }
+                                    if sessions_selected >= sessions_scroll + visible {
+                                        sessions_scroll += 1;
+                                    }
                                 }
                             }
                             KeyCode::Backspace => {
@@ -3178,7 +4719,10 @@ async fn app_loop(
                                 sessions_selected = 0;
                                 sessions_scroll = 0;
                             }
-                            KeyCode::Char(c) if !k.modifiers.contains(KeyModifiers::CONTROL) && !k.modifiers.contains(KeyModifiers::ALT) => {
+                            KeyCode::Char(c)
+                                if !k.modifiers.contains(KeyModifiers::CONTROL)
+                                    && !k.modifiers.contains(KeyModifiers::ALT) =>
+                            {
                                 sessions_filter.push(c);
                                 sessions_selected = 0;
                                 sessions_scroll = 0;
@@ -3197,7 +4741,9 @@ async fn app_loop(
                             KeyCode::Enter | KeyCode::Char('r') => {
                                 let servers = crate::mcp::snapshot();
                                 if let Some(srv) = servers.get(mcp_selected).cloned() {
-                                    if crate::mcp::is_server_disabled(&srv.name) || matches!(srv.status, crate::mcp::ServerStatus::Disabled) {
+                                    if crate::mcp::is_server_disabled(&srv.name)
+                                        || matches!(srv.status, crate::mcp::ServerStatus::Disabled)
+                                    {
                                         // stay open, show [disabled] instantly — no chat spam
                                     } else {
                                         let name = srv.name.clone();
@@ -3210,7 +4756,8 @@ async fn app_loop(
                             KeyCode::Char('d') | KeyCode::Char('t') | KeyCode::Char(' ') => {
                                 let servers = crate::mcp::snapshot();
                                 if let Some(srv) = servers.get(mcp_selected).cloned() {
-                                    let now_disabled = crate::mcp::toggle_server_disabled(&srv.name);
+                                    let now_disabled =
+                                        crate::mcp::toggle_server_disabled(&srv.name);
                                     if !now_disabled {
                                         let name = srv.name.clone();
                                         tokio::spawn(async move {
@@ -3223,20 +4770,26 @@ async fn app_loop(
                                 let was = crate::mcp::is_global_disabled();
                                 crate::mcp::set_global_disabled(!was);
                                 if was {
-                                    tokio::spawn(async move { crate::mcp::init().await; });
+                                    tokio::spawn(async move {
+                                        crate::mcp::init().await;
+                                    });
                                 }
                             }
                             KeyCode::Up => {
                                 if mcp_selected > 0 {
                                     mcp_selected -= 1;
-                                    if mcp_selected < mcp_scroll { mcp_scroll = mcp_selected; }
+                                    if mcp_selected < mcp_scroll {
+                                        mcp_scroll = mcp_selected;
+                                    }
                                 }
                             }
                             KeyCode::Down => {
                                 let len = crate::mcp::snapshot().len();
                                 if mcp_selected + 1 < len {
                                     mcp_selected += 1;
-                                    if mcp_selected >= mcp_scroll + 8 { mcp_scroll += 1; }
+                                    if mcp_selected >= mcp_scroll + 8 {
+                                        mcp_scroll += 1;
+                                    }
                                 }
                             }
                             _ => {}
@@ -3250,10 +4803,19 @@ async fn app_loop(
                         let q_ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
                         let q_alt = k.modifiers.contains(KeyModifiers::ALT);
                         let outcome = match k.code {
-                            KeyCode::Up => { wizard.move_up(); crate::question::WizardOutcome::Continue }
-                            KeyCode::Down => { wizard.move_down(); crate::question::WizardOutcome::Continue }
+                            KeyCode::Up => {
+                                wizard.move_up();
+                                crate::question::WizardOutcome::Continue
+                            }
+                            KeyCode::Down => {
+                                wizard.move_down();
+                                crate::question::WizardOutcome::Continue
+                            }
                             KeyCode::BackTab | KeyCode::Left => wizard.back(),
-                            KeyCode::Backspace => { wizard.backspace(); crate::question::WizardOutcome::Continue }
+                            KeyCode::Backspace => {
+                                wizard.backspace();
+                                crate::question::WizardOutcome::Continue
+                            }
                             KeyCode::Char('c') if q_ctrl => wizard.cancel(),
                             KeyCode::Char(c) if !q_ctrl && !q_alt => {
                                 if wizard.on_other() {
@@ -3273,11 +4835,15 @@ async fn app_loop(
                                 question_wizard = Some(wizard);
                             }
                             crate::question::WizardOutcome::Submit => {
-                                if let Some(tx) = req.tx.take() { let _ = tx.send(wizard.answers()); }
+                                if let Some(tx) = req.tx.take() {
+                                    let _ = tx.send(wizard.answers());
+                                }
                                 crate::telemetry::record("ask_user_answered");
                             }
                             crate::question::WizardOutcome::Cancel => {
-                                if let Some(tx) = req.tx.take() { let _ = tx.send(Vec::new()); }
+                                if let Some(tx) = req.tx.take() {
+                                    let _ = tx.send(Vec::new());
+                                }
                                 crate::telemetry::record("ask_user_skipped");
                             }
                         }
@@ -3291,49 +4857,99 @@ async fn app_loop(
                         let is_mcp = req.reasons.iter().any(|r| r.contains("MCP tool"));
                         match k.code {
                             KeyCode::Char('a') if !k.modifiers.contains(KeyModifiers::CONTROL) => {
-                                if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
-                                crate::telemetry::record(if is_mcp { "mcp_guard_allow_once" } else if is_dir { "dir_guard_allow_once" } else { "bash_guard_allow_once" });
+                                if let Some(tx) = req.tx.take() {
+                                    let _ = tx.send(true);
+                                }
+                                crate::telemetry::record(if is_mcp {
+                                    "mcp_guard_allow_once"
+                                } else if is_dir {
+                                    "dir_guard_allow_once"
+                                } else {
+                                    "bash_guard_allow_once"
+                                });
                             }
                             KeyCode::Char('A') => {
                                 if is_mcp {
                                     // MCP: every call needs approval, 'A' is treated as allow once (no persist)
-                                    if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
+                                    if let Some(tx) = req.tx.take() {
+                                        let _ = tx.send(true);
+                                    }
                                     crate::telemetry::record("mcp_guard_allow_once");
                                 } else if is_dir {
                                     // Extract offending paths from reasons "outside CWD (path → resolved)"
                                     for r in &req.reasons {
                                         if let Some(s) = r.find('(') {
                                             if let Some(e) = r.find(" →") {
-                                                let raw = r[s+1..e].trim();
-                                                if !raw.is_empty() { crate::dir_guard::allowlist_add(raw); }
+                                                let raw = r[s + 1..e].trim();
+                                                if !raw.is_empty() {
+                                                    crate::dir_guard::allowlist_add(raw);
+                                                }
                                             }
                                         }
                                     }
                                     // Also allowlist the raw cmd/path as fallback
                                     // For file tools cmd is "read_file /path", extract last token
-                                    let fallback = if req.cmd.contains(' ') { req.cmd.split_whitespace().last().unwrap_or(&req.cmd).to_string() } else { req.cmd.clone() };
-                                    if !fallback.is_empty() { crate::dir_guard::allowlist_add(&fallback); }
+                                    let fallback = if req.cmd.contains(' ') {
+                                        req.cmd
+                                            .split_whitespace()
+                                            .last()
+                                            .unwrap_or(&req.cmd)
+                                            .to_string()
+                                    } else {
+                                        req.cmd.clone()
+                                    };
+                                    if !fallback.is_empty() {
+                                        crate::dir_guard::allowlist_add(&fallback);
+                                    }
                                     // For bash, also allowlist the full command for exact match
-                                    if req.cmd.contains('/') || req.cmd.contains(' ') { crate::dir_guard::allowlist_add(&req.cmd); }
+                                    if req.cmd.contains('/') || req.cmd.contains(' ') {
+                                        crate::dir_guard::allowlist_add(&req.cmd);
+                                    }
                                 } else {
                                     crate::bash_guard::allowlist_add(&req.cmd);
                                 }
                                 if !is_mcp {
-                                    if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
-                                    crate::telemetry::record(if is_dir { "dir_guard_allow_always" } else { "bash_guard_allow_always" });
+                                    if let Some(tx) = req.tx.take() {
+                                        let _ = tx.send(true);
+                                    }
+                                    crate::telemetry::record(if is_dir {
+                                        "dir_guard_allow_always"
+                                    } else {
+                                        "bash_guard_allow_always"
+                                    });
                                 }
                             }
                             KeyCode::Char('d') | KeyCode::Char('D') => {
-                                if let Some(tx) = req.tx.take() { let _ = tx.send(false); }
-                                crate::telemetry::record(if is_mcp { "mcp_guard_deny" } else { "bash_guard_deny" });
+                                if let Some(tx) = req.tx.take() {
+                                    let _ = tx.send(false);
+                                }
+                                crate::telemetry::record(if is_mcp {
+                                    "mcp_guard_deny"
+                                } else {
+                                    "bash_guard_deny"
+                                });
                             }
                             KeyCode::Enter => {
-                                if let Some(tx) = req.tx.take() { let _ = tx.send(true); }
-                                crate::telemetry::record(if is_mcp { "mcp_guard_allow_once" } else if is_dir { "dir_guard_allow_once" } else { "bash_guard_allow_once" });
+                                if let Some(tx) = req.tx.take() {
+                                    let _ = tx.send(true);
+                                }
+                                crate::telemetry::record(if is_mcp {
+                                    "mcp_guard_allow_once"
+                                } else if is_dir {
+                                    "dir_guard_allow_once"
+                                } else {
+                                    "bash_guard_allow_once"
+                                });
                             }
                             KeyCode::Esc => {
-                                if let Some(tx) = req.tx.take() { let _ = tx.send(false); }
-                                crate::telemetry::record(if is_mcp { "mcp_guard_deny" } else { "bash_guard_deny" });
+                                if let Some(tx) = req.tx.take() {
+                                    let _ = tx.send(false);
+                                }
+                                crate::telemetry::record(if is_mcp {
+                                    "mcp_guard_deny"
+                                } else {
+                                    "bash_guard_deny"
+                                });
                             }
                             _ => {
                                 pending_approval = Some(req);
@@ -3362,28 +4978,43 @@ async fn app_loop(
                                     // don't flicker busy off -> braille keeps ticking
                                     messages.push(Msg {
                                         role: "system".into(),
-                                        content: "[interrupted → next queued]".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        content: "[interrupted → next queued]".into(),
+                                        tool_id: None,
+                                        tool_name: None,
+                                        tool_args: None,
+                                        elapsed_ms: None,
+                                    });
                                     let next = msg_queue.remove(0);
                                     let expanded_next = expand_at_mentions(&next);
                                     let hist = llm_history_for_spawn(&session, &messages);
                                     messages.push(Msg {
                                         role: "user".into(),
-                                        content: next.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        content: next.clone(),
+                                        tool_id: None,
+                                        tool_name: None,
+                                        tool_args: None,
+                                        elapsed_ms: None,
+                                    });
                                     // agent_busy stays true
                                     step_info = "...".into();
-                        agent_handle = Some(spawn_agent_with_history(
-                            expanded_next,
-                            model.clone(),
-                            hist,
-                            tx.clone(),
-                            done_tx.clone(),
-                        ));
+                                    agent_handle = Some(spawn_agent_with_history(
+                                        expanded_next,
+                                        model.clone(),
+                                        hist,
+                                        tx.clone(),
+                                        done_tx.clone(),
+                                    ));
                                 } else {
                                     agent_busy = false;
                                     step_info.clear();
                                     messages.push(Msg {
                                         role: "system".into(),
-                                        content: "[interrupted]".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        content: "[interrupted]".into(),
+                                        tool_id: None,
+                                        tool_name: None,
+                                        tool_args: None,
+                                        elapsed_ms: None,
+                                    });
                                 }
                             } else {
                                 // Esc on empty input clears textarea
@@ -3405,7 +5036,7 @@ async fn app_loop(
                                 subagent_scroll = 0;
                                 subagent_detail = None;
                             }
-                        },
+                        }
                         KeyCode::Char('c') if ctrl => {
                             // Ctrl+C: clear current input (Emacs kill) — keep textarea undo
                             if !textarea.is_empty() {
@@ -3435,11 +5066,20 @@ async fn app_loop(
                             ac_matches = current_completions(&textarea);
                             ac_idx = 0;
                         }
-                        KeyCode::Char('v') | KeyCode::Char('V') if ctrl || k.modifiers.contains(KeyModifiers::SUPER) => {
+                        KeyCode::Char('v') | KeyCode::Char('V')
+                            if ctrl || k.modifiers.contains(KeyModifiers::SUPER) =>
+                        {
                             // Ctrl+V / Cmd+V (macOS) / Ctrl+Shift+V: try image clipboard first, fallback to text paste
                             if let Some(marker) = clipboard_image_marker() {
                                 if marker.starts_with("[image skipped") {
-                                    messages.push(Msg { role: "system".into(), content: marker.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                    messages.push(Msg {
+                                        role: "system".into(),
+                                        content: marker.clone(),
+                                        tool_id: None,
+                                        tool_name: None,
+                                        tool_args: None,
+                                        elapsed_ms: None,
+                                    });
                                 } else {
                                     // Store actual marker, insert visible placeholder [[IMAGE #N]]
                                     let idx = {
@@ -3495,7 +5135,14 @@ async fn app_loop(
                                 let chosen = ac_matches[ac_idx].clone();
                                 if let Some(m) = detect_agent_mention(&textarea) {
                                     // # completion — chosen is like "#scout — desc"
-                                    let agent_name = chosen.split('—').next().unwrap_or(&chosen).trim().trim_start_matches("#").trim().to_string();
+                                    let agent_name = chosen
+                                        .split('—')
+                                        .next()
+                                        .unwrap_or(&chosen)
+                                        .trim()
+                                        .trim_start_matches("#")
+                                        .trim()
+                                        .to_string();
                                     let full = format!("#{}", agent_name);
                                     let mut lines = textarea.lines().to_vec();
                                     if m.row < lines.len() {
@@ -3510,7 +5157,10 @@ async fn app_loop(
                                         textarea.select_all();
                                         textarea.cut();
                                         textarea.insert_str(new_text);
-                                        textarea.move_cursor(CursorMove::Jump(m.row as u16, new_col as u16));
+                                        textarea.move_cursor(CursorMove::Jump(
+                                            m.row as u16,
+                                            new_col as u16,
+                                        ));
                                     } else {
                                         textarea.select_all();
                                         textarea.cut();
@@ -3530,7 +5180,10 @@ async fn app_loop(
                                         textarea.select_all();
                                         textarea.cut();
                                         textarea.insert_str(new_text);
-                                        textarea.move_cursor(CursorMove::Jump(m.row as u16, new_col as u16));
+                                        textarea.move_cursor(CursorMove::Jump(
+                                            m.row as u16,
+                                            new_col as u16,
+                                        ));
                                     } else {
                                         textarea.select_all();
                                         textarea.cut();
@@ -3551,7 +5204,10 @@ async fn app_loop(
                                         textarea.select_all();
                                         textarea.cut();
                                         textarea.insert_str(new_text);
-                                        textarea.move_cursor(CursorMove::Jump(m.row as u16, new_col as u16));
+                                        textarea.move_cursor(CursorMove::Jump(
+                                            m.row as u16,
+                                            new_col as u16,
+                                        ));
                                     } else {
                                         textarea.select_all();
                                         textarea.cut();
@@ -3635,7 +5291,14 @@ async fn app_loop(
                                 let chosen = ac_matches[ac_idx].clone();
                                 if let Some(m) = detect_agent_mention(&textarea) {
                                     // # completion — chosen is like "#scout — desc"
-                                    let agent_name = chosen.split('—').next().unwrap_or(&chosen).trim().trim_start_matches("#").trim().to_string();
+                                    let agent_name = chosen
+                                        .split('—')
+                                        .next()
+                                        .unwrap_or(&chosen)
+                                        .trim()
+                                        .trim_start_matches("#")
+                                        .trim()
+                                        .to_string();
                                     let full = format!("#{}", agent_name);
                                     let mut lines = textarea.lines().to_vec();
                                     if m.row < lines.len() {
@@ -3650,7 +5313,10 @@ async fn app_loop(
                                         textarea.select_all();
                                         textarea.cut();
                                         textarea.insert_str(new_text);
-                                        textarea.move_cursor(CursorMove::Jump(m.row as u16, new_col as u16));
+                                        textarea.move_cursor(CursorMove::Jump(
+                                            m.row as u16,
+                                            new_col as u16,
+                                        ));
                                     } else {
                                         textarea.select_all();
                                         textarea.cut();
@@ -3670,7 +5336,10 @@ async fn app_loop(
                                         textarea.select_all();
                                         textarea.cut();
                                         textarea.insert_str(new_text);
-                                        textarea.move_cursor(CursorMove::Jump(m.row as u16, new_col as u16));
+                                        textarea.move_cursor(CursorMove::Jump(
+                                            m.row as u16,
+                                            new_col as u16,
+                                        ));
                                     } else {
                                         textarea.select_all();
                                         textarea.cut();
@@ -3690,7 +5359,10 @@ async fn app_loop(
                                         textarea.select_all();
                                         textarea.cut();
                                         textarea.insert_str(new_text);
-                                        textarea.move_cursor(CursorMove::Jump(m.row as u16, new_col as u16));
+                                        textarea.move_cursor(CursorMove::Jump(
+                                            m.row as u16,
+                                            new_col as u16,
+                                        ));
                                     } else {
                                         textarea.select_all();
                                         textarea.cut();
@@ -3812,7 +5484,8 @@ async fn app_loop(
                         let forced_agents = parse_all_forced_agents(&prompt_raw);
                         let mut inline_hint = String::new();
                         if !forced_agents.is_empty() {
-                            let names: Vec<String> = forced_agents.iter().map(|(n,_)| n.clone()).collect();
+                            let names: Vec<String> =
+                                forced_agents.iter().map(|(n, _)| n.clone()).collect();
                             inline_hint = format!("\n\n[hint: user included #{} — please delegate relevant subtasks to those agents via `subagent` tool (agent field). You may run them in parallel and keep working; you will be woken when they return.]", names.join(", #"));
                         }
                         // Keep display as raw, but expand @files for LLM and append inline # hint
@@ -3847,10 +5520,18 @@ async fn app_loop(
                                         content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /mcp /memory stats|consolidate /model <name> /clear /exit /auto-accept /plan /init  ·  Enter send · Shift+Enter newline · Shift+Tab NORM/PLAN/ASK/AUTO · @file $skill · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll — /plan toggles PLAN, /auto-accept toggles AUTO, Shift+Tab cycles — /init creates AGENT.md (MEMORY.md is global-only, auto-updated silently in ~/.lean/)".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                 }
                                 "/plan" => {
-                                    let next = if crate::agent::current_mode() == crate::agent::Mode::Plan { crate::agent::Mode::Norm } else { crate::agent::Mode::Plan };
+                                    let next = if crate::agent::current_mode()
+                                        == crate::agent::Mode::Plan
+                                    {
+                                        crate::agent::Mode::Norm
+                                    } else {
+                                        crate::agent::Mode::Plan
+                                    };
                                     crate::agent::set_mode(next);
                                     match next {
-                                        crate::agent::Mode::Plan => crate::telemetry::record("mode_plan"),
+                                        crate::agent::Mode::Plan => {
+                                            crate::telemetry::record("mode_plan")
+                                        }
                                         _ => crate::telemetry::record("mode_norm"),
                                     }
                                 }
@@ -3862,8 +5543,10 @@ async fn app_loop(
                                     } else {
                                         messages.push(Msg { role: "system".into(), content: "init: AGENT.md already exists — refreshing via agent…".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                     }
-                                    let cwd = crate::dir_guard::project_root().display().to_string();
-                                    let init_prompt = format!(r#"Initialize project memory for lean. Current directory: {cwd}
+                                    let cwd =
+                                        crate::dir_guard::project_root().display().to_string();
+                                    let init_prompt = format!(
+                                        r#"Initialize project memory for lean. Current directory: {cwd}
 
 Tasks:
 1. Explore the codebase: run `ls -la`, read README.md, Cargo.toml / package.json / pyproject.toml / go.mod if present, and list src/ structure. Use read and bash (read-only) to gather facts.
@@ -3871,7 +5554,8 @@ Tasks:
 3. MEMORY.md is global-only (~/.lean/MEMORY.md) and is updated silently in the background via the memory system — do NOT create ./MEMORY.md, do NOT use ask_user for persona, do NOT mention it in the project.
 4. After writing, verify by reading ./AGENT.md and summarize what was created/updated. End with "All done."
 
-Be thorough but concise. Read before write; use unique oldText for edits."#);
+Be thorough but concise. Read before write; use unique oldText for edits."#
+                                    );
                                     let hist = llm_history_for_spawn(&session, &messages);
                                     let expanded = expand_at_mentions(&init_prompt);
                                     history.push("/init".to_string());
@@ -3883,10 +5567,23 @@ Be thorough but concise. Read before write; use unique oldText for edits."#);
                                     if agent_busy {
                                         msg_queue.push("/init".to_string());
                                     } else {
-                                        messages.push(Msg { role: "user".into(), content: "/init (initialize AGENT.md)".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        messages.push(Msg {
+                                            role: "user".into(),
+                                            content: "/init (initialize AGENT.md)".into(),
+                                            tool_id: None,
+                                            tool_name: None,
+                                            tool_args: None,
+                                            elapsed_ms: None,
+                                        });
                                         persist(&messages, &mut session, &model);
                                         agent_busy = true;
-                                        agent_handle = Some(spawn_agent_with_history(expanded, model.clone(), hist, tx.clone(), done_tx.clone()));
+                                        agent_handle = Some(spawn_agent_with_history(
+                                            expanded,
+                                            model.clone(),
+                                            hist,
+                                            tx.clone(),
+                                            done_tx.clone(),
+                                        ));
                                     }
                                     crate::telemetry::record("init");
                                     // already handled textarea clear below; mark so we don't double-clear
@@ -3905,24 +5602,59 @@ Be thorough but concise. Read before write; use unique oldText for edits."#);
                                         // /init with extra text — treat as note for the agent
                                         let created = crate::context::ensure_init_files();
                                         if !created.is_empty() {
-                                            messages.push(Msg { role: "system".into(), content: format!("init: created {} — enriching…", created.join(", ")), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                            messages.push(Msg {
+                                                role: "system".into(),
+                                                content: format!(
+                                                    "init: created {} — enriching…",
+                                                    created.join(", ")
+                                                ),
+                                                tool_id: None,
+                                                tool_name: None,
+                                                tool_args: None,
+                                                elapsed_ms: None,
+                                            });
                                         }
-                                        let cwd2 = crate::dir_guard::project_root().display().to_string();
+                                        let cwd2 =
+                                            crate::dir_guard::project_root().display().to_string();
                                         let extra = format!("\nAdditional user note: {}", rest);
-                                        let init_prompt2 = format!(r#"Initialize project memory for lean. CWD: {cwd2}{extra}
+                                        let init_prompt2 = format!(
+                                            r#"Initialize project memory for lean. CWD: {cwd2}{extra}
 
-Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENT.md (project: overview, stack, commands, structure, conventions, architecture, gotchas — concise). Do NOT create CLAUDE.md or any MEMORY.md in the project — AGENT.md only. MEMORY.md is global-only (~/.lean/MEMORY.md, silent background). Verify by reading ./AGENT.md."#);
+Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENT.md (project: overview, stack, commands, structure, conventions, architecture, gotchas — concise). Do NOT create CLAUDE.md or any MEMORY.md in the project — AGENT.md only. MEMORY.md is global-only (~/.lean/MEMORY.md, silent background). Verify by reading ./AGENT.md."#
+                                        );
                                         let hist = llm_history_for_spawn(&session, &messages);
                                         let expanded = expand_at_mentions(&init_prompt2);
-                                        if agent_busy { msg_queue.push(prompt.clone()); } else {
-                                            messages.push(Msg { role: "user".into(), content: prompt.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        if agent_busy {
+                                            msg_queue.push(prompt.clone());
+                                        } else {
+                                            messages.push(Msg {
+                                                role: "user".into(),
+                                                content: prompt.clone(),
+                                                tool_id: None,
+                                                tool_name: None,
+                                                tool_args: None,
+                                                elapsed_ms: None,
+                                            });
                                             persist(&messages, &mut session, &model);
                                             agent_busy = true;
-                                            agent_handle = Some(spawn_agent_with_history(expanded, model.clone(), hist, tx.clone(), done_tx.clone()));
+                                            agent_handle = Some(spawn_agent_with_history(
+                                                expanded,
+                                                model.clone(),
+                                                hist,
+                                                tx.clone(),
+                                                done_tx.clone(),
+                                            ));
                                         }
                                         crate::telemetry::record("init");
                                     } else {
-                                        messages.push(Msg { role: "system".into(), content: format!("unknown command: {}", prompt), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        messages.push(Msg {
+                                            role: "system".into(),
+                                            content: format!("unknown command: {}", prompt),
+                                            tool_id: None,
+                                            tool_name: None,
+                                            tool_args: None,
+                                            elapsed_ms: None,
+                                        });
                                     }
                                     textarea.select_all();
                                     textarea.cut();
@@ -3949,50 +5681,112 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENT.md (p
                                 }
                                 "/memory" => {
                                     let stats = crate::memory::api_stats();
-                                    messages.push(Msg { role: "system".into(), content: stats, tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                    messages.push(Msg {
+                                        role: "system".into(),
+                                        content: stats,
+                                        tool_id: None,
+                                        tool_name: None,
+                                        tool_args: None,
+                                        elapsed_ms: None,
+                                    });
                                 }
                                 "/memory stats" => {
                                     let stats = crate::memory::api_stats();
-                                    messages.push(Msg { role: "system".into(), content: stats, tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                    messages.push(Msg {
+                                        role: "system".into(),
+                                        content: stats,
+                                        tool_id: None,
+                                        tool_name: None,
+                                        tool_args: None,
+                                        elapsed_ms: None,
+                                    });
                                 }
                                 "/memory consolidate" => {
                                     let out = crate::memory::api_consolidate();
-                                    messages.push(Msg { role: "system".into(), content: out, tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                    messages.push(Msg {
+                                        role: "system".into(),
+                                        content: out,
+                                        tool_id: None,
+                                        tool_name: None,
+                                        tool_args: None,
+                                        elapsed_ms: None,
+                                    });
                                 }
                                 "/auto-accept" => {
-                                    let next = if crate::agent::current_mode() == crate::agent::Mode::Auto { crate::agent::Mode::Norm } else { crate::agent::Mode::Auto };
+                                    let next = if crate::agent::current_mode()
+                                        == crate::agent::Mode::Auto
+                                    {
+                                        crate::agent::Mode::Norm
+                                    } else {
+                                        crate::agent::Mode::Auto
+                                    };
                                     crate::agent::set_mode(next);
                                     match next {
                                         crate::agent::Mode::Auto => {
-                                            if let Some(mut req) = pending_approval.take() { if let Some(tx) = req.tx.take() { let _ = tx.send(true); } }
-                                            while let Some(mut req) = crate::approval::take_pending() { if let Some(tx) = req.tx.take() { let _ = tx.send(true); } }
+                                            if let Some(mut req) = pending_approval.take() {
+                                                if let Some(tx) = req.tx.take() {
+                                                    let _ = tx.send(true);
+                                                }
+                                            }
+                                            while let Some(mut req) =
+                                                crate::approval::take_pending()
+                                            {
+                                                if let Some(tx) = req.tx.take() {
+                                                    let _ = tx.send(true);
+                                                }
+                                            }
                                             crate::telemetry::record("mode_auto");
-                                        },
+                                        }
                                         _ => crate::telemetry::record("mode_norm"),
                                     }
                                 }
                                 _ if prompt.starts_with("/auto-accept ") => {
-                                    let rest = prompt.strip_prefix("/auto-accept ").unwrap().trim().to_lowercase();
+                                    let rest = prompt
+                                        .strip_prefix("/auto-accept ")
+                                        .unwrap()
+                                        .trim()
+                                        .to_lowercase();
                                     let target_on = match rest.as_str() {
                                         "on" | "enable" | "enabled" => Some(true),
                                         "off" | "disable" | "disabled" => Some(false),
                                         _ => None,
                                     };
                                     if let Some(want_on) = target_on {
-                                        let target = if want_on { crate::agent::Mode::Auto } else { crate::agent::Mode::Norm };
+                                        let target = if want_on {
+                                            crate::agent::Mode::Auto
+                                        } else {
+                                            crate::agent::Mode::Norm
+                                        };
                                         let cur = crate::agent::current_mode();
                                         if target != cur {
                                             crate::agent::set_mode(target);
                                             if want_on {
-                                                if let Some(mut req) = pending_approval.take() { if let Some(tx) = req.tx.take() { let _ = tx.send(true); } }
-                                                while let Some(mut req) = crate::approval::take_pending() { if let Some(tx) = req.tx.take() { let _ = tx.send(true); } }
+                                                if let Some(mut req) = pending_approval.take() {
+                                                    if let Some(tx) = req.tx.take() {
+                                                        let _ = tx.send(true);
+                                                    }
+                                                }
+                                                while let Some(mut req) =
+                                                    crate::approval::take_pending()
+                                                {
+                                                    if let Some(tx) = req.tx.take() {
+                                                        let _ = tx.send(true);
+                                                    }
+                                                }
                                                 crate::telemetry::record("mode_auto");
                                             } else {
                                                 crate::telemetry::record("mode_norm");
                                             }
                                         }
                                     } else {
-                                        messages.push(Msg { role: "system".into(), content: "usage: /auto-accept [on|off]".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        messages.push(Msg {
+                                            role: "system".into(),
+                                            content: "usage: /auto-accept [on|off]".into(),
+                                            tool_id: None,
+                                            tool_name: None,
+                                            tool_args: None,
+                                            elapsed_ms: None,
+                                        });
                                     }
                                 }
                                 _ if prompt.starts_with("/allowlist ") => {
@@ -4000,43 +5794,119 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENT.md (p
                                     if rest == "clear" {
                                         crate::bash_guard::allowlist_clear();
                                         crate::dir_guard::allowlist_clear();
-                                        messages.push(Msg { role: "system".into(), content: "allowlists cleared (bash + dir)".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        messages.push(Msg {
+                                            role: "system".into(),
+                                            content: "allowlists cleared (bash + dir)".into(),
+                                            tool_id: None,
+                                            tool_name: None,
+                                            tool_args: None,
+                                            elapsed_ms: None,
+                                        });
                                     } else if rest.starts_with("add ") {
                                         let pat = rest.strip_prefix("add ").unwrap().trim();
                                         // if pat looks like a path, add to dir allowlist, else bash
-                                        if pat.contains('/') || pat.starts_with('~') || pat.starts_with('.') {
+                                        if pat.contains('/')
+                                            || pat.starts_with('~')
+                                            || pat.starts_with('.')
+                                        {
                                             crate::dir_guard::allowlist_add(pat);
-                                            messages.push(Msg { role: "system".into(), content: format!("dir-allowlisted: {}", pat), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                            messages.push(Msg {
+                                                role: "system".into(),
+                                                content: format!("dir-allowlisted: {}", pat),
+                                                tool_id: None,
+                                                tool_name: None,
+                                                tool_args: None,
+                                                elapsed_ms: None,
+                                            });
                                         } else {
                                             crate::bash_guard::allowlist_add(pat);
-                                            messages.push(Msg { role: "system".into(), content: format!("allowlisted: {}", pat), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                            messages.push(Msg {
+                                                role: "system".into(),
+                                                content: format!("allowlisted: {}", pat),
+                                                tool_id: None,
+                                                tool_name: None,
+                                                tool_args: None,
+                                                elapsed_ms: None,
+                                            });
                                         }
-                                    } else if rest.starts_with("rm ") || rest.starts_with("remove ") {
-                                        let pat = rest.split_once(' ').map(|(_, p)| p.trim()).unwrap_or(rest);
+                                    } else if rest.starts_with("rm ") || rest.starts_with("remove ")
+                                    {
+                                        let pat = rest
+                                            .split_once(' ')
+                                            .map(|(_, p)| p.trim())
+                                            .unwrap_or(rest);
                                         crate::bash_guard::allowlist_remove(pat);
                                         crate::dir_guard::allowlist_remove(pat);
-                                        messages.push(Msg { role: "system".into(), content: format!("removed: {}", pat), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        messages.push(Msg {
+                                            role: "system".into(),
+                                            content: format!("removed: {}", pat),
+                                            tool_id: None,
+                                            tool_name: None,
+                                            tool_args: None,
+                                            elapsed_ms: None,
+                                        });
                                     } else {
                                         // heuristics: path-like → dir
                                         if rest.contains('/') || rest.starts_with('~') {
                                             crate::dir_guard::allowlist_add(rest);
-                                            messages.push(Msg { role: "system".into(), content: format!("dir-allowlisted: {}", rest), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                            messages.push(Msg {
+                                                role: "system".into(),
+                                                content: format!("dir-allowlisted: {}", rest),
+                                                tool_id: None,
+                                                tool_name: None,
+                                                tool_args: None,
+                                                elapsed_ms: None,
+                                            });
                                         } else {
                                             crate::bash_guard::allowlist_add(rest);
-                                            messages.push(Msg { role: "system".into(), content: format!("allowlisted: {}", rest), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                            messages.push(Msg {
+                                                role: "system".into(),
+                                                content: format!("allowlisted: {}", rest),
+                                                tool_id: None,
+                                                tool_name: None,
+                                                tool_args: None,
+                                                elapsed_ms: None,
+                                            });
                                         }
                                     }
                                 }
                                 _ if prompt.starts_with("/resume ") => {
                                     let rid = prompt.strip_prefix("/resume ").unwrap().trim();
                                     let list = crate::session::Session::list();
-                                    if let Some(sess) = list.into_iter().find(|sess| sess.id.starts_with(rid)) {
+                                    if let Some(sess) =
+                                        list.into_iter().find(|sess| sess.id.starts_with(rid))
+                                    {
                                         let sid = sess.id.clone();
-                                        messages = sess.messages.iter().map(|m| Msg { role: m.role.clone(), content: m.content.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None}).collect();
-                                        messages.push(Msg { role: "system".into(), content: format!("[resumed session {}]", sid), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        messages = sess
+                                            .messages
+                                            .iter()
+                                            .map(|m| Msg {
+                                                role: m.role.clone(),
+                                                content: m.content.clone(),
+                                                tool_id: None,
+                                                tool_name: None,
+                                                tool_args: None,
+                                                elapsed_ms: None,
+                                            })
+                                            .collect();
+                                        messages.push(Msg {
+                                            role: "system".into(),
+                                            content: format!("[resumed session {}]", sid),
+                                            tool_id: None,
+                                            tool_name: None,
+                                            tool_args: None,
+                                            elapsed_ms: None,
+                                        });
                                         session = Some(sess);
                                     } else {
-                                        messages.push(Msg { role: "system".into(), content: format!("session {} not found", rid), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        messages.push(Msg {
+                                            role: "system".into(),
+                                            content: format!("session {} not found", rid),
+                                            tool_id: None,
+                                            tool_name: None,
+                                            tool_args: None,
+                                            elapsed_ms: None,
+                                        });
                                     }
                                 }
                                 "/model" => {
@@ -4045,26 +5915,62 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENT.md (p
                                         Ok(cfg) => {
                                             let entry = cfg.models.get(&model);
                                             let detail = if let Some(e) = entry {
-                                                let api_tag = match e.api_mode() { crate::models::ApiMode::Responses => "responses", crate::models::ApiMode::Anthropic => "anthropic", _ => "chat" };
-                                                format!(" → {} @ {} [{}]", e.model, e.base_url.as_deref().unwrap_or("env: OPENCODE_BASE_URL"), api_tag)
+                                                let api_tag = match e.api_mode() {
+                                                    crate::models::ApiMode::Responses => {
+                                                        "responses"
+                                                    }
+                                                    crate::models::ApiMode::Anthropic => {
+                                                        "anthropic"
+                                                    }
+                                                    _ => "chat",
+                                                };
+                                                format!(
+                                                    " → {} @ {} [{}]",
+                                                    e.model,
+                                                    e.base_url
+                                                        .as_deref()
+                                                        .unwrap_or("env: OPENCODE_BASE_URL"),
+                                                    api_tag
+                                                )
                                             } else {
                                                 String::new()
                                             };
-                                            let mut aliases: Vec<String> = cfg.models.keys().cloned().collect();
+                                            let mut aliases: Vec<String> =
+                                                cfg.models.keys().cloned().collect();
                                             aliases.sort();
-                                            let decorated: Vec<String> = aliases.iter().map(|a| {
-                                                if let Some(e) = cfg.models.get(a) {
-                                                    let tag = match e.api_mode() { crate::models::ApiMode::Responses => "responses", crate::models::ApiMode::Anthropic => "anthropic", _ => "chat" };
-                                                    format!("{} ({})", a, tag)
-                                                } else { a.clone() }
-                                            }).collect();
+                                            let decorated: Vec<String> = aliases
+                                                .iter()
+                                                .map(|a| {
+                                                    if let Some(e) = cfg.models.get(a) {
+                                                        let tag = match e.api_mode() {
+                                                            crate::models::ApiMode::Responses => {
+                                                                "responses"
+                                                            }
+                                                            crate::models::ApiMode::Anthropic => {
+                                                                "anthropic"
+                                                            }
+                                                            _ => "chat",
+                                                        };
+                                                        format!("{} ({})", a, tag)
+                                                    } else {
+                                                        a.clone()
+                                                    }
+                                                })
+                                                .collect();
                                             let available = decorated.join(", ");
                                             messages.push(Msg {
                                                 role: "system".into(),
                                                 content: format!("current model: {}{} (available: {})\nconfig: {} — use /model <alias> to switch", model, detail, available, crate::models::path_display()), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                         }
                                         Err(e) => {
-                                            messages.push(Msg { role: "system".into(), content: format!("models.json error: {}", e), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                            messages.push(Msg {
+                                                role: "system".into(),
+                                                content: format!("models.json error: {}", e),
+                                                tool_id: None,
+                                                tool_name: None,
+                                                tool_args: None,
+                                                elapsed_ms: None,
+                                            });
                                         }
                                     }
                                 }
@@ -4074,11 +5980,30 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENT.md (p
                                         // bare /model with trailing space → list
                                         match crate::models::load() {
                                             Ok(cfg) => {
-                                                let mut aliases: Vec<String> = cfg.models.keys().cloned().collect();
+                                                let mut aliases: Vec<String> =
+                                                    cfg.models.keys().cloned().collect();
                                                 aliases.sort();
-                                                messages.push(Msg { role: "system".into(), content: format!("current model: {} (available: {})", model, aliases.join(", ")), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                                messages.push(Msg {
+                                                    role: "system".into(),
+                                                    content: format!(
+                                                        "current model: {} (available: {})",
+                                                        model,
+                                                        aliases.join(", ")
+                                                    ),
+                                                    tool_id: None,
+                                                    tool_name: None,
+                                                    tool_args: None,
+                                                    elapsed_ms: None,
+                                                });
                                             }
-                                            Err(e) => messages.push(Msg { role: "system".into(), content: format!("models.json error: {}", e), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None}),
+                                            Err(e) => messages.push(Msg {
+                                                role: "system".into(),
+                                                content: format!("models.json error: {}", e),
+                                                tool_id: None,
+                                                tool_name: None,
+                                                tool_args: None,
+                                                elapsed_ms: None,
+                                            }),
                                         }
                                     } else {
                                         match crate::models::resolve(Some(m)) {
@@ -4088,23 +6013,40 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENT.md (p
                                                     s.model = model.clone();
                                                     let _ = s.save();
                                                 }
-                                                let api_tag = match r.api_mode { crate::models::ApiMode::Responses => "responses", crate::models::ApiMode::Anthropic => "anthropic", _ => "chat" };
+                                                let api_tag = match r.api_mode {
+                                                    crate::models::ApiMode::Responses => {
+                                                        "responses"
+                                                    }
+                                                    crate::models::ApiMode::Anthropic => {
+                                                        "anthropic"
+                                                    }
+                                                    _ => "chat",
+                                                };
                                                 messages.push(Msg {
                                                     role: "system".into(),
                                                     content: format!("switched to {} ({} @ {} — {}) — live + persisted", r.alias, r.model, r.base_url, api_tag), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                             }
                                             Err(e) => {
-                                                messages.push(Msg { role: "system".into(), content: format!("model switch failed: {}", e), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                                messages.push(Msg {
+                                                    role: "system".into(),
+                                                    content: format!("model switch failed: {}", e),
+                                                    tool_id: None,
+                                                    tool_name: None,
+                                                    tool_args: None,
+                                                    elapsed_ms: None,
+                                                });
                                             }
                                         }
                                     }
                                 }
                                 _ if prompt.starts_with("/plan ") => {
-                                    let task = prompt.strip_prefix("/plan ").unwrap().trim().to_string();
+                                    let task =
+                                        prompt.strip_prefix("/plan ").unwrap().trim().to_string();
                                     if task.is_empty() {
                                         messages.push(Msg { role: "system".into(), content: "usage: /plan <task> — runs task in plan mode, or /plan to toggle".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                     } else {
-                                        if crate::agent::current_mode() != crate::agent::Mode::Plan {
+                                        if crate::agent::current_mode() != crate::agent::Mode::Plan
+                                        {
                                             crate::agent::set_mode(crate::agent::Mode::Plan);
                                             crate::telemetry::record("mode_plan");
                                         }
@@ -4124,10 +6066,23 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENT.md (p
                                             msg_queue.push(task.clone());
                                         } else {
                                             let hist = llm_history_for_spawn(&session, &messages);
-                                            messages.push(Msg { role: "user".into(), content: task.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                            messages.push(Msg {
+                                                role: "user".into(),
+                                                content: task.clone(),
+                                                tool_id: None,
+                                                tool_name: None,
+                                                tool_args: None,
+                                                elapsed_ms: None,
+                                            });
                                             persist(&messages, &mut session, &model);
                                             agent_busy = true;
-                                            agent_handle = Some(spawn_agent_with_history(expanded_task, model.clone(), hist, tx.clone(), done_tx.clone()));
+                                            agent_handle = Some(spawn_agent_with_history(
+                                                expanded_task,
+                                                model.clone(),
+                                                hist,
+                                                tx.clone(),
+                                                done_tx.clone(),
+                                            ));
                                         }
                                         // Skip generic textarea clear below by marking handled
                                         // (we already cleared, but set a flag to avoid double handling)
@@ -4136,7 +6091,12 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENT.md (p
                                 _ => {
                                     messages.push(Msg {
                                         role: "system".into(),
-                                        content: format!("unknown command: {}", prompt), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        content: format!("unknown command: {}", prompt),
+                                        tool_id: None,
+                                        tool_name: None,
+                                        tool_args: None,
+                                        elapsed_ms: None,
+                                    });
                                 }
                             }
                             textarea.select_all();
@@ -4161,7 +6121,12 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENT.md (p
                                 let hist = llm_history_for_spawn(&session, &messages);
                                 messages.push(Msg {
                                     role: "user".into(),
-                                    content: prompt.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                    content: prompt.clone(),
+                                    tool_id: None,
+                                    tool_name: None,
+                                    tool_args: None,
+                                    elapsed_ms: None,
+                                });
                                 agent_busy = true;
                                 agent_handle = Some(spawn_agent_with_history(
                                     expanded.clone(),
@@ -4192,12 +6157,22 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENT.md (p
                         } else {
                             messages.push(Msg {
                                 role: "assistant".into(),
-                                content: delta, tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                content: delta,
+                                tool_id: None,
+                                tool_name: None,
+                                tool_args: None,
+                                elapsed_ms: None,
+                            });
                         }
                     } else {
                         messages.push(Msg {
                             role: "assistant".into(),
-                            content: delta, tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                            content: delta,
+                            tool_id: None,
+                            tool_name: None,
+                            tool_args: None,
+                            elapsed_ms: None,
+                        });
                     }
                     step_info = "".into();
                 }
@@ -4208,12 +6183,22 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENT.md (p
                         } else {
                             messages.push(Msg {
                                 role: "thinking".into(),
-                                content: delta, tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                content: delta,
+                                tool_id: None,
+                                tool_name: None,
+                                tool_args: None,
+                                elapsed_ms: None,
+                            });
                         }
                     } else {
                         messages.push(Msg {
                             role: "thinking".into(),
-                            content: delta, tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                            content: delta,
+                            tool_id: None,
+                            tool_name: None,
+                            tool_args: None,
+                            elapsed_ms: None,
+                        });
                     }
                 }
                 AgentEvent::TextDone { text } => {
@@ -4248,7 +6233,9 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENT.md (p
                         if msg.tool_id.as_deref() == Some(&id) && msg.elapsed_ms.is_none() {
                             msg.content = format!("{} → {}", name, display);
                             msg.elapsed_ms = Some(elapsed_ms);
-                            if msg.tool_name.is_none() { msg.tool_name = Some(name.clone()); }
+                            if msg.tool_name.is_none() {
+                                msg.tool_name = Some(name.clone());
+                            }
                             found = true;
                             break;
                         }
@@ -4277,7 +6264,13 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENT.md (p
                     }
                     // Observer: distill recent chunk into memories (async, non-blocking)
                     if std::env::var("LEAN_OBSERVER_DISABLED").unwrap_or_default() != "1" {
-                        let chunk_pairs: Vec<(String, String)> = messages.iter().rev().take(12).rev().map(|m| (m.role.clone(), m.content.clone())).collect();
+                        let chunk_pairs: Vec<(String, String)> = messages
+                            .iter()
+                            .rev()
+                            .take(12)
+                            .rev()
+                            .map(|m| (m.role.clone(), m.content.clone()))
+                            .collect();
                         let chunk = crate::observer::build_chunk_text(&chunk_pairs);
                         let obs_model = model.clone();
                         tokio::spawn(async move {
@@ -4294,7 +6287,12 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENT.md (p
                         let hist = llm_history_for_spawn(&session, &messages);
                         messages.push(Msg {
                             role: "user".into(),
-                            content: next.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                            content: next.clone(),
+                            tool_id: None,
+                            tool_name: None,
+                            tool_args: None,
+                            elapsed_ms: None,
+                        });
                         // stay busy — braille spinner keeps ticking
                         step_info = "...".into();
                         // agent_busy stays true
@@ -4327,32 +6325,46 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENT.md (p
                 let hist = llm_history_for_spawn(&session, &messages);
                 messages.push(Msg {
                     role: "user".into(),
-                    content: next.clone(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                    content: next.clone(),
+                    tool_id: None,
+                    tool_name: None,
+                    tool_args: None,
+                    elapsed_ms: None,
+                });
                 step_info = "...".into();
-                        agent_handle = Some(spawn_agent_with_history(
-                            expanded_next,
-                            model.clone(),
-                            hist,
-                            tx.clone(),
-                            done_tx.clone(),
-                        ));
+                agent_handle = Some(spawn_agent_with_history(
+                    expanded_next,
+                    model.clone(),
+                    hist,
+                    tx.clone(),
+                    done_tx.clone(),
+                ));
             } else {
                 agent_busy = false;
                 step_info = "error".into();
                 messages.push(Msg {
                     role: "system".into(),
-                    content: "[agent crashed]".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                    content: "[agent crashed]".into(),
+                    tool_id: None,
+                    tool_name: None,
+                    tool_args: None,
+                    elapsed_ms: None,
+                });
             }
         }
 
         // Persist session only when content changed (was every tick ~20Hz)
-        let persist_fp: usize = messages.len().wrapping_add(messages.iter().map(|m| m.content.len()).sum::<usize>());
+        let persist_fp: usize = messages
+            .len()
+            .wrapping_add(messages.iter().map(|m| m.content.len()).sum::<usize>());
         if persist_fp != last_persist_fingerprint {
             persist(&messages, &mut session, &model);
             last_persist_fingerprint = persist_fp;
         }
         // Advance spinner; force a redraw while it or any subagent is animating — now 10fps not 60fps
-        let has_running_subagent = crate::agents::list_subagents().iter().any(|s| s.status == "running");
+        let has_running_subagent = crate::agents::list_subagents()
+            .iter()
+            .any(|s| s.status == "running");
         if agent_busy || has_running_subagent || show_subagents {
             spinner_tick = spinner_tick.wrapping_add(1);
             dirty = true;

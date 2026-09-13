@@ -1,28 +1,32 @@
 mod agent;
 mod agents;
+mod approval;
+mod bash_guard;
+mod context;
+mod dictate;
+mod dir_guard;
 mod llm;
+mod mcp;
 mod memory;
 mod models;
 mod observer;
-mod skills;
-mod telemetry;
-mod bash_guard;
-mod dir_guard;
-mod approval;
 mod question;
 mod session;
+mod skills;
+mod telemetry;
 mod theme;
 mod tools;
-mod mcp;
 mod tui;
-mod context;
 
 use clap::Parser;
 
 #[derive(Parser, Debug)]
 #[command(name = "lean", about = "lean — light coding assistant (Rust port)")]
 struct Args {
-    #[arg(long, help = "Model alias from ~/.lean/models.json (default alias from file)")]
+    #[arg(
+        long,
+        help = "Model alias from ~/.lean/models.json (default alias from file)"
+    )]
     model: Option<String>,
 
     #[arg(long, help = "Continue the most recent session")]

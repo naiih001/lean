@@ -28,7 +28,10 @@ impl MemoryEntry {
         let secs = now.as_secs();
         let nanos = now.subsec_nanos();
         // unique suffix from thread + nanos low bits + pid mixing
-        let suffix: u32 = (nanos ^ std::process::id().wrapping_mul(0x9e3779b1) ^ (now.as_millis() as u32).wrapping_mul(0x85ebca6b)) % 0xFFFFFF;
+        let suffix: u32 = (nanos
+            ^ std::process::id().wrapping_mul(0x9e3779b1)
+            ^ (now.as_millis() as u32).wrapping_mul(0x85ebca6b))
+            % 0xFFFFFF;
         let id = format!("mem_{}_{:06x}", secs, suffix);
         Self {
             id,
@@ -42,7 +45,9 @@ impl MemoryEntry {
     }
 
     fn ts_secs(&self) -> u64 {
-        if let Some(t) = self.ts { return t; }
+        if let Some(t) = self.ts {
+            return t;
+        }
         self.created_at.parse::<u64>().unwrap_or(0)
     }
 }
@@ -91,18 +96,34 @@ impl MemoryStore {
         }
     }
 
-    fn remember(&mut self, content: &str, category: &str, tags: Vec<String>, scope: &str) -> String {
+    fn remember(
+        &mut self,
+        content: &str,
+        category: &str,
+        tags: Vec<String>,
+        scope: &str,
+    ) -> String {
         let trimmed = content.trim();
         if trimmed.len() < 3 {
             return "Memory too short, ignored".to_string();
         }
         // Deduplicate exact content (case-insensitive) within last 20
         let lower = trimmed.to_lowercase();
-        if self.entries.iter().rev().take(20).any(|e| e.content.to_lowercase() == lower) {
+        if self
+            .entries
+            .iter()
+            .rev()
+            .take(20)
+            .any(|e| e.content.to_lowercase() == lower)
+        {
             return "Memory already stored (duplicate)".to_string();
         }
         // Normalize tags: lowercase, dedup
-        let mut norm_tags: Vec<String> = tags.into_iter().map(|t| t.to_lowercase().trim().to_string()).filter(|t| !t.is_empty()).collect();
+        let mut norm_tags: Vec<String> = tags
+            .into_iter()
+            .map(|t| t.to_lowercase().trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect();
         norm_tags.sort();
         norm_tags.dedup();
         let entry = MemoryEntry::new(trimmed, category, norm_tags, scope);
@@ -125,7 +146,10 @@ impl MemoryStore {
             return self.recall();
         }
 
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         let mut scored: Vec<(&MemoryEntry, f32)> = self
             .entries
             .iter()
@@ -134,7 +158,13 @@ impl MemoryStore {
                 let base = score_entry(e, &keywords);
                 // Recency boost: within 7 days +0.8, 30 days +0.4
                 let age_secs = now.saturating_sub(e.ts_secs());
-                let recency = if age_secs < 7 * 86400 { 0.8 } else if age_secs < 30 * 86400 { 0.4 } else { 0.0 };
+                let recency = if age_secs < 7 * 86400 {
+                    0.8
+                } else if age_secs < 30 * 86400 {
+                    0.4
+                } else {
+                    0.0
+                };
                 // Length penalty for very short memories
                 let len_penalty = if e.content.len() < 20 { -0.3 } else { 0.0 };
                 (e, base + recency + len_penalty)
@@ -143,15 +173,15 @@ impl MemoryStore {
             .collect();
 
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        scored.into_iter().take(RECALL_LIMIT).map(|(e, _)| e).collect()
+        scored
+            .into_iter()
+            .take(RECALL_LIMIT)
+            .map(|(e, _)| e)
+            .collect()
     }
 
     fn recall(&self) -> Vec<&MemoryEntry> {
-        self.entries
-            .iter()
-            .rev()
-            .take(RECALL_LIMIT)
-            .collect()
+        self.entries.iter().rev().take(RECALL_LIMIT).collect()
     }
 
     fn list_by_tag(&self, tag: &str) -> Vec<&MemoryEntry> {
@@ -181,13 +211,25 @@ impl MemoryStore {
         let mut to_remove = HashSet::new();
         let mut merges = 0;
         for i in 0..self.entries.len() {
-            if to_remove.contains(&i) { continue; }
-            let kw_i = extract_keywords(&self.entries[i].content).into_iter().collect::<HashSet<_>>();
-            if kw_i.is_empty() { continue; }
-            for j in (i+1)..self.entries.len() {
-                if to_remove.contains(&j) { continue; }
-                let kw_j = extract_keywords(&self.entries[j].content).into_iter().collect::<HashSet<_>>();
-                if kw_j.is_empty() { continue; }
+            if to_remove.contains(&i) {
+                continue;
+            }
+            let kw_i = extract_keywords(&self.entries[i].content)
+                .into_iter()
+                .collect::<HashSet<_>>();
+            if kw_i.is_empty() {
+                continue;
+            }
+            for j in (i + 1)..self.entries.len() {
+                if to_remove.contains(&j) {
+                    continue;
+                }
+                let kw_j = extract_keywords(&self.entries[j].content)
+                    .into_iter()
+                    .collect::<HashSet<_>>();
+                if kw_j.is_empty() {
+                    continue;
+                }
                 let inter = kw_i.intersection(&kw_j).count() as f32;
                 let union = kw_i.union(&kw_j).count() as f32;
                 let jaccard = inter / union;
@@ -199,7 +241,9 @@ impl MemoryStore {
                     v.sort();
                     self.entries[i].tags = v;
                     // If j is longer and newer, replace content
-                    if self.entries[j].content.len() > self.entries[i].content.len() && self.entries[j].ts_secs() >= self.entries[i].ts_secs() {
+                    if self.entries[j].content.len() > self.entries[i].content.len()
+                        && self.entries[j].ts_secs() >= self.entries[i].ts_secs()
+                    {
                         self.entries[i].content = self.entries[j].content.clone();
                     }
                     to_remove.insert(j);
@@ -209,48 +253,71 @@ impl MemoryStore {
         }
         if !to_remove.is_empty() {
             let mut idxs: Vec<usize> = to_remove.into_iter().collect();
-            idxs.sort_by(|a,b| b.cmp(a));
-            for idx in idxs { self.entries.remove(idx); }
+            idxs.sort_by(|a, b| b.cmp(a));
+            for idx in idxs {
+                self.entries.remove(idx);
+            }
             self.persist();
         }
         let after = self.entries.len();
-        format!("Consolidated: {} merges, {} -> {} (removed {} duplicates)", merges, before, after, before - after)
+        format!(
+            "Consolidated: {} merges, {} -> {} (removed {} duplicates)",
+            merges,
+            before,
+            after,
+            before - after
+        )
     }
 
     fn stats(&self) -> String {
         let total = self.entries.len();
         let mut by_cat: HashMap<String, usize> = HashMap::new();
         let mut by_scope: HashMap<String, usize> = HashMap::new();
-        for e in &self.entries { *by_cat.entry(e.category.clone()).or_insert(0) += 1; *by_scope.entry(e.scope.clone()).or_insert(0) += 1; }
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-        let recent = self.entries.iter().filter(|e| now.saturating_sub(e.ts_secs()) < 7*86400).count();
+        for e in &self.entries {
+            *by_cat.entry(e.category.clone()).or_insert(0) += 1;
+            *by_scope.entry(e.scope.clone()).or_insert(0) += 1;
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let recent = self
+            .entries
+            .iter()
+            .filter(|e| now.saturating_sub(e.ts_secs()) < 7 * 86400)
+            .count();
         let mut out = format!("Memory stats: total {} (recent 7d: {})\n", total, recent);
         out.push_str(" by category:\n");
-        let mut cats: Vec<_> = by_cat.into_iter().collect(); cats.sort_by(|a,b| b.1.cmp(&a.1));
-        for (k,v) in cats { out.push_str(&format!("  {}: {}\n", k, v)); }
+        let mut cats: Vec<_> = by_cat.into_iter().collect();
+        cats.sort_by(|a, b| b.1.cmp(&a.1));
+        for (k, v) in cats {
+            out.push_str(&format!("  {}: {}\n", k, v));
+        }
         out.push_str(" by scope:\n");
-        let mut scopes: Vec<_> = by_scope.into_iter().collect(); scopes.sort_by(|a,b| b.1.cmp(&a.1));
-        for (k,v) in scopes { out.push_str(&format!("  {}: {}\n", k, v)); }
+        let mut scopes: Vec<_> = by_scope.into_iter().collect();
+        scopes.sort_by(|a, b| b.1.cmp(&a.1));
+        for (k, v) in scopes {
+            out.push_str(&format!("  {}: {}\n", k, v));
+        }
         out
     }
 }
 
 fn extract_keywords(text: &str) -> Vec<String> {
     let stop: HashSet<&str> = [
-        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-        "have", "has", "had", "do", "does", "did", "will", "would", "could",
-        "should", "may", "might", "shall", "can", "need", "dare", "ought",
-        "used", "to", "of", "in", "for", "on", "with", "at", "by", "from",
-        "as", "into", "through", "during", "before", "after", "above", "below",
-        "between", "out", "off", "over", "under", "again", "further", "then",
-        "once", "here", "there", "when", "where", "why", "how", "all", "each",
-        "every", "both", "few", "more", "most", "other", "some", "such", "no",
-        "nor", "not", "only", "own", "same", "so", "than", "too", "very",
-        "just", "because", "but", "and", "or", "if", "while", "about",
-        "it", "its", "this", "that", "these", "those", "i", "you", "he",
-        "she", "we", "they", "me", "him", "her", "us", "them", "my",
-        "your", "his", "our", "what", "which", "who", "whom",
-    ].into_iter().collect();
+        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
+        "do", "does", "did", "will", "would", "could", "should", "may", "might", "shall", "can",
+        "need", "dare", "ought", "used", "to", "of", "in", "for", "on", "with", "at", "by", "from",
+        "as", "into", "through", "during", "before", "after", "above", "below", "between", "out",
+        "off", "over", "under", "again", "further", "then", "once", "here", "there", "when",
+        "where", "why", "how", "all", "each", "every", "both", "few", "more", "most", "other",
+        "some", "such", "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very",
+        "just", "because", "but", "and", "or", "if", "while", "about", "it", "its", "this", "that",
+        "these", "those", "i", "you", "he", "she", "we", "they", "me", "him", "her", "us", "them",
+        "my", "your", "his", "our", "what", "which", "who", "whom",
+    ]
+    .into_iter()
+    .collect();
 
     text.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
@@ -262,7 +329,11 @@ fn extract_keywords(text: &str) -> Vec<String> {
 fn score_entry(entry: &MemoryEntry, keywords: &[String]) -> f32 {
     let content_lower = entry.content.to_lowercase();
     let tags_lower: Vec<String> = entry.tags.iter().map(|t| t.to_lowercase()).collect();
-    let content_words: HashSet<String> = content_lower.split(|c: char| !c.is_alphanumeric()).filter(|w| w.len()>2).map(|s| s.to_string()).collect();
+    let content_words: HashSet<String> = content_lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() > 2)
+        .map(|s| s.to_string())
+        .collect();
 
     let mut score = 0.0f32;
     for kw in keywords {
@@ -290,7 +361,10 @@ fn score_entry(entry: &MemoryEntry, keywords: &[String]) -> f32 {
         }
     }
     // Coverage boost: if all keywords appear, +1
-    if keywords.iter().all(|kw| content_lower.contains(kw) || tags_lower.iter().any(|t| t.contains(kw))) {
+    if keywords
+        .iter()
+        .all(|kw| content_lower.contains(kw) || tags_lower.iter().any(|t| t.contains(kw)))
+    {
         score += 1.0;
     }
     score
@@ -352,9 +426,28 @@ pub fn autorecall(context: &str) -> Option<String> {
     let mut out = String::from("Recalled memories for context:\n");
     for (i, m) in results.iter().enumerate() {
         // Include scope and recency hint for LLM
-        let age = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs().saturating_sub(m.ts_secs());
-        let age_hint = if age < 86400 { "today" } else if age < 7*86400 { "this week" } else if age < 30*86400 { "this month" } else { "older" };
-        out.push_str(&format!("  {}. [{}|{}|{}] {}\n", i + 1, m.category, m.scope, age_hint, m.content));
+        let age = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .saturating_sub(m.ts_secs());
+        let age_hint = if age < 86400 {
+            "today"
+        } else if age < 7 * 86400 {
+            "this week"
+        } else if age < 30 * 86400 {
+            "this month"
+        } else {
+            "older"
+        };
+        out.push_str(&format!(
+            "  {}. [{}|{}|{}] {}\n",
+            i + 1,
+            m.category,
+            m.scope,
+            age_hint,
+            m.content
+        ));
     }
     Some(out)
 }
@@ -372,7 +465,11 @@ fn format_memories(entries: &[&MemoryEntry]) -> String {
             m.id,
             m.tags.join(", "),
             m.scope,
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs().saturating_sub(m.ts_secs()),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .saturating_sub(m.ts_secs()),
         ));
     }
     out

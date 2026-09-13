@@ -29,7 +29,18 @@ fn cache_lock() -> &'static std::sync::Mutex<Option<(Vec<Agent>, Instant)>> {
     CACHE.get_or_init(|| std::sync::Mutex::new(None))
 }
 
-fn parse_frontmatter_agents(raw: &str) -> (Option<String>, Option<String>, Option<Vec<String>>, Option<String>, Option<String>, Option<Vec<String>>, Option<bool>, String) {
+fn parse_frontmatter_agents(
+    raw: &str,
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<Vec<String>>,
+    Option<String>,
+    Option<String>,
+    Option<Vec<String>>,
+    Option<bool>,
+    String,
+) {
     if !raw.starts_with("---") {
         return (None, None, None, None, None, None, None, raw.to_string());
     }
@@ -56,28 +67,55 @@ fn parse_frontmatter_agents(raw: &str) -> (Option<String>, Option<String>, Optio
             let val = val_raw
                 .strip_prefix('"')
                 .and_then(|v| v.strip_suffix('"'))
-                .or_else(|| val_raw.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+                .or_else(|| {
+                    val_raw
+                        .strip_prefix('\'')
+                        .and_then(|v| v.strip_suffix('\''))
+                })
                 .unwrap_or(val_raw)
                 .trim();
             match key {
                 "name" => name = Some(val.to_string()),
                 "description" => description = Some(val.to_string()),
                 "tools" => {
-                    let list: Vec<String> = val.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-                    if !list.is_empty() { tools = Some(list); }
+                    let list: Vec<String> = val
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if !list.is_empty() {
+                        tools = Some(list);
+                    }
                 }
                 "model" => model = Some(val.to_string()),
                 "thinking" => thinking = Some(val.to_string()),
                 "subagent_agents" => {
-                    let list: Vec<String> = val.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-                    if !list.is_empty() { subagent_agents = Some(list); } else { subagent_agents = Some(vec![]); }
+                    let list: Vec<String> = val
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if !list.is_empty() {
+                        subagent_agents = Some(list);
+                    } else {
+                        subagent_agents = Some(vec![]);
+                    }
                 }
                 "auto-exit" | "auto_exit" => auto_exit = Some(val == "true"),
                 _ => {}
             }
         }
     }
-    (name, description, tools, model, thinking, subagent_agents, auto_exit, body)
+    (
+        name,
+        description,
+        tools,
+        model,
+        thinking,
+        subagent_agents,
+        auto_exit,
+        body,
+    )
 }
 
 async fn scan_dir(base: &Path) -> Vec<Agent> {
@@ -109,10 +147,17 @@ async fn scan_dir(base: &Path) -> Vec<Agent> {
             Ok(c) => c,
             Err(_) => continue,
         };
-        let (name_opt, desc_opt, tools, model, thinking, subagent_agents, auto_exit, body) = parse_frontmatter_agents(&raw);
-        let agent_name = name_opt.unwrap_or_else(|| entry.file_name().to_string_lossy().to_string());
+        let (name_opt, desc_opt, tools, model, thinking, subagent_agents, auto_exit, body) =
+            parse_frontmatter_agents(&raw);
+        let agent_name =
+            name_opt.unwrap_or_else(|| entry.file_name().to_string_lossy().to_string());
         let desc = desc_opt.unwrap_or_else(|| {
-            body.lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(140).collect()
+            body.lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("")
+                .chars()
+                .take(140)
+                .collect()
         });
         agents.push(Agent {
             name: agent_name,
@@ -171,10 +216,24 @@ pub async fn get_agent_catalog() -> String {
     if agents.is_empty() {
         return "No agents installed. Add to agents/<name>/AGENT.md or ~/.lean/agents/<name>/AGENT.md".to_string();
     }
-    agents.iter().map(|a| {
-        let tools_str = a.tools.as_ref().map(|t| t.join(", ")).unwrap_or_else(|| "all".to_string());
-        format!("- {}: {} (tools: {}) (path: {})", a.name, a.description, tools_str, a.path.display())
-    }).collect::<Vec<_>>().join("\n")
+    agents
+        .iter()
+        .map(|a| {
+            let tools_str = a
+                .tools
+                .as_ref()
+                .map(|t| t.join(", "))
+                .unwrap_or_else(|| "all".to_string());
+            format!(
+                "- {}: {} (tools: {}) (path: {})",
+                a.name,
+                a.description,
+                tools_str,
+                a.path.display()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub async fn load_agent(name: &str) -> Result<Agent> {
@@ -228,12 +287,28 @@ pub fn list_subagents() -> Vec<SubagentStatus> {
 
 pub fn register_subagent(id: String, agent: String, task: String) {
     let mut lock = subagents_lock().lock().unwrap();
-    lock.push(SubagentStatus { id, agent, task, status: "running".to_string(), started_at: SystemTime::now(), transcript: Vec::new() });
+    lock.push(SubagentStatus {
+        id,
+        agent,
+        task,
+        status: "running".to_string(),
+        started_at: SystemTime::now(),
+        transcript: Vec::new(),
+    });
 }
 
-
 pub fn append_subagent_transcript(id: &str, line: String) {
-    append_subagent_msg(id, SubagentMsg { role: "system".to_string(), content: line, tool_name: None, tool_args: None, tool_id: None, elapsed_ms: None });
+    append_subagent_msg(
+        id,
+        SubagentMsg {
+            role: "system".to_string(),
+            content: line,
+            tool_name: None,
+            tool_args: None,
+            tool_id: None,
+            elapsed_ms: None,
+        },
+    );
 }
 
 pub fn append_subagent_msg(id: &str, msg: SubagentMsg) {
@@ -252,7 +327,14 @@ pub fn kill_subagent(id: &str) -> bool {
     if let Some(s) = lock.iter_mut().find(|s| s.id == id) {
         if s.status == "running" {
             s.status = "killed".to_string();
-            s.transcript.push(SubagentMsg { role: "system".to_string(), content: "[killed by user]".to_string(), tool_name: None, tool_args: None, tool_id: None, elapsed_ms: None });
+            s.transcript.push(SubagentMsg {
+                role: "system".to_string(),
+                content: "[killed by user]".to_string(),
+                tool_name: None,
+                tool_args: None,
+                tool_id: None,
+                elapsed_ms: None,
+            });
             return true;
         }
     }
@@ -260,9 +342,13 @@ pub fn kill_subagent(id: &str) -> bool {
 }
 
 pub fn get_subagent(id: &str) -> Option<SubagentStatus> {
-    subagents_lock().lock().unwrap().iter().find(|s| s.id == id).cloned()
+    subagents_lock()
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|s| s.id == id)
+        .cloned()
 }
-
 
 static WAKE_QUEUE: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 fn wake_lock() -> &'static Mutex<Vec<String>> {
@@ -281,7 +367,6 @@ pub fn remove_subagent(id: &str) {
     let mut lock = subagents_lock().lock().unwrap();
     lock.retain(|s| s.id != id);
 }
-
 
 pub fn update_subagent(id: &str, status: &str) {
     let mut lock = subagents_lock().lock().unwrap();
