@@ -4038,17 +4038,6 @@ async fn app_loop(
                 if !ac_matches.is_empty() {
                     draw_autocomplete(f, chunks[7], &ac_matches, ac_idx, ac_scroll);
                 }
-                // Bash guard approval overlay (suppressed while auto-accept ON)
-                if !crate::approval::is_auto_accept() {
-                    if let Some(ref req) = pending_approval {
-                        draw_approval(f, f.area(), req);
-                    }
-                }
-                if let Some(ref req) = pending_question {
-                    if let Some(ref wizard) = question_wizard {
-                        draw_question(f, f.area(), req, wizard);
-                    }
-                }
                 if show_sessions {
                     draw_sessions(
                         f,
@@ -4092,6 +4081,17 @@ async fn app_loop(
                         }
                     } else {
                         draw_subagent_list(f, f.area(), subagent_selected, subagent_scroll);
+                    }
+                }
+                // Approval / question on top of all overlays (visible even inside subagent view)
+                if !crate::approval::is_auto_accept() {
+                    if let Some(ref req) = pending_approval {
+                        draw_approval(f, f.area(), req);
+                    }
+                }
+                if let Some(ref req) = pending_question {
+                    if let Some(ref wizard) = question_wizard {
+                        draw_question(f, f.area(), req, wizard);
                     }
                 }
 
@@ -4365,6 +4365,167 @@ async fn app_loop(
                             }
                             crate::agent::Mode::Norm => {
                                 crate::telemetry::record("mode_norm");
+                            }
+                        }
+                        continue;
+                    }
+                    // Question/Approval modal: hijack all keys while the agent waits — top priority even inside subagent/mcp overlays
+                    if let (Some(mut req), Some(mut wizard)) =
+                        (pending_question.take(), question_wizard.take())
+                    {
+                        let q_ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+                        let q_alt = k.modifiers.contains(KeyModifiers::ALT);
+                        let outcome = match k.code {
+                            KeyCode::Up => {
+                                wizard.move_up();
+                                crate::question::WizardOutcome::Continue
+                            }
+                            KeyCode::Down => {
+                                wizard.move_down();
+                                crate::question::WizardOutcome::Continue
+                            }
+                            KeyCode::BackTab | KeyCode::Left => wizard.back(),
+                            KeyCode::Backspace => {
+                                wizard.backspace();
+                                crate::question::WizardOutcome::Continue
+                            }
+                            KeyCode::Char('c') if q_ctrl => wizard.cancel(),
+                            KeyCode::Char(c) if !q_ctrl && !q_alt => {
+                                if wizard.on_other() {
+                                    wizard.push_char(c);
+                                } else if c == ' ' {
+                                    wizard.toggle();
+                                }
+                                crate::question::WizardOutcome::Continue
+                            }
+                            KeyCode::Enter => wizard.confirm(),
+                            KeyCode::Esc => wizard.cancel(),
+                            _ => crate::question::WizardOutcome::Continue,
+                        };
+                        match outcome {
+                            crate::question::WizardOutcome::Continue => {
+                                pending_question = Some(req);
+                                question_wizard = Some(wizard);
+                            }
+                            crate::question::WizardOutcome::Submit => {
+                                if let Some(tx) = req.tx.take() {
+                                    let _ = tx.send(wizard.answers());
+                                }
+                                crate::telemetry::record("ask_user_answered");
+                            }
+                            crate::question::WizardOutcome::Cancel => {
+                                if let Some(tx) = req.tx.take() {
+                                    let _ = tx.send(Vec::new());
+                                }
+                                crate::telemetry::record("ask_user_skipped");
+                            }
+                        }
+                        dirty = true;
+                        continue;
+                    }
+                    // Guard approval modal: hijack all keys (covers bash + dir + mcp guard)
+                    if pending_approval.is_some() {
+                        let mut req = pending_approval.take().unwrap();
+                        let is_dir = req.reasons.iter().any(|r| r.contains("outside CWD"));
+                        let is_mcp = req.reasons.iter().any(|r| r.contains("MCP tool"));
+                        match k.code {
+                            KeyCode::Char('a') if !k.modifiers.contains(KeyModifiers::CONTROL) => {
+                                if let Some(tx) = req.tx.take() {
+                                    let _ = tx.send(true);
+                                }
+                                crate::telemetry::record(if is_mcp {
+                                    "mcp_guard_allow_once"
+                                } else if is_dir {
+                                    "dir_guard_allow_once"
+                                } else {
+                                    "bash_guard_allow_once"
+                                });
+                            }
+                            KeyCode::Char('A') => {
+                                if is_mcp {
+                                    // MCP: every call needs approval, 'A' is treated as allow once (no persist)
+                                    if let Some(tx) = req.tx.take() {
+                                        let _ = tx.send(true);
+                                    }
+                                    crate::telemetry::record("mcp_guard_allow_once");
+                                } else if is_dir {
+                                    // Extract offending paths from reasons "outside CWD (path → resolved)"
+                                    for r in &req.reasons {
+                                        if let Some(s) = r.find('(') {
+                                            if let Some(e) = r.find(" →") {
+                                                let raw = r[s + 1..e].trim();
+                                                if !raw.is_empty() {
+                                                    crate::dir_guard::allowlist_add(raw);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // Also allowlist the raw cmd/path as fallback
+                                    // For file tools cmd is "read_file /path", extract last token
+                                    let fallback = if req.cmd.contains(' ') {
+                                        req.cmd
+                                            .split_whitespace()
+                                            .last()
+                                            .unwrap_or(&req.cmd)
+                                            .to_string()
+                                    } else {
+                                        req.cmd.clone()
+                                    };
+                                    if !fallback.is_empty() {
+                                        crate::dir_guard::allowlist_add(&fallback);
+                                    }
+                                    // For bash, also allowlist the full command for exact match
+                                    if req.cmd.contains('/') || req.cmd.contains(' ') {
+                                        crate::dir_guard::allowlist_add(&req.cmd);
+                                    }
+                                } else {
+                                    crate::bash_guard::allowlist_add(&req.cmd);
+                                }
+                                if !is_mcp {
+                                    if let Some(tx) = req.tx.take() {
+                                        let _ = tx.send(true);
+                                    }
+                                    crate::telemetry::record(if is_dir {
+                                        "dir_guard_allow_always"
+                                    } else {
+                                        "bash_guard_allow_always"
+                                    });
+                                }
+                            }
+                            KeyCode::Char('d') | KeyCode::Char('D') => {
+                                if let Some(tx) = req.tx.take() {
+                                    let _ = tx.send(false);
+                                }
+                                crate::telemetry::record(if is_mcp {
+                                    "mcp_guard_deny"
+                                } else {
+                                    "bash_guard_deny"
+                                });
+                            }
+                            KeyCode::Enter => {
+                                if let Some(tx) = req.tx.take() {
+                                    let _ = tx.send(true);
+                                }
+                                crate::telemetry::record(if is_mcp {
+                                    "mcp_guard_allow_once"
+                                } else if is_dir {
+                                    "dir_guard_allow_once"
+                                } else {
+                                    "bash_guard_allow_once"
+                                });
+                            }
+                            KeyCode::Esc => {
+                                if let Some(tx) = req.tx.take() {
+                                    let _ = tx.send(false);
+                                }
+                                crate::telemetry::record(if is_mcp {
+                                    "mcp_guard_deny"
+                                } else {
+                                    "bash_guard_deny"
+                                });
+                            }
+                            _ => {
+                                pending_approval = Some(req);
                             }
                         }
                         continue;
@@ -4781,167 +4942,7 @@ async fn app_loop(
                         }
                         continue;
                     }
-                    // Question modal: hijack all keys while the agent waits for an answer
-                    if let (Some(mut req), Some(mut wizard)) =
-                        (pending_question.take(), question_wizard.take())
-                    {
-                        let q_ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-                        let q_alt = k.modifiers.contains(KeyModifiers::ALT);
-                        let outcome = match k.code {
-                            KeyCode::Up => {
-                                wizard.move_up();
-                                crate::question::WizardOutcome::Continue
-                            }
-                            KeyCode::Down => {
-                                wizard.move_down();
-                                crate::question::WizardOutcome::Continue
-                            }
-                            KeyCode::BackTab | KeyCode::Left => wizard.back(),
-                            KeyCode::Backspace => {
-                                wizard.backspace();
-                                crate::question::WizardOutcome::Continue
-                            }
-                            KeyCode::Char('c') if q_ctrl => wizard.cancel(),
-                            KeyCode::Char(c) if !q_ctrl && !q_alt => {
-                                if wizard.on_other() {
-                                    wizard.push_char(c);
-                                } else if c == ' ' {
-                                    wizard.toggle();
-                                }
-                                crate::question::WizardOutcome::Continue
-                            }
-                            KeyCode::Enter => wizard.confirm(),
-                            KeyCode::Esc => wizard.cancel(),
-                            _ => crate::question::WizardOutcome::Continue,
-                        };
-                        match outcome {
-                            crate::question::WizardOutcome::Continue => {
-                                pending_question = Some(req);
-                                question_wizard = Some(wizard);
-                            }
-                            crate::question::WizardOutcome::Submit => {
-                                if let Some(tx) = req.tx.take() {
-                                    let _ = tx.send(wizard.answers());
-                                }
-                                crate::telemetry::record("ask_user_answered");
-                            }
-                            crate::question::WizardOutcome::Cancel => {
-                                if let Some(tx) = req.tx.take() {
-                                    let _ = tx.send(Vec::new());
-                                }
-                                crate::telemetry::record("ask_user_skipped");
-                            }
-                        }
-                        dirty = true;
-                        continue;
-                    }
-                    // Guard approval modal: hijack all keys (covers bash + dir + mcp guard)
-                    if pending_approval.is_some() {
-                        let mut req = pending_approval.take().unwrap();
-                        let is_dir = req.reasons.iter().any(|r| r.contains("outside CWD"));
-                        let is_mcp = req.reasons.iter().any(|r| r.contains("MCP tool"));
-                        match k.code {
-                            KeyCode::Char('a') if !k.modifiers.contains(KeyModifiers::CONTROL) => {
-                                if let Some(tx) = req.tx.take() {
-                                    let _ = tx.send(true);
-                                }
-                                crate::telemetry::record(if is_mcp {
-                                    "mcp_guard_allow_once"
-                                } else if is_dir {
-                                    "dir_guard_allow_once"
-                                } else {
-                                    "bash_guard_allow_once"
-                                });
-                            }
-                            KeyCode::Char('A') => {
-                                if is_mcp {
-                                    // MCP: every call needs approval, 'A' is treated as allow once (no persist)
-                                    if let Some(tx) = req.tx.take() {
-                                        let _ = tx.send(true);
-                                    }
-                                    crate::telemetry::record("mcp_guard_allow_once");
-                                } else if is_dir {
-                                    // Extract offending paths from reasons "outside CWD (path → resolved)"
-                                    for r in &req.reasons {
-                                        if let Some(s) = r.find('(') {
-                                            if let Some(e) = r.find(" →") {
-                                                let raw = r[s + 1..e].trim();
-                                                if !raw.is_empty() {
-                                                    crate::dir_guard::allowlist_add(raw);
-                                                }
-                                            }
-                                        }
-                                    }
-                                    // Also allowlist the raw cmd/path as fallback
-                                    // For file tools cmd is "read_file /path", extract last token
-                                    let fallback = if req.cmd.contains(' ') {
-                                        req.cmd
-                                            .split_whitespace()
-                                            .last()
-                                            .unwrap_or(&req.cmd)
-                                            .to_string()
-                                    } else {
-                                        req.cmd.clone()
-                                    };
-                                    if !fallback.is_empty() {
-                                        crate::dir_guard::allowlist_add(&fallback);
-                                    }
-                                    // For bash, also allowlist the full command for exact match
-                                    if req.cmd.contains('/') || req.cmd.contains(' ') {
-                                        crate::dir_guard::allowlist_add(&req.cmd);
-                                    }
-                                } else {
-                                    crate::bash_guard::allowlist_add(&req.cmd);
-                                }
-                                if !is_mcp {
-                                    if let Some(tx) = req.tx.take() {
-                                        let _ = tx.send(true);
-                                    }
-                                    crate::telemetry::record(if is_dir {
-                                        "dir_guard_allow_always"
-                                    } else {
-                                        "bash_guard_allow_always"
-                                    });
-                                }
-                            }
-                            KeyCode::Char('d') | KeyCode::Char('D') => {
-                                if let Some(tx) = req.tx.take() {
-                                    let _ = tx.send(false);
-                                }
-                                crate::telemetry::record(if is_mcp {
-                                    "mcp_guard_deny"
-                                } else {
-                                    "bash_guard_deny"
-                                });
-                            }
-                            KeyCode::Enter => {
-                                if let Some(tx) = req.tx.take() {
-                                    let _ = tx.send(true);
-                                }
-                                crate::telemetry::record(if is_mcp {
-                                    "mcp_guard_allow_once"
-                                } else if is_dir {
-                                    "dir_guard_allow_once"
-                                } else {
-                                    "bash_guard_allow_once"
-                                });
-                            }
-                            KeyCode::Esc => {
-                                if let Some(tx) = req.tx.take() {
-                                    let _ = tx.send(false);
-                                }
-                                crate::telemetry::record(if is_mcp {
-                                    "mcp_guard_deny"
-                                } else {
-                                    "bash_guard_deny"
-                                });
-                            }
-                            _ => {
-                                pending_approval = Some(req);
-                            }
-                        }
-                        continue;
-                    }
+
                     let mut submit_pending = false;
                     let lines_before = textarea.lines().to_vec();
                     // Ctrl+ base clearing handled before textarea
