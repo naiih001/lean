@@ -1640,7 +1640,21 @@ fn draw_footer(
     } else {
         String::new()
     };
-    let right = format!(" {} msgs ", messages.len());
+    let dictate_right: Option<String> = match dictate_state {
+        crate::dictate::State::Recording => {
+            let meter_str = dictate::meter_string(dictate_meter);
+            Some(format!("● {} listening…", meter_str))
+        }
+        crate::dictate::State::Transcribing => {
+            let frame = spinner[spinner_tick % spinner.len()];
+            Some(format!("{} transcribing…", frame))
+        }
+        crate::dictate::State::Idle => None,
+    };
+    let dictate_len = dictate_right
+        .as_ref()
+        .map(|s| s.chars().count() + 2)
+        .unwrap_or(0);
 
     // Shorten cwd to show last 2 components
     let short_cwd = {
@@ -1665,7 +1679,7 @@ fn draw_footer(
         + model.chars().count()
         + 2
         + center.chars().count()
-        + right.chars().count();
+        + dictate_len;
     let gap = if used < width { width - used } else { 0 };
     let gap_left = gap / 2;
     let gap_right = gap - gap_left;
@@ -1699,41 +1713,80 @@ fn draw_footer(
         " ".repeat(gap_right),
         Style::default().bg(THEME.page_bg),
     ));
-    spans.push(Span::styled(
-        right,
-        Style::default().fg(ASHEN.smoke).bg(THEME.page_bg),
-    ));
+    if let Some(prefix) = dictate_right.clone() {
+        let is_recording = dictate_state == crate::dictate::State::Recording;
+        if is_recording {
+            if let Some(pos) = prefix.find('●') {
+                let before = &prefix[..pos];
+                let rest_start = pos + '●'.len_utf8();
+                let after = &prefix[rest_start..];
+                if !before.is_empty() {
+                    spans.push(Span::styled(
+                        format!(" {}", before),
+                        Style::default().fg(ASHEN.smoke).bg(THEME.page_bg),
+                    ));
+                } else {
+                    spans.push(Span::styled(
+                        " ".to_string(),
+                        Style::default().bg(THEME.page_bg),
+                    ));
+                }
+                spans.push(Span::styled(
+                    "●".to_string(),
+                    Style::default()
+                        .fg(ASHEN.ember)
+                        .bg(THEME.page_bg)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                if !after.is_empty() {
+                    spans.push(Span::styled(
+                        format!("{} ", after),
+                        Style::default().fg(ASHEN.smoke).bg(THEME.page_bg),
+                    ));
+                } else {
+                    spans.push(Span::styled(
+                        " ".to_string(),
+                        Style::default().bg(THEME.page_bg),
+                    ));
+                }
+            } else {
+                spans.push(Span::styled(
+                    format!(" {} ", prefix),
+                    Style::default()
+                        .fg(ASHEN.ember)
+                        .bg(THEME.page_bg)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+        } else {
+            spans.push(Span::styled(
+                format!(" {} ", prefix),
+                Style::default()
+                    .fg(ASHEN.frost)
+                    .bg(THEME.page_bg)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+    }
 
     let footer = Paragraph::new(Line::from(spans));
     f.render_widget(footer, top_area);
-    // Second row: context window + dictate meter (dictate shares bottom row, bar shrinks to fit)
+    // Second row: context window
     if area.height >= 2 {
         let est = estimate_tokens(messages, model);
         let window = context_window_for_model(model);
         let ctx_label = format_context_label(est, window);
         let pct = ((est as f64 / window as f64) * 100.0).min(100.0);
-        // Dictate on context row: resize bar to make room
-        let dictate_prefix_bottom: Option<String> = match dictate_state {
-            crate::dictate::State::Recording => {
-                let meter_str = dictate::meter_string(dictate_meter);
-                Some(format!("● {} listening…", meter_str))
-            }
-            crate::dictate::State::Transcribing => {
-                let frame = spinner[spinner_tick % spinner.len()];
-                Some(format!("{} transcribing…", frame))
-            }
-            crate::dictate::State::Idle => None,
-        };
-        let dictate_len_bottom = dictate_prefix_bottom
-            .as_ref()
-            .map(|s| s.chars().count() + 2)
-            .unwrap_or(0);
-        let bar_width = width
-            .saturating_sub(ctx_label.chars().count() + 4 + dictate_len_bottom)
-            .max(6);
+        let bar_width = width.saturating_sub(ctx_label.chars().count() + 4).max(6);
         let filled = ((pct / 100.0) * bar_width as f64).round() as usize;
         let empty = bar_width.saturating_sub(filled);
         let bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
+        let ctx_line = format!(" {} {} ", bar, ctx_label);
+        let display = if ctx_line.chars().count() > width {
+            ctx_line.chars().take(width).collect::<String>()
+        } else {
+            ctx_line
+        };
         let ctx_style = if pct > 85.0 {
             Style::default().fg(ASHEN.ember).bg(THEME.page_bg)
         } else if pct > 60.0 {
@@ -1741,75 +1794,7 @@ fn draw_footer(
         } else {
             Style::default().fg(ASHEN.deep_ash).bg(THEME.page_bg)
         };
-        let mut bottom_spans: Vec<Span> = Vec::new();
-        if let Some(prefix) = dictate_prefix_bottom {
-            let is_recording = dictate_state == crate::dictate::State::Recording;
-            if is_recording {
-                if let Some(pos) = prefix.find('●') {
-                    let before = &prefix[..pos];
-                    let rest_start = pos + '●'.len_utf8();
-                    let after = &prefix[rest_start..];
-                    if !before.is_empty() {
-                        bottom_spans.push(Span::styled(
-                            format!(" {}", before),
-                            Style::default().fg(ASHEN.smoke).bg(THEME.page_bg),
-                        ));
-                    } else {
-                        bottom_spans.push(Span::styled(
-                            " ".to_string(),
-                            Style::default().bg(THEME.page_bg),
-                        ));
-                    }
-                    bottom_spans.push(Span::styled(
-                        "●".to_string(),
-                        Style::default()
-                            .fg(ASHEN.ember)
-                            .bg(THEME.page_bg)
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                    if !after.is_empty() {
-                        bottom_spans.push(Span::styled(
-                            format!("{} ", after),
-                            Style::default().fg(ASHEN.smoke).bg(THEME.page_bg),
-                        ));
-                    } else {
-                        bottom_spans.push(Span::styled(
-                            " ".to_string(),
-                            Style::default().bg(THEME.page_bg),
-                        ));
-                    }
-                } else {
-                    bottom_spans.push(Span::styled(
-                        format!(" {} ", prefix),
-                        Style::default()
-                            .fg(ASHEN.ember)
-                            .bg(THEME.page_bg)
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                }
-            } else {
-                bottom_spans.push(Span::styled(
-                    format!(" {} ", prefix),
-                    Style::default()
-                        .fg(ASHEN.frost)
-                        .bg(THEME.page_bg)
-                        .add_modifier(Modifier::BOLD),
-                ));
-            }
-        }
-        bottom_spans.push(Span::styled(format!(" {}", bar), ctx_style));
-        bottom_spans.push(Span::styled(format!(" {} ", ctx_label), ctx_style));
-        let used_bottom = bottom_spans
-            .iter()
-            .map(|s| s.content.chars().count())
-            .sum::<usize>();
-        if used_bottom < width {
-            bottom_spans.push(Span::styled(
-                " ".repeat(width - used_bottom),
-                Style::default().bg(THEME.page_bg),
-            ));
-        }
-        let cpara = Paragraph::new(Line::from(bottom_spans));
+        let cpara = Paragraph::new(Line::from(Span::styled(display, ctx_style)));
         f.render_widget(cpara, bottom_area);
     }
 }
