@@ -1306,10 +1306,14 @@ fn draw_subagent_list(f: &mut Frame, area: Rect, selected: usize, scroll: usize)
         f.render_widget(para, inner);
         return;
     }
-    let row_h = 7u16; // 1 header + 5 preview + 1 gap
-    let visible = (inner.height / row_h) as usize;
-    let start = scroll.min(subs.len().saturating_sub(1));
+    // 2-row cards: header + single-line task (compact for 20-50 agents)
+    let row_h: u16 = 2;
+    let visible = ((inner.height / row_h) as usize).max(1).min(subs.len());
+    let max_scroll = subs.len().saturating_sub(visible);
+    let clamped_scroll = scroll.min(max_scroll);
+    let start = clamped_scroll;
     let end = (start + visible).min(subs.len());
+    let total = subs.len();
     let mut y = inner.y;
     for (idx, sub) in subs[start..end].iter().enumerate() {
         let abs_idx = start + idx;
@@ -1351,18 +1355,41 @@ fn draw_subagent_list(f: &mut Frame, area: Rect, selected: usize, scroll: usize)
         } else {
             Style::default().fg(ASHEN.smoke).bg(bg)
         };
+        let elapsed = std::time::SystemTime::now()
+            .duration_since(sub.started_at)
+            .unwrap_or_default()
+            .as_secs();
+        let elapsed_str = if elapsed < 60 {
+            format!("{}s", elapsed)
+        } else {
+            format!("{}m", elapsed / 60)
+        };
+        let short_id = &sub.id[..8.min(sub.id.len())];
+        let label = if sub.label.is_empty() {
+            sub.agent.clone()
+        } else {
+            sub.label.clone()
+        };
         let header = Line::from(vec![
             Span::styled(format!(" {} ", icon), status_style.bg(bg)),
             Span::styled(
-                sub.agent.clone(),
+                label,
                 Style::default()
-                    .fg(ASHEN.frost)
+                    .fg(ASHEN.bone)
                     .bg(bg)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(format!("  [{}]", sub.status), status_style.bg(bg)),
             Span::styled(
-                format!("  {}", if is_sel { "◀" } else { "" }),
+                format!(" [{}]", sub.agent),
+                Style::default().fg(ASHEN.smoke).bg(bg),
+            ),
+            Span::styled(format!(" [{}]", sub.status), status_style.bg(bg)),
+            Span::styled(
+                format!("  {}  {}", short_id, elapsed_str),
+                Style::default().fg(ASHEN.deep_ash).bg(bg),
+            ),
+            Span::styled(
+                format!(" {}", if is_sel { "◀" } else { "" }),
                 Style::default().fg(ASHEN.charcoal).bg(bg),
             ),
         ]);
@@ -1375,23 +1402,36 @@ fn draw_subagent_list(f: &mut Frame, area: Rect, selected: usize, scroll: usize)
                 height: 1,
             },
         );
-        let previews = wrap_task_preview(&sub.task, (inner.width as usize).saturating_sub(4), 5);
-        for (i, line) in previews.iter().enumerate() {
-            let para = Paragraph::new(Line::from(Span::styled(
-                format!("  {}", line),
-                Style::default().fg(ASHEN.deep_ash).bg(bg),
-            )));
-            f.render_widget(
-                para,
-                Rect {
-                    x: row_area.x,
-                    y: row_area.y + 1 + i as u16,
-                    width: row_area.width,
-                    height: 1,
-                },
-            );
-        }
+        let task_w = (inner.width as usize).saturating_sub(4);
+        let task_one = sub.task.lines().next().unwrap_or("").trim();
+        let task_disp = if task_one.chars().count() > task_w {
+            format!(
+                "{}…",
+                task_one
+                    .chars()
+                    .take(task_w.saturating_sub(1))
+                    .collect::<String>()
+            )
+        } else {
+            task_one.to_string()
+        };
+        let task_line = Line::from(Span::styled(
+            format!("  {}", task_disp),
+            Style::default().fg(ASHEN.deep_ash).bg(bg),
+        ));
+        f.render_widget(
+            Paragraph::new(task_line),
+            Rect {
+                x: row_area.x,
+                y: row_area.y + 1,
+                width: row_area.width,
+                height: 1,
+            },
+        );
         y += row_h;
+    }
+    if total > visible {
+        draw_scrollbar(f, inner, total, visible, clamped_scroll as u16);
     }
 }
 
@@ -1405,36 +1445,88 @@ fn draw_subagent_detail(f: &mut Frame, area: Rect, idx: usize, scroll: u16) {
     }
     let sub = &subs[idx];
     f.render_widget(Clear, area);
+    let elapsed_tmp = std::time::SystemTime::now()
+        .duration_since(sub.started_at)
+        .unwrap_or_default()
+        .as_secs();
+    let elapsed_str_tmp = if elapsed_tmp < 60 {
+        format!("{}s", elapsed_tmp)
+    } else {
+        format!("{}m{}s", elapsed_tmp / 60, elapsed_tmp % 60)
+    };
+    let display_label_tmp = if sub.label.is_empty() {
+        sub.agent.clone()
+    } else {
+        sub.label.clone()
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(
-            " {} — {} [{}] — Esc: back  Shift+K: kill ",
+            " {} [{}] — {} [{}] {} — Esc: back  Shift+K: kill ",
+            display_label_tmp,
             sub.agent,
             &sub.id[..8.min(sub.id.len())],
-            sub.status
+            sub.status,
+            elapsed_str_tmp
         ))
         .style(Style::default().bg(THEME.page_bg))
         .border_style(Style::default().fg(ASHEN.frost));
     let inner = block.inner(area);
     f.render_widget(block, area);
-    // Header lines (task/status) rendered above transcript
-    let mut header_lines: Vec<Line> = Vec::new();
-    header_lines.push(Line::from(vec![
-        Span::styled("Task: ", Style::default().fg(ASHEN.charcoal)),
-        Span::styled(sub.task.clone(), Style::default().fg(ASHEN.bone)),
+    // sticky header: detailed, always visible while transcript scrolls
+    let mut header_raw: Vec<Line> = Vec::new();
+    header_raw.push(Line::from(vec![
+        Span::styled(
+            format!("{} ", display_label_tmp),
+            Style::default().fg(ASHEN.bone).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("[{}]", sub.agent), Style::default().fg(ASHEN.frost)),
+        Span::styled(
+            format!("  [{}]", sub.status),
+            Style::default()
+                .fg(ASHEN.frost)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  {}  {}", &sub.id[..8.min(sub.id.len())], elapsed_str_tmp),
+            Style::default().fg(ASHEN.deep_ash),
+        ),
     ]));
-    header_lines.push(Line::from(Span::styled(
-        format!("Status: {}  Started: {:?}", sub.status, sub.started_at),
+    for l in hard_wrap_str(&sub.task, (inner.width as usize).saturating_sub(6)).lines() {
+        header_raw.push(Line::from(vec![
+            Span::styled("Task: ", Style::default().fg(ASHEN.charcoal)),
+            Span::styled(l.to_string(), Style::default().fg(ASHEN.bone)),
+        ]));
+    }
+    header_raw.push(Line::from(Span::styled(
+        format!(
+            "Started: {:?}  Elapsed: {}",
+            sub.started_at, elapsed_str_tmp
+        ),
         Style::default().fg(ASHEN.deep_ash),
     )));
-    header_lines.push(Line::from(Span::styled(
+    header_raw.push(Line::from(Span::styled(
         "─".repeat(inner.width as usize),
         Style::default().fg(ASHEN.charcoal),
     )));
-    let mut all_lines: Vec<Line> = Vec::new();
-    all_lines.extend(header_lines);
+    let header_wrapped = wrap_lines(header_raw, inner.width as usize);
+    let header_h = (header_wrapped.len() as u16).min(inner.height);
+    let header_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: header_h,
+    };
+    let content_area = Rect {
+        x: inner.x,
+        y: inner.y + header_h,
+        width: inner.width,
+        height: inner.height.saturating_sub(header_h),
+    };
+    f.render_widget(Paragraph::new(header_wrapped), header_area);
+    let mut transcript_lines: Vec<Line> = Vec::new();
     if sub.transcript.is_empty() {
-        all_lines.push(Line::from(Span::styled(
+        transcript_lines.push(Line::from(Span::styled(
             "(no transcript yet — waiting for updates…)",
             Style::default()
                 .fg(ASHEN.charcoal)
@@ -1455,22 +1547,22 @@ fn draw_subagent_detail(f: &mut Frame, area: Rect, idx: usize, scroll: u16) {
             })
             .collect();
         let content_lines = build_content_lines(&msgs);
-        all_lines.extend(content_lines);
+        transcript_lines.extend(content_lines);
     }
-    let wrapped = wrap_lines(all_lines, inner.width as usize);
+    let wrapped = wrap_lines(transcript_lines, content_area.width as usize);
     let total = wrapped.len();
-    let clamped = (scroll as usize).min(total.saturating_sub(inner.height as usize)) as u16;
+    let viewport_h = content_area.height as usize;
+    let clamped = (scroll as usize).min(total.saturating_sub(viewport_h)) as u16;
     let para = Paragraph::new(wrapped).scroll((clamped, 0));
-    f.render_widget(para, inner);
-    if total > inner.height as usize {
-        draw_scrollbar(f, inner, total, inner.height as usize, clamped);
+    f.render_widget(para, content_area);
+    if total > viewport_h {
+        draw_scrollbar(f, content_area, total, viewport_h, clamped);
     }
 }
 
 fn detail_total_for_width(sub: &crate::agents::SubagentStatus, width: usize) -> usize {
-    let mut header = 3usize; // task/status/separator
     if sub.transcript.is_empty() {
-        return header + 1;
+        return 1;
     }
     let msgs: Vec<Msg> = sub
         .transcript
@@ -1485,22 +1577,7 @@ fn detail_total_for_width(sub: &crate::agents::SubagentStatus, width: usize) -> 
         })
         .collect();
     let lines = build_content_lines(&msgs);
-    // header + content
-    let mut all: Vec<Line> = Vec::with_capacity(header + lines.len());
-    all.push(Line::from(vec![
-        Span::styled("Task: ", Style::default().fg(ASHEN.charcoal)),
-        Span::styled(sub.task.clone(), Style::default().fg(ASHEN.bone)),
-    ]));
-    all.push(Line::from(Span::styled(
-        format!("Status: {}  Started: {:?}", sub.status, sub.started_at),
-        Style::default().fg(ASHEN.deep_ash),
-    )));
-    all.push(Line::from(Span::styled(
-        "─".repeat(width),
-        Style::default().fg(ASHEN.charcoal),
-    )));
-    all.extend(lines);
-    wrap_lines(all, width).len()
+    wrap_lines(lines, width).len()
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
@@ -4006,16 +4083,49 @@ async fn app_loop(
         if auto_scroll {
             scroll = total_lines.saturating_sub(content_height) as u16;
         }
-        // Subagent detail/list auto-tail — exact regular behavior
         if subagent_detail.is_some() {
             if let Some(idx) = subagent_detail {
                 let subs = crate::agents::list_subagents();
                 if let Some(sub) = subs.get(idx) {
                     let inner_w = (term_size.width as usize).saturating_sub(4).max(10);
                     let inner_h = (term_size.height as usize).saturating_sub(6).max(5);
+                    // sticky header: viewport is content area only (inner - header)
+                    let header_raw: Vec<Line> = {
+                        let display_label = if sub.label.is_empty() {
+                            sub.agent.clone()
+                        } else {
+                            sub.label.clone()
+                        };
+                        let elapsed = std::time::SystemTime::now()
+                            .duration_since(sub.started_at)
+                            .unwrap_or_default()
+                            .as_secs();
+                        let elapsed_str = if elapsed < 60 {
+                            format!("{}s", elapsed)
+                        } else {
+                            format!("{}m{}s", elapsed / 60, elapsed % 60)
+                        };
+                        let mut h = Vec::new();
+                        h.push(Line::from(vec![
+                            Span::styled(display_label, Style::default()),
+                            Span::styled(sub.agent.clone(), Style::default()),
+                        ]));
+                        for l in hard_wrap_str(&sub.task, inner_w.saturating_sub(6)).lines() {
+                            h.push(Line::from(l.to_string()));
+                        }
+                        h.push(Line::from(format!(
+                            "Started: {:?}  Elapsed: {}",
+                            sub.started_at, elapsed_str
+                        )));
+                        h.push(Line::from("─".repeat(inner_w)));
+                        h
+                    };
+                    let header_h = wrap_lines(header_raw, inner_w).len().min(inner_h);
+                    let content_h = inner_h.saturating_sub(header_h);
                     let total = detail_total_for_width(sub, inner_w);
+                    // detail_total_for_width now returns transcript-only length (see function), so compare to content_h
                     subagent_detail_total = total;
-                    subagent_detail_viewport_h = inner_h;
+                    subagent_detail_viewport_h = content_h;
                     if subagent_detail_auto_scroll {
                         subagent_detail_scroll = total.saturating_sub(inner_h) as u16;
                     } else {
@@ -4028,10 +4138,11 @@ async fn app_loop(
                 }
             }
         } else if show_subagents {
-            // list auto-tail when new agents appear and user hasn't scrolled up
             if subagent_list_auto_scroll {
                 let total = crate::agents::list_subagents().len();
-                let vis = ((term_size.height as usize).saturating_sub(10) / 7).max(1);
+                let popup_h = (term_size.height as usize * 60 / 100).max(6);
+                let inner_h = popup_h.saturating_sub(2);
+                let vis = (inner_h / 2).max(1);
                 let max = total.saturating_sub(vis);
                 subagent_scroll = max;
             }
@@ -4188,7 +4299,6 @@ async fn app_loop(
                                         subagent_detail_scroll.saturating_sub(3);
                                     subagent_detail_auto_scroll = false;
                                 } else {
-                                    // list: scroll by 1 row (7 lines per card)
                                     if subagent_scroll > 0 {
                                         subagent_scroll = subagent_scroll.saturating_sub(1);
                                     }
@@ -4206,8 +4316,9 @@ async fn app_loop(
                                     }
                                 } else {
                                     let total = crate::agents::list_subagents().len();
+                                    let popup_h = (term_size.height as usize * 60 / 100).max(6);
                                     let vis_rows =
-                                        (cached_content_height / 7).max(1).min(total.max(1));
+                                        (popup_h.saturating_sub(2) / 2).max(1).min(total.max(1));
                                     let max = total.saturating_sub(vis_rows);
                                     subagent_scroll = (subagent_scroll + 1).min(max);
                                     if subagent_scroll >= max {
@@ -4666,15 +4777,16 @@ async fn app_loop(
                                 subagent_list_auto_scroll = false;
                             }
                             KeyCode::Down => {
+                                let popup_h = (term_size.height as usize * 60 / 100).max(6);
+                                let vis = (popup_h.saturating_sub(2) / 2).max(1);
                                 let len = crate::agents::list_subagents().len();
                                 if subagent_selected + 1 < len {
                                     subagent_selected += 1;
-                                    if subagent_selected >= subagent_scroll + 8 {
+                                    if subagent_selected >= subagent_scroll + vis {
                                         subagent_scroll += 1;
                                     }
                                 }
-                                let total = crate::agents::list_subagents().len();
-                                let vis = 8usize;
+                                let total = len;
                                 let max = total.saturating_sub(vis);
                                 if subagent_scroll >= max {
                                     subagent_list_auto_scroll = true;
@@ -4683,18 +4795,21 @@ async fn app_loop(
                                 }
                             }
                             KeyCode::PageUp => {
-                                let step = 8usize;
+                                let popup_h = (term_size.height as usize * 60 / 100).max(6);
+                                let vis = (popup_h.saturating_sub(2) / 2).max(1);
+                                let step = vis;
                                 subagent_selected = subagent_selected.saturating_sub(step);
                                 subagent_scroll = subagent_scroll.saturating_sub(step);
                                 subagent_list_auto_scroll = false;
                             }
                             KeyCode::PageDown => {
-                                let step = 8usize;
+                                let popup_h = (term_size.height as usize * 60 / 100).max(6);
+                                let vis = (popup_h.saturating_sub(2) / 2).max(1);
+                                let step = vis;
                                 let len = crate::agents::list_subagents().len();
                                 subagent_selected =
                                     (subagent_selected + step).min(len.saturating_sub(1));
                                 let total = len;
-                                let vis = 8usize;
                                 let max = total.saturating_sub(vis);
                                 subagent_scroll = (subagent_scroll + step).min(max);
                                 if subagent_scroll >= max {
@@ -4712,7 +4827,8 @@ async fn app_loop(
                                     subagent_selected = len - 1;
                                 }
                                 let total = len;
-                                let vis = 8usize;
+                                let popup_h = (term_size.height as usize * 60 / 100).max(6);
+                                let vis = (popup_h.saturating_sub(2) / 2).max(1);
                                 let max = total.saturating_sub(vis);
                                 subagent_scroll = max;
                                 subagent_list_auto_scroll = true;

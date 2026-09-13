@@ -284,7 +284,7 @@ async fn agents_section() -> Option<String> {
     let lines: Vec<&str> = catalog.lines().collect();
     let take = 6.min(lines.len());
     let mut out = String::from("\n\n## Available Agents (subagents)\n");
-    out.push_str("You can delegate via `subagent` tool. Use scout for recon, researcher for web, worker for general tasks. Users can add agents via agents/<name>/AGENT.md\n");
+    out.push_str("You can delegate via `subagent` tool (requires unique `name` label, e.g. subagent(agent=\"scout\", task=\"...\", name=\"research-auth\") — label is shown first in popup, auto-suffixed if duplicate). Use scout for recon, researcher for web, worker for general tasks. Users can add agents via agents/<name>/AGENT.md\n");
     for line in lines.iter().take(take) {
         out.push_str(line);
         out.push_str("\n");

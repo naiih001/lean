@@ -502,15 +502,15 @@ pub fn native_tool_definitions() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "subagent",
-                "description": "Spawn a subagent (scout, researcher, worker) with a task. Returns summary. Use for delegation.",
+                "description": "Spawn a subagent (scout, researcher, worker) with a task. Requires a unique human label for tracking (shown first in popup, e.g. 'research-auth'). Auto-suffixed if duplicate.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "agent": {"type": "string", "description": "Agent to spawn (e.g. scout, researcher)"},
                         "task": {"type": "string", "description": "Task/prompt for subagent"},
-                        "name": {"type": "string", "description": "Optional cosmetic label"}
+                        "name": {"type": "string", "description": "Required unique label for tracking (e.g. 'crawler-1'). Auto-suffixed if taken"}
                     },
-                    "required": ["agent", "task"]
+                    "required": ["agent", "task", "name"]
                 }
             }
         }),

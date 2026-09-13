@@ -270,6 +270,7 @@ pub struct SubagentMsg {
 pub struct SubagentStatus {
     pub id: String,
     pub agent: String,
+    pub label: String,
     pub task: String,
     pub status: String, // running, done, error
     pub started_at: SystemTime,
@@ -285,11 +286,12 @@ pub fn list_subagents() -> Vec<SubagentStatus> {
     subagents_lock().lock().unwrap().clone()
 }
 
-pub fn register_subagent(id: String, agent: String, task: String) {
+pub fn register_subagent(id: String, agent: String, label: String, task: String) {
     let mut lock = subagents_lock().lock().unwrap();
     lock.push(SubagentStatus {
         id,
         agent,
+        label,
         task,
         status: "running".to_string(),
         started_at: SystemTime::now(),

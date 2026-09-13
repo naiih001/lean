@@ -564,17 +564,38 @@ async fn guard_mcp(server: &str, tool: &str, args: &serde_json::Value) -> Option
 }
 
 async fn run_subagent(agent_name: &str, task: &str, label: &str) -> String {
+    if label.trim().is_empty() {
+        return "Error: subagent 'name' is required — provide a unique label (e.g. 'research-auth')".to_string();
+    }
     let agent = match crate::agents::load_agent(agent_name).await {
         Ok(a) => a,
         Err(e) => return format!("Error: {}", e),
     };
-    let id = format!("{}-{}", agent_name, &uuid_simple());
-    let display_label = if label.is_empty() {
-        agent_name.to_string()
-    } else {
-        label.to_string()
-    };
-    crate::agents::register_subagent(id.clone(), agent_name.to_string(), task.to_string());
+    // auto-suffix if duplicate label among running agents
+    let existing: std::collections::HashSet<String> = crate::agents::list_subagents()
+        .into_iter()
+        .filter(|s| s.status == "running")
+        .map(|s| s.label.clone())
+        .collect();
+    let mut display_label = label.trim().to_string();
+    if existing.contains(&display_label) {
+        let mut n = 2;
+        loop {
+            let cand = format!("{}-{}", label.trim(), n);
+            if !existing.contains(&cand) {
+                display_label = cand;
+                break;
+            }
+            n += 1;
+        }
+    }
+    let id = format!("{}-{}", display_label, &uuid_simple());
+    crate::agents::register_subagent(
+        id.clone(),
+        agent_name.to_string(),
+        display_label.clone(),
+        task.to_string(),
+    );
     let sub_prompt = format!(
         "Agent: {}\nDescription: {}\n\nTask: {}\n\nContext:\n{}",
         agent.name, agent.description, task, agent.body
@@ -862,8 +883,14 @@ pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
                         s.task.clone()
                     };
                     let short_id = &s.id[..8.min(s.id.len())];
+                    let label = if s.label.is_empty() {
+                        s.agent.clone()
+                    } else {
+                        s.label.clone()
+                    };
                     lines.push(format!(
-                        "- {} [{}] {} — \"{}\" ({}s, {} transcript lines)",
+                        "- {} {} [{}] {} — \"{}\" ({}s, {} transcript lines)",
+                        label,
                         short_id,
                         s.status,
                         s.agent,
