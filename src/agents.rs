@@ -350,14 +350,36 @@ pub fn get_subagent(id: &str) -> Option<SubagentStatus> {
         .cloned()
 }
 
-static WAKE_QUEUE: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
-fn wake_lock() -> &'static Mutex<Vec<String>> {
+#[derive(Debug, Clone)]
+pub struct WakeMessage {
+    pub id: String,
+    pub agent: String,
+    pub label: String,
+    pub task: String,
+    pub result: String,
+    pub elapsed_ms: u64,
+}
+
+static WAKE_QUEUE: OnceLock<Mutex<Vec<WakeMessage>>> = OnceLock::new();
+fn wake_lock() -> &'static Mutex<Vec<WakeMessage>> {
     WAKE_QUEUE.get_or_init(|| Mutex::new(Vec::new()))
 }
 pub fn push_wake_message(msg: String) {
-    wake_lock().lock().unwrap().push(msg);
+    // Legacy string wake (system) — wrap as WakeMessage for uniform handling
+    let w = WakeMessage {
+        id: String::new(),
+        agent: String::new(),
+        label: String::new(),
+        task: String::new(),
+        result: msg,
+        elapsed_ms: 0,
+    };
+    wake_lock().lock().unwrap().push(w);
 }
-pub fn take_wake_messages() -> Vec<String> {
+pub fn push_wake_tool(wake: WakeMessage) {
+    wake_lock().lock().unwrap().push(wake);
+}
+pub fn take_wake_messages() -> Vec<WakeMessage> {
     let mut lock = wake_lock().lock().unwrap();
     let out = lock.clone();
     lock.clear();

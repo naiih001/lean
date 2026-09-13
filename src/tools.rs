@@ -594,6 +594,7 @@ async fn run_subagent(agent_name: &str, task: &str, label: &str) -> String {
         // Use a new current_thread runtime if no handle
         let fut = async move {
             use futures::StreamExt;
+            let started = std::time::SystemTime::now();
             let mut stream = crate::agent::run_agent(sub_prompt, model, max_steps);
             futures::pin_mut!(stream);
             let mut final_text = String::new();
@@ -730,10 +731,18 @@ async fn run_subagent(agent_name: &str, task: &str, label: &str) -> String {
                     elapsed_ms: None,
                 },
             );
-            crate::agents::push_wake_message(format!(
-                "[subagent {} finished]\n{}",
-                display_clone, result_text
-            ));
+            let elapsed_ms = std::time::SystemTime::now()
+                .duration_since(started)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            crate::agents::push_wake_tool(crate::agents::WakeMessage {
+                id: id_clone.clone(),
+                agent: agent_name_clone.clone(),
+                label: display_clone.clone(),
+                task: task_clone.clone(),
+                result: result_text.clone(),
+                elapsed_ms,
+            });
             // keep done visible for 2s then remove from session
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             crate::agents::remove_subagent(&id_clone);

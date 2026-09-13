@@ -3751,18 +3751,55 @@ async fn app_loop(
                 dirty = true;
             }
         }
-        // Poll for subagent wake messages (pi-style: master keeps working, woken when subagent returns)
+        // Poll for subagent wake messages — render as tool call on master list (like pi)
         let wakes = crate::agents::take_wake_messages();
         if !wakes.is_empty() {
             for w in wakes {
-                messages.push(Msg {
-                    role: "system".into(),
-                    content: w,
-                    tool_id: None,
-                    tool_name: None,
-                    tool_args: None,
-                    elapsed_ms: None,
-                });
+                if w.id.is_empty() && w.agent.is_empty() {
+                    // legacy string wake (fallback)
+                    messages.push(Msg {
+                        role: "system".into(),
+                        content: w.result,
+                        tool_id: None,
+                        tool_name: None,
+                        tool_args: None,
+                        elapsed_ms: None,
+                    });
+                } else {
+                    // tool-like subagent completion: looks identical to bash/read tool boxes
+                    let header = if w.agent.is_empty() || w.agent == w.label {
+                        w.label.clone()
+                    } else {
+                        format!("{}:{}", w.agent, w.label)
+                    };
+                    // result is "[subagent:label]\n{actual}" — strip prefix for cleaner body
+                    let clean = if let Some(pos) = w.result.find('\n') {
+                        let after = &w.result[pos + 1..];
+                        // also strip leading "[subagent" line if present
+                        if after.starts_with("[subagent") {
+                            after.find('\n').map(|p| after[p + 1..].trim_start().to_string()).unwrap_or(after.to_string())
+                        } else {
+                            after.trim_start().to_string()
+                        }
+                    } else {
+                        w.result.clone()
+                    };
+                    let body = if clean.trim().is_empty() { "(no output)".to_string() } else { clean };
+                    // keep args JSON-ish like original tool call for preview
+                    let args_json = if w.task.is_empty() {
+                        format!(r#"{{"agent":"{}","task":"{}"}}"#, w.agent, w.label)
+                    } else {
+                        serde_json::json!({"agent": w.agent, "task": w.task}).to_string()
+                    };
+                    messages.push(Msg {
+                        role: "tool".into(),
+                        content: format!("subagent:{} → {}", header, body),
+                        tool_id: Some(w.id.clone()),
+                        tool_name: Some(format!("subagent:{}", header)),
+                        tool_args: Some(args_json),
+                        elapsed_ms: Some(w.elapsed_ms),
+                    });
+                }
             }
             dirty = true;
         }
