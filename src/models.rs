@@ -51,12 +51,6 @@ impl Provider {
             Self::Generic => "generic",
         }
     }
-    pub fn requires_key(&self) -> bool {
-        match self {
-            Self::Ollama => false,
-            _ => true,
-        }
-    }
     pub fn default_base_url(&self) -> String {
         match self {
             Self::OpenAI => "https://api.openai.com/v1".to_string(),
@@ -65,14 +59,7 @@ impl Provider {
             Self::Generic => default_env_base_url(),
         }
     }
-    pub fn default_key_env(&self) -> Option<&'static str> {
-        match self {
-            Self::OpenAI => Some("OPENAI_API_KEY"),
-            Self::Anthropic => Some("ANTHROPIC_API_KEY"),
-            Self::Ollama => None,
-            Self::Generic => None,
-        }
-    }
+
 }
 
 /// Entry for a single model alias.
@@ -197,62 +184,6 @@ fn ollama_base_url_from_env() -> String {
     }
 }
 
-fn ollama_host_for_probe() -> String {
-    std::env::var("OLLAMA_HOST")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.trim().trim_end_matches('/').to_string())
-        .unwrap_or_else(|| "http://localhost:11434".to_string())
-}
-
-/// Check if Ollama is reachable and return model names. Sync best-effort with timeout.
-/// Honors OLLAMA_HOST env var; falls back to localhost/127.0.0.1 for compat.
-fn ollama_detect_sync() -> Vec<String> {
-    let try_client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_millis(400))
-        .build();
-    if let Ok(client) = try_client {
-        let mut tried = Vec::new();
-        let primary = ollama_host_for_probe();
-        tried.push(format!("{}/api/tags", primary.trim_end_matches('/')));
-        // Fallbacks for compat when OLLAMA_HOST is default — avoid duplicate probes
-        for host in ["http://localhost:11434", "http://127.0.0.1:11434"] {
-            let url = format!("{}/api/tags", host);
-            if !tried.contains(&url) {
-                tried.push(url);
-            }
-        }
-        for url in tried {
-            if let Ok(resp) = client.get(&url).send() {
-                if let Ok(json) = resp.json::<serde_json::Value>() {
-                    if let Some(models) = json.get("models").and_then(|m| m.as_array()) {
-                        let names: Vec<String> = models
-                            .iter()
-                            .filter_map(|m| {
-                                m.get("name")
-                                    .and_then(|n| n.as_str())
-                                    .map(|s| s.to_string())
-                            })
-                            .collect();
-                        if !names.is_empty() {
-                            return names;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Vec::new()
-}
-
-pub fn ollama_available() -> bool {
-    !ollama_detect_sync().is_empty()
-}
-
-pub fn ollama_model_names() -> Vec<String> {
-    ollama_detect_sync()
-}
-
 /// Canonical fresh-install template — must stay OpenAI (Q3). Do not change to localhost zen proxy.
 fn template_config() -> ModelsConfig {
     let mut models = HashMap::new();
@@ -276,29 +207,6 @@ fn template_config() -> ModelsConfig {
     }
 }
 
-fn example_ollama_entry(model: &str) -> ModelEntry {
-    ModelEntry {
-        model: model.to_string(),
-        provider: Some(Provider::Ollama),
-        base_url: Some(Provider::Ollama.default_base_url()),
-        api_key: Some("ollama".to_string()),
-        api_key_env: None,
-        api: None,
-        vision: None,
-    }
-}
-
-fn example_anthropic_entry(model: &str) -> ModelEntry {
-    ModelEntry {
-        model: model.to_string(),
-        provider: Some(Provider::Anthropic),
-        base_url: Some(Provider::Anthropic.default_base_url()),
-        api_key: None,
-        api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
-        api: Some(ApiMode::Anthropic),
-        vision: None,
-    }
-}
 
 /// Ensure ~/.lean/models.json exists, creating a template if missing.
 /// Returns the loaded config.
@@ -477,18 +385,6 @@ fn resolve_api_key_env(entry: &ModelEntry, _alias: Option<&str>) -> Result<Strin
     try_fallback(None)
 }
 
-/// List available aliases sorted.
-pub fn list_aliases() -> Result<Vec<String>> {
-    let cfg = load()?;
-    let mut v: Vec<String> = cfg.models.keys().cloned().collect();
-    v.sort();
-    Ok(v)
-}
-
-/// Return the default alias.
-pub fn default_alias() -> Result<String> {
-    Ok(load()?.default)
-}
 
 /// Return the path for display/error messages.
 pub fn path_display() -> String {

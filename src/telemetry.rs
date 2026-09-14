@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -14,8 +13,6 @@ struct HotkeyFile {
     version: u8,
     actions: HashMap<String, ActionStat>,
 }
-
-static TELEMETRY_INIT: OnceLock<bool> = OnceLock::new();
 
 fn now_unix() -> u64 {
     SystemTime::now()

@@ -109,22 +109,6 @@ impl Session {
         Ok(())
     }
 
-    pub fn save_sync(&self) -> anyhow::Result<()> {
-        let dir = sessions_dir();
-        std::fs::create_dir_all(&dir)?;
-        let mut to_save = self.clone();
-        to_save.llm_history = Self::sanitize_history(&self.llm_history);
-        let json = serde_json::to_string_pretty(&to_save)?;
-        std::fs::write(self.file_path(), json)?;
-        Ok(())
-    }
-
-    pub fn load(id: &str) -> anyhow::Result<Self> {
-        let path = sessions_dir().join(format!("{}.json", id));
-        let s = std::fs::read_to_string(&path)?;
-        Ok(serde_json::from_str(&s)?)
-    }
-
     pub fn list() -> Vec<Session> {
         let dir = sessions_dir();
         let mut out = Vec::new();
@@ -164,6 +148,3 @@ impl Session {
     }
 }
 
-pub fn session_path_for_id(id: &str) -> PathBuf {
-    sessions_dir().join(format!("{}.json", id))
-}

@@ -15,10 +15,6 @@ pub fn set_auto_accept(v: bool) {
     AUTO_ACCEPT.store(v, Ordering::Relaxed);
 }
 
-pub fn toggle_auto_accept() -> bool {
-    let prev = AUTO_ACCEPT.fetch_xor(true, Ordering::Relaxed);
-    !prev
-}
 
 #[derive(Debug)]
 pub struct ApprovalRequest {
@@ -73,25 +69,8 @@ pub fn take_pending() -> Option<ApprovalRequest> {
     lock.pop_front()
 }
 
-/// TUI side: put back if user hasn't decided yet (e.g., keep showing) — push to front
-pub fn put_back(req: ApprovalRequest) {
-    let mut lock = pending_lock().lock().unwrap();
-    lock.push_front(req);
-}
-
-/// Check if there's pending approval (for rendering)
-pub fn has_pending() -> bool {
-    let lock = pending_lock().lock().unwrap();
-    !lock.is_empty()
-}
-
 /// Number of queued approvals (for "[1/N]" display)
 pub fn queue_len() -> usize {
     let lock = pending_lock().lock().unwrap();
     lock.len()
-}
-
-/// Peek queue length without consuming — used to compute label before pop
-pub fn pending_count() -> usize {
-    queue_len()
 }

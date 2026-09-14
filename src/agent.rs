@@ -75,8 +75,6 @@ Don't loop or re-read the same file. Continue while steps remain but stop when a
 - Skills are markdown workflows listed below. If one matches, call read_skill and follow it.\n\
 - Search memory only when prior context helps. Call remember when you learn something worth keeping.\n";
 
-pub const SYSTEM_PROMPT: &str = REGULAR_SYSTEM_PROMPT;
-
 pub const ASK_READONLY_DENY_MSG: &str =
     "ASK is read-only — switch to Norm (Shift+Tab) or Plan to build.";
 
@@ -90,25 +88,6 @@ pub enum Mode {
     Plan,
     Ask,
     Auto,
-}
-
-impl Mode {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Mode::Norm => "norm",
-            Mode::Plan => "plan",
-            Mode::Ask => "ask",
-            Mode::Auto => "auto",
-        }
-    }
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "plan" => Mode::Plan,
-            "ask" => Mode::Ask,
-            "auto" => Mode::Auto,
-            _ => Mode::Norm,
-        }
-    }
 }
 
 pub fn current_mode() -> Mode {
@@ -171,12 +150,6 @@ pub fn set_ask_mode(v: bool) {
 pub fn is_ask_mode() -> bool {
     ASK_MODE.load(Ordering::Relaxed)
 }
-pub fn toggle_plan_mode() -> bool {
-    let cur = is_plan_mode();
-    set_plan_mode(!cur);
-    !cur
-}
-
 fn current_system_prompt() -> &'static str {
     if is_plan_mode() {
         PLAN_SYSTEM_PROMPT
@@ -284,7 +257,7 @@ async fn agents_section() -> Option<String> {
     let lines: Vec<&str> = catalog.lines().collect();
     let take = 6.min(lines.len());
     let mut out = String::from("\n\n## Available Agents (subagents)\n");
-    out.push_str("You can delegate via `subagent` tool (requires unique `name` label, e.g. subagent(agent=\"scout\", task=\"...\", name=\"research-auth\") — label is shown first in popup, auto-suffixed if duplicate). Use scout for recon, researcher for web, worker for general tasks. Users can add agents via agents/<name>/AGENT.md\n");
+    out.push_str("You can delegate via `subagent` tool (requires unique `name` label, e.g. subagent(agent=\"scout\", task=\"...\", name=\"research-auth\") — label is shown first in popup, auto-suffixed if duplicate). Use scout for recon, researcher for web, worker for general tasks. Users can add agents via agents/<name>/AGENTS.md\n");
     for line in lines.iter().take(take) {
         out.push_str(line);
         out.push_str("\n");
@@ -333,7 +306,7 @@ fn mcp_section() -> String {
 /// Assemble the full system prompt within `TOTAL_BUDGET`.
 ///
 /// Priority order: the base prompt (regular or plan) is never truncated, the
-/// context files (AGENT.md + global MEMORY.md) are next (truncated if needed),
+/// context files (AGENTS.md + global MEMORY.md) are next (truncated if needed),
 /// the confinement guard is kept when enabled, the skill catalog is shrunk line by
 /// line, and the MCP section is dropped first when the budget is exceeded.
 pub async fn build_system_prompt() -> String {
@@ -674,9 +647,6 @@ impl PlanTracker {
     }
     fn has_approval(&self) -> bool {
         self.approved
-    }
-    fn set_approved(&mut self, v: bool) {
-        self.approved = v;
     }
     fn note_ask_result(&mut self, result: &str) {
         let lower = result.to_lowercase();

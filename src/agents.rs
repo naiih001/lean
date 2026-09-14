@@ -17,10 +17,6 @@ pub struct Agent {
     pub body: String,
     pub tools: Option<Vec<String>>,
     pub model: Option<String>,
-    pub thinking: Option<String>,
-    pub subagent_agents: Option<Vec<String>>,
-    pub auto_exit: Option<bool>,
-    pub system_prompt_mode: Option<String>,
 }
 
 static CACHE: OnceLock<std::sync::Mutex<Option<(Vec<Agent>, Instant)>>> = OnceLock::new();
@@ -139,7 +135,7 @@ async fn scan_dir(base: &Path) -> Vec<Agent> {
         if !file_type.is_dir() {
             continue;
         }
-        let agent_path = entry.path().join("AGENT.md");
+        let agent_path = entry.path().join("AGENTS.md");
         if !agent_path.exists() {
             continue;
         }
@@ -147,7 +143,7 @@ async fn scan_dir(base: &Path) -> Vec<Agent> {
             Ok(c) => c,
             Err(_) => continue,
         };
-        let (name_opt, desc_opt, tools, model, thinking, subagent_agents, auto_exit, body) =
+        let (name_opt, desc_opt, tools, model, _thinking, _subagent_agents, _auto_exit, body) =
             parse_frontmatter_agents(&raw);
         let agent_name =
             name_opt.unwrap_or_else(|| entry.file_name().to_string_lossy().to_string());
@@ -167,10 +163,6 @@ async fn scan_dir(base: &Path) -> Vec<Agent> {
             body,
             tools,
             model,
-            thinking,
-            subagent_agents,
-            auto_exit,
-            system_prompt_mode: None,
         });
     }
     agents
@@ -214,7 +206,7 @@ pub async fn discover_agents() -> Vec<Agent> {
 pub async fn get_agent_catalog() -> String {
     let agents = discover_agents().await;
     if agents.is_empty() {
-        return "No agents installed. Add to agents/<name>/AGENT.md or ~/.lean/agents/<name>/AGENT.md".to_string();
+        return "No agents installed. Add to agents/<name>/AGENTS.md or ~/.lean/agents/<name>/AGENTS.md".to_string();
     }
     agents
         .iter()
@@ -243,13 +235,6 @@ pub async fn load_agent(name: &str) -> Result<Agent> {
     }
     let avail: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
     anyhow::bail!("Agent not found: {}. Available: {}", name, avail.join(", "))
-}
-
-pub fn invalidate_cache() {
-    if let Some(lock) = CACHE.get() {
-        let mut g = lock.lock().unwrap();
-        *g = None;
-    }
 }
 
 // Subagent spawning state for TUI
@@ -343,15 +328,6 @@ pub fn kill_subagent(id: &str) -> bool {
     false
 }
 
-pub fn get_subagent(id: &str) -> Option<SubagentStatus> {
-    subagents_lock()
-        .lock()
-        .unwrap()
-        .iter()
-        .find(|s| s.id == id)
-        .cloned()
-}
-
 #[derive(Debug, Clone)]
 pub struct WakeMessage {
     pub id: String,
@@ -365,18 +341,6 @@ pub struct WakeMessage {
 static WAKE_QUEUE: OnceLock<Mutex<Vec<WakeMessage>>> = OnceLock::new();
 fn wake_lock() -> &'static Mutex<Vec<WakeMessage>> {
     WAKE_QUEUE.get_or_init(|| Mutex::new(Vec::new()))
-}
-pub fn push_wake_message(msg: String) {
-    // Legacy string wake (system) — wrap as WakeMessage for uniform handling
-    let w = WakeMessage {
-        id: String::new(),
-        agent: String::new(),
-        label: String::new(),
-        task: String::new(),
-        result: msg,
-        elapsed_ms: 0,
-    };
-    wake_lock().lock().unwrap().push(w);
 }
 pub fn push_wake_tool(wake: WakeMessage) {
     wake_lock().lock().unwrap().push(wake);

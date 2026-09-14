@@ -96,17 +96,6 @@ pub struct Risk {
     pub reasons: Vec<String>,
 }
 
-impl Risk {
-    fn new(severity: Severity, reason: impl Into<String>) -> Self {
-        Self {
-            severity,
-            reasons: vec![reason.into()],
-        }
-    }
-    fn push(&mut self, reason: impl Into<String>) {
-        self.reasons.push(reason.into());
-    }
-}
 
 /// Very light shell tokenization — enough for guard heuristics.
 /// Handles single/double quotes, escapes, pipes, redirects, &&, ||, ;, &, ()
@@ -161,12 +150,6 @@ fn tokenize(cmd: &str) -> Vec<String> {
     tokens
 }
 
-fn has_flag(args: &[String], flag: &str) -> bool {
-    args.iter().any(|a| {
-        a == flag
-            || (a.starts_with('-') && a.contains(flag.trim_start_matches('-')) && flag.len() == 2)
-    })
-}
 
 pub fn analyze(command: &str) -> Option<Risk> {
     if is_disabled() {

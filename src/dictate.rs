@@ -9,7 +9,6 @@ pub const SAMPLE_RATE: u32 = 16000;
 pub const CHANNELS: u16 = 1;
 pub const BITS_PER_SAMPLE: u16 = 16;
 
-pub const METER_CELLS: usize = 6;
 pub const METER_FLOOR_DB: f64 = -50.0;
 pub const METER_CEILING_DB: f64 = -10.0;
 pub const PEAK_BLOCKS: &[&str] = &["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
@@ -130,51 +129,6 @@ pub async fn transcribe_with_groq(wav: Vec<u8>) -> Result<String, String> {
         .unwrap_or("")
         .to_string();
     Ok(text)
-}
-
-/// Attempt to copy text to clipboard via wl-copy / xclip / xsel / pbcopy.
-/// Returns true if any succeeded.
-pub fn try_copy_clipboard(text: &str) -> bool {
-    // wl-copy (Wayland)
-    if try_clipboard_cmd("wl-copy", text) {
-        return true;
-    }
-    if try_clipboard_cmd("xclip", text) {
-        return true;
-    }
-    if try_clipboard_cmd("xsel", text) {
-        return true;
-    }
-    if try_clipboard_cmd("pbcopy", text) {
-        return true;
-    }
-    false
-}
-
-fn try_clipboard_cmd(cmd: &str, text: &str) -> bool {
-    let args: &[&str] = match cmd {
-        "xclip" => &["-selection", "clipboard"],
-        "xsel" => &["--clipboard", "--input"],
-        _ => &[],
-    };
-    let Ok(mut child) = std::process::Command::new(cmd)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
-        return false;
-    };
-    if let Some(mut stdin) = child.stdin.take() {
-        use std::io::Write;
-        let _ = stdin.write_all(text.as_bytes());
-        // stdin dropped here closes pipe
-    }
-    match child.wait() {
-        Ok(s) => s.success(),
-        Err(_) => false,
-    }
 }
 
 /// Spawn ffmpeg capturing pulse default 16kHz mono s16le to stdout.

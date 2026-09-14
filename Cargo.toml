@@ -17,8 +17,6 @@ shlex = "1"
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json", "stream", "blocking", "multipart"] }
 futures = "0.3"
-tokio-stream = "0.1"
-eventsource-stream = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }
@@ -28,7 +26,6 @@ walkdir = "2"
 ratatui = "0.30"
 crossterm = "0.28"
 ratatui-textarea = "0.9"
-gray_matter = "0.3"
 anyhow = "1"
 async-stream = "0.3"
 base64 = "0.22"

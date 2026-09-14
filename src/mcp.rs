@@ -180,35 +180,6 @@ pub fn toggle_server_disabled(name: &str) -> bool {
     }
     disabled
 }
-pub fn set_server_disabled(name: &str, disabled: bool) {
-    {
-        let mut st = disabled_lock().lock().unwrap();
-        if disabled {
-            st.disabled_servers.insert(name.to_string());
-        } else {
-            st.disabled_servers.remove(name);
-        }
-    }
-    save_disabled_state();
-    invalidate_tool_cache();
-    // update registry immediately
-    if let Some(lock) = REGISTRY.get() {
-        if let Ok(mut map) = lock.write() {
-            if let Some(entry) = map.get_mut(name) {
-                if disabled {
-                    entry.info.status = ServerStatus::Disabled;
-                    entry.info.error_detail = Some("disabled via /mcp toggle".into());
-                    entry.peer = None;
-                    entry._service = None;
-                    entry.info.tools.clear();
-                } else {
-                    entry.info.status = ServerStatus::Connecting;
-                    entry.info.error_detail = None;
-                }
-            }
-        }
-    }
-}
 /// Apply global disable to registry
 pub fn apply_global_disabled(disabled: bool) {
     if let Some(lock) = REGISTRY.get() {
@@ -382,26 +353,6 @@ pub fn snapshot() -> Vec<McpServerInfo> {
     v
 }
 
-pub fn status_summary() -> String {
-    let snap = snapshot();
-    if snap.is_empty() {
-        return "mcp:0".to_string();
-    }
-    let connected = snap
-        .iter()
-        .filter(|s| matches!(s.status, ServerStatus::Connected))
-        .count();
-    let total = snap.len();
-    let err = snap
-        .iter()
-        .filter(|s| matches!(s.status, ServerStatus::Error(_)))
-        .count();
-    if err > 0 {
-        format!("mcp:{}/{} ({} err)", connected, total, err)
-    } else {
-        format!("mcp:{}/{}", connected, total)
-    }
-}
 
 fn sanitize_pattern(pat: &str) -> String {
     // OpenAI strict validator rejects \0 (null byte) in ECMA regex
@@ -1070,9 +1021,4 @@ pub async fn reconnect(name: &str) -> Result<String, String> {
     } else {
         Err("reconnect failed".into())
     }
-}
-
-pub fn is_initialized() -> bool {
-    // we consider initialized if registry has been populated (even empty)
-    REGISTRY.get().is_some()
 }

@@ -1156,20 +1156,6 @@ fn draw_input(f: &mut Frame, area: Rect, textarea: &mut TextArea<'_>) {
     f.render_widget(&*textarea, area);
 }
 
-fn api_suffix_for_alias(alias: &str) -> String {
-    if let Ok(cfg) = crate::models::load() {
-        if let Some(e) = cfg.models.get(alias) {
-            let mode = e.api_mode();
-            return match mode {
-                crate::models::ApiMode::Responses => " (responses)".to_string(),
-                crate::models::ApiMode::Anthropic => " (anthropic)".to_string(),
-                crate::models::ApiMode::ChatCompletions => " (chat)".to_string(),
-            };
-        }
-    }
-    String::new()
-}
-
 fn context_window_for_model(model: &str) -> usize {
     let lower = model.to_lowercase();
     if lower.contains("128k") {
@@ -1241,42 +1227,6 @@ fn draw_subagent_summary(f: &mut Frame, area: Rect, tick: usize) {
     };
     let para = Paragraph::new(Line::from(Span::styled(txt, style)));
     f.render_widget(para, area);
-}
-
-fn wrap_task_preview(task: &str, width: usize, max_lines: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-    for raw in task.lines() {
-        let mut cur = String::new();
-        for word in raw.split_whitespace() {
-            if cur.len() + word.len() + 1 > width {
-                lines.push(cur);
-                cur = word.to_string();
-                if lines.len() >= max_lines {
-                    break;
-                }
-            } else {
-                if !cur.is_empty() {
-                    cur.push(' ');
-                }
-                cur.push_str(word);
-            }
-        }
-        if !cur.is_empty() {
-            lines.push(cur);
-        }
-        if lines.len() >= max_lines {
-            break;
-        }
-    }
-    if lines.len() > max_lines {
-        lines.truncate(max_lines);
-    }
-    if task.lines().count() > max_lines || task.len() > width * max_lines {
-        if let Some(last) = lines.last_mut() {
-            *last = format!("{}…", last);
-        }
-    }
-    lines
 }
 
 fn draw_subagent_list(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
@@ -2175,7 +2125,7 @@ fn collect_agent_names_sync() -> Vec<(String, String)> {
                 if !ft.is_dir() {
                     continue;
                 }
-                let ag = entry.path().join("AGENT.md");
+                let ag = entry.path().join("AGENTS.md");
                 if !ag.exists() {
                     continue;
                 }
@@ -2281,11 +2231,6 @@ fn detect_agent_mention(textarea: &TextArea<'_>) -> Option<AtMention> {
         col,
         at_col: at,
     })
-}
-
-fn parse_forced_agent(input: &str) -> Option<(String, String)> {
-    // kept for backward compat — use parse_all_forced_agents
-    parse_all_forced_agents(input).into_iter().next()
 }
 
 fn parse_all_forced_agents(input: &str) -> Vec<(String, String)> {
@@ -3623,15 +3568,6 @@ fn draw_allowlist(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
 }
 
 /// Spawn the agent task, always sending a done signal on completion (including panics).
-fn spawn_agent(
-    prompt: String,
-    model: String,
-    tx: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
-    done_tx: broadcast::Sender<()>,
-) -> tokio::task::JoinHandle<()> {
-    spawn_agent_with_history(prompt, model, Vec::new(), tx, done_tx)
-}
-
 fn spawn_agent_with_history(
     prompt: String,
     model: String,
@@ -3747,6 +3683,7 @@ async fn app_loop(
     } else {
         Some(crate::session::Session::new(&model))
     };
+    // TODO: remove if unnecessary
     // Warn if resumed session has a legacy alias not in models.json
     if let Some(ref sess) = session {
         if crate::models::resolve(Some(&sess.model)).is_err() {
@@ -5807,7 +5744,7 @@ async fn app_loop(
                                 "/help" => {
                                     messages.push(Msg {
                                         role: "system".into(),
-                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /mcp /memory stats|consolidate /model <name> /clear /exit /auto-accept /plan /init  ·  Enter send · Shift+Enter newline · Shift+Tab NORM/PLAN/ASK/AUTO · @file $skill · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll — /plan toggles PLAN, /auto-accept toggles AUTO, Shift+Tab cycles — /init creates AGENT.md (MEMORY.md is global-only, auto-updated silently in ~/.lean/)".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /mcp /memory stats|consolidate /model <name> /clear /exit /auto-accept /plan /init  ·  Enter send · Shift+Enter newline · Shift+Tab NORM/PLAN/ASK/AUTO · @file $skill · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll — /plan toggles PLAN, /auto-accept toggles AUTO, Shift+Tab cycles — /init creates AGENTS.md (MEMORY.md is global-only, auto-updated silently in ~/.lean/)".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                 }
                                 "/plan" => {
                                     let next = if crate::agent::current_mode()
@@ -5831,7 +5768,7 @@ async fn app_loop(
                                     if !created.is_empty() {
                                         messages.push(Msg { role: "system".into(), content: format!("init: created {} — now enriching with project analysis…", created.join(", ")), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                     } else {
-                                        messages.push(Msg { role: "system".into(), content: "init: AGENT.md already exists — refreshing via agent…".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        messages.push(Msg { role: "system".into(), content: "init: AGENTS.md already exists — refreshing via agent…".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                     }
                                     let cwd =
                                         crate::dir_guard::project_root().display().to_string();
@@ -5840,9 +5777,9 @@ async fn app_loop(
 
 Tasks:
 1. Explore the codebase: run `ls -la`, read README.md, Cargo.toml / package.json / pyproject.toml / go.mod if present, and list src/ structure. Use read and bash (read-only) to gather facts.
-2. Create or update AGENT.md at ./AGENT.md. Include: Project Overview (what it does), Tech Stack, Commands (build/run/test/lint exactly as found), Project Structure (key dirs), Conventions (style, commits), Architecture Notes, Gotchas. Keep concise, actionable, 1-2 pages. Use only facts you found — don't invent. Do NOT create CLAUDE.md or any MEMORY.md file in the project — AGENT.md only.
+2. Create or update AGENTS.md at ./AGENTS.md. Include: Project Overview (what it does), Tech Stack, Commands (build/run/test/lint exactly as found), Project Structure (key dirs), Conventions (style, commits), Architecture Notes, Gotchas. Keep concise, actionable, 1-2 pages. Use only facts you found — don't invent. Do NOT create CLAUDE.md or any MEMORY.md file in the project — AGENTS.md only.
 3. MEMORY.md is global-only (~/.lean/MEMORY.md) and is updated silently in the background via the memory system — do NOT create ./MEMORY.md, do NOT use ask_user for persona, do NOT mention it in the project.
-4. After writing, verify by reading ./AGENT.md and summarize what was created/updated. End with "All done."
+4. After writing, verify by reading ./AGENTS.md and summarize what was created/updated. End with "All done."
 
 Be thorough but concise. Read before write; use unique oldText for edits."#
                                     );
@@ -5859,7 +5796,7 @@ Be thorough but concise. Read before write; use unique oldText for edits."#
                                     } else {
                                         messages.push(Msg {
                                             role: "user".into(),
-                                            content: "/init (initialize AGENT.md)".into(),
+                                            content: "/init (initialize AGENTS.md)".into(),
                                             tool_id: None,
                                             tool_name: None,
                                             tool_args: None,
@@ -5887,7 +5824,7 @@ Be thorough but concise. Read before write; use unique oldText for edits."#
                                 _ if prompt.starts_with("/init") => {
                                     let rest = prompt.strip_prefix("/init").unwrap_or("").trim();
                                     if rest == "--help" || rest == "-h" || rest == "help" {
-                                        messages.push(Msg { role: "system".into(), content: "usage: /init — analyze project and create/update AGENT.md. Files are auto-loaded on startup (project AGENT.md + global ~/.lean/MEMORY.md updated silently in background).".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        messages.push(Msg { role: "system".into(), content: "usage: /init — analyze project and create/update AGENTS.md. Files are auto-loaded on startup (project AGENTS.md + global ~/.lean/MEMORY.md updated silently in background).".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                     } else if !rest.is_empty() {
                                         // /init with extra text — treat as note for the agent
                                         let created = crate::context::ensure_init_files();
@@ -5910,7 +5847,7 @@ Be thorough but concise. Read before write; use unique oldText for edits."#
                                         let init_prompt2 = format!(
                                             r#"Initialize project memory for lean. CWD: {cwd2}{extra}
 
-Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENT.md (project: overview, stack, commands, structure, conventions, architecture, gotchas — concise). Do NOT create CLAUDE.md or any MEMORY.md in the project — AGENT.md only. MEMORY.md is global-only (~/.lean/MEMORY.md, silent background). Verify by reading ./AGENT.md."#
+Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (project: overview, stack, commands, structure, conventions, architecture, gotchas — concise). Do NOT create CLAUDE.md or any MEMORY.md in the project — AGENTS.md only. MEMORY.md is global-only (~/.lean/MEMORY.md, silent background). Verify by reading ./AGENTS.md."#
                                         );
                                         let hist = llm_history_for_spawn(&session, &messages);
                                         let expanded = expand_at_mentions(&init_prompt2);
