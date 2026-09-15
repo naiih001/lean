@@ -1,15 +1,10 @@
 pub mod agent;
-pub mod agents;
 pub mod approval;
 pub mod bash_guard;
 pub mod dictate;
 pub mod dir_guard;
 pub mod llm;
 pub mod mcp;
-pub mod memory;
-pub mod models;
-pub mod question;
-pub mod skills;
 pub mod sudo;
 pub mod tools;
 
@@ -24,7 +19,12 @@ pub mod tui;
 // Compat re-exports — keep old crate:: paths working during refactor
 pub use core::context;
 pub use integrations::herdr;
+pub use integrations::models as models;
 pub use integrations::observer;
+pub use services::agents as agents;
+pub use services::memory as memory;
+pub use services::question as question;
 pub use services::session;
+pub use services::skills as skills;
 pub use support::telemetry;
 pub use tui::theme;

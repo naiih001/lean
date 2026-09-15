@@ -78,6 +78,8 @@ Don't loop or re-read the same file. Continue while steps remain but stop when a
 pub const ASK_READONLY_DENY_MSG: &str =
     "ASK is read-only — switch to Norm (Shift+Tab) or Plan to build.";
 
+pub const SYSTEM_PROMPT: &str = REGULAR_SYSTEM_PROMPT;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 static PLAN_MODE: AtomicBool = AtomicBool::new(false);
 static ASK_MODE: AtomicBool = AtomicBool::new(false);
