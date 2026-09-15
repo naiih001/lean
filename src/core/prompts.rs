@@ -1,4 +1,4 @@
-use crate::skills;
+use crate::services::skills;
 
 pub const REGULAR_SYSTEM_PROMPT: &str = "You are lean, a coding assistant in the terminal. Be direct and concise.\n\n\
 ## When to act\n\
@@ -173,10 +173,10 @@ fn skills_section(catalog: &str) -> String {
 }
 
 fn confinement_section() -> Option<String> {
-    if crate::dir_guard::is_disabled() {
+    if crate::guards::dir::is_disabled() {
         return None;
     }
-    let cwd = crate::dir_guard::project_root().display().to_string();
+    let cwd = crate::guards::dir::project_root().display().to_string();
     Some(truncate_str(
         &format!(
             "\n\n## Confinement\nYou are confined to CWD: `{}`. Paths outside need approval.",
@@ -187,7 +187,7 @@ fn confinement_section() -> Option<String> {
 }
 
 async fn agents_section() -> Option<String> {
-    let catalog = crate::agents::get_agent_catalog().await;
+    let catalog = crate::services::agents::get_agent_catalog().await;
     if catalog.starts_with("No agents") {
         return None;
     }
@@ -209,11 +209,11 @@ async fn agents_section() -> Option<String> {
 }
 
 fn context_section() -> Option<String> {
-    crate::context::load_context_section().map(|s| format!("\n\n{}", s))
+    crate::core::context::load_context_section().map(|s| format!("\n\n{}", s))
 }
 
 fn mcp_section() -> String {
-    let mcp_snap = crate::mcp::snapshot();
+    let mcp_snap = crate::integrations::mcp::snapshot();
     if mcp_snap.is_empty() {
         return "\n\n## MCP\nNo MCP servers configured.".to_string();
     }

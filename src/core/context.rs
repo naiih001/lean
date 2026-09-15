@@ -13,7 +13,7 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 fn project_root() -> PathBuf {
-    crate::dir_guard::project_root()
+    crate::guards::dir::project_root()
 }
 
 /// All candidate paths in priority order: global first, then project.

@@ -12,18 +12,18 @@ pub use fs::{
 use serde_json::Value;
 
 async fn guard_path(path: &str, tool: &str) -> Option<String> {
-    if crate::approval::is_auto_accept() {
+    if crate::guards::approval::is_auto_accept() {
         return None;
     }
     // returns Some(block_message) if denied, None if allowed
-    let risk = crate::dir_guard::analyze_path(path)?;
+    let risk = crate::guards::dir::analyze_path(path)?;
     let reason_str = risk.reasons.join("; ");
     let display = format!("{} {}", tool, path);
     // Reuse approval system but tag as dir-guard via reason prefix
     let approved = {
-        let fut = crate::approval::request(
+        let fut = crate::guards::approval::request(
             display.clone(),
-            crate::bash_guard::Severity::High,
+            crate::guards::bash::Severity::High,
             risk.reasons.clone(),
         );
         match tokio::time::timeout(std::time::Duration::from_secs(300), fut).await {
@@ -34,46 +34,46 @@ async fn guard_path(path: &str, tool: &str) -> Option<String> {
     if !approved {
         return Some(format!(
             "[dir-guard BLOCKED (HIGH): {}]\n{}: {}\nHint: outside CWD '{}' — approve with [a]/[A] or add to ~/.lean/dir_allowlist.json or run with LEAN_DIR_GUARD_DISABLED=1",
-            reason_str, tool, path, crate::dir_guard::project_root().display()
+            reason_str, tool, path, crate::guards::dir::project_root().display()
         ));
     }
     None
 }
 
 async fn guard_bash(cmd: &str) -> Option<String> {
-    if crate::approval::is_auto_accept() {
+    if crate::guards::approval::is_auto_accept() {
         return None;
     }
     // Check both guards and merge; dir-guard is HIGH severity hard wall
     // Returns Some(string) if the caller should return that string directly (blocked OR approved-medium annotated output).
     // Returns None if allowed to proceed to normal run_bash.
-    let bash_risk = crate::bash_guard::analyze(cmd);
-    let dir_risk = crate::dir_guard::analyze_bash(cmd);
+    let bash_risk = crate::guards::bash::analyze(cmd);
+    let dir_risk = crate::guards::dir::analyze_bash(cmd);
 
     if bash_risk.is_none() && dir_risk.is_none() {
         return None;
     }
 
     let mut reasons = Vec::new();
-    let mut severity = crate::bash_guard::Severity::Medium;
+    let mut severity = crate::guards::bash::Severity::Medium;
     let mut is_dir_guard = false;
 
     if let Some(r) = &bash_risk {
         reasons.extend(r.reasons.clone());
-        if r.severity == crate::bash_guard::Severity::High {
-            severity = crate::bash_guard::Severity::High;
+        if r.severity == crate::guards::bash::Severity::High {
+            severity = crate::guards::bash::Severity::High;
         }
     }
     if let Some(r) = &dir_risk {
         reasons.extend(r.reasons.clone());
-        severity = crate::bash_guard::Severity::High;
+        severity = crate::guards::bash::Severity::High;
         is_dir_guard = true;
     }
 
     let reasons_clone = reasons.clone();
     let sev_clone = severity.clone();
     let approved = {
-        let fut = crate::approval::request(cmd.to_string(), sev_clone, reasons_clone);
+        let fut = crate::guards::approval::request(cmd.to_string(), sev_clone, reasons_clone);
         match tokio::time::timeout(std::time::Duration::from_secs(300), fut).await {
             Ok(v) => v,
             Err(_) => {
@@ -81,8 +81,8 @@ async fn guard_bash(cmd: &str) -> Option<String> {
                     false
                 } else {
                     match severity {
-                        crate::bash_guard::Severity::High => false,
-                        crate::bash_guard::Severity::Medium => true,
+                        crate::guards::bash::Severity::High => false,
+                        crate::guards::bash::Severity::Medium => true,
                     }
                 }
             }
@@ -90,8 +90,8 @@ async fn guard_bash(cmd: &str) -> Option<String> {
     };
     if !approved {
         let sev_str = match severity {
-            crate::bash_guard::Severity::High => "HIGH",
-            crate::bash_guard::Severity::Medium => "MEDIUM",
+            crate::guards::bash::Severity::High => "HIGH",
+            crate::guards::bash::Severity::Medium => "MEDIUM",
         };
         let guard = if is_dir_guard {
             "dir-guard"
@@ -99,10 +99,10 @@ async fn guard_bash(cmd: &str) -> Option<String> {
             "bash-guard"
         };
         let reason_str = reasons.join("; ");
-        return Some(format!("[{} BLOCKED ({}): {}]\nCommand: {}\nHint: {} — use allowlist or LEAN_DIR_GUARD_DISABLED=1 / --bash-guard-disabled", guard, sev_str, reason_str, cmd, if is_dir_guard { format!("outside CWD '{}'", crate::dir_guard::project_root().display()) } else { "risky command".to_string() }));
+        return Some(format!("[{} BLOCKED ({}): {}]\nCommand: {}\nHint: {} — use allowlist or LEAN_DIR_GUARD_DISABLED=1 / --bash-guard-disabled", guard, sev_str, reason_str, cmd, if is_dir_guard { format!("outside CWD '{}'", crate::guards::dir::project_root().display()) } else { "risky command".to_string() }));
     }
     // Approved
-    if !is_dir_guard && severity == crate::bash_guard::Severity::Medium {
+    if !is_dir_guard && severity == crate::guards::bash::Severity::Medium {
         // Medium bash risk: run and annotate, return directly to avoid second prompt
         let out = bash::run_bash(cmd)
             .await
@@ -116,7 +116,7 @@ async fn guard_bash(cmd: &str) -> Option<String> {
     // High dir-guard or high bash-guard approved: proceed to normal execution (no annotation needed)
     // But we already approved, so just allow normal run_bash without re-prompting. To avoid re-prompt,
     // we temporarily allowlist this exact command for the next call? Instead we run here and return.
-    if is_dir_guard || severity == crate::bash_guard::Severity::High {
+    if is_dir_guard || severity == crate::guards::bash::Severity::High {
         let out = bash::run_bash(cmd)
             .await
             .unwrap_or_else(|e| format!("Error: {}", e));
@@ -134,16 +134,16 @@ async fn guard_bash(cmd: &str) -> Option<String> {
 }
 
 async fn guard_mcp(server: &str, tool: &str, args: &serde_json::Value) -> Option<String> {
-    if crate::approval::is_auto_accept() {
+    if crate::guards::approval::is_auto_accept() {
         return None;
     }
     // Every MCP tool call requires approval (HIGH)
     let display = format!("{}__{} {}", server, tool, args);
     let reasons = vec![format!("MCP tool {}.{} requires approval", server, tool)];
     let approved = {
-        let fut = crate::approval::request(
+        let fut = crate::guards::approval::request(
             display.clone(),
-            crate::bash_guard::Severity::High,
+            crate::guards::bash::Severity::High,
             reasons.clone(),
         );
         match tokio::time::timeout(std::time::Duration::from_secs(300), fut).await {
@@ -169,7 +169,7 @@ pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
             if let Some(blocked) = guard_mcp(server, tool, &args).await {
                 return blocked;
             }
-            return crate::mcp::call_tool(server, tool, args)
+            return crate::integrations::mcp::call_tool(server, tool, args)
                 .await
                 .unwrap_or_else(|e| format!("Error: {}", e));
         }
@@ -230,13 +230,13 @@ pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
         }
         "read_agent" => {
             let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            match crate::agents::load_agent(name).await {
+            match crate::services::agents::load_agent(name).await {
                 Ok(a) => Ok(a.content),
                 Err(e) => Err(format!("{}", e)),
             }
         }
         "subagents_list" => {
-            let subs = crate::agents::list_subagents();
+            let subs = crate::services::agents::list_subagents();
             let running: Vec<_> = subs.into_iter().filter(|s| s.status == "running").collect();
             if running.is_empty() {
                 Ok("No live background subagents — all done or none spawned.".to_string())
@@ -287,7 +287,7 @@ pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
                 let mut attempts = 0;
                 loop {
                     attempts += 1;
-                    let pw_opt = crate::sudo::request(cmd.to_string()).await;
+                    let pw_opt = crate::guards::sudo::request(cmd.to_string()).await;
                     match pw_opt {
                         None => {
                             return "[sudo cancelled by user — command not executed]".to_string()
@@ -325,16 +325,16 @@ pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
             web::web_search(q).await
         }
         "ask_user" => {
-            let questions = crate::question::parse_questions(&args);
+            let questions = crate::services::question::parse_questions(&args);
             if questions.is_empty() {
                 Err("ask_user requires at least one question with options".to_string())
             } else {
-                Ok(crate::question::ask(questions).await)
+                Ok(crate::services::question::ask(questions).await)
             }
         }
         "read_skill" => {
             let n = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            match crate::skills::load_skill(n).await {
+            match crate::services::skills::load_skill(n).await {
                 Ok(c) => Ok(c),
                 Err(e) => Err(format!("{}", e)),
             }
@@ -358,23 +358,25 @@ pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
                 .get("scope")
                 .and_then(|v| v.as_str())
                 .unwrap_or("global");
-            Ok(crate::memory::api_remember(content, category, tags, scope))
+            Ok(crate::services::memory::api_remember(
+                content, category, tags, scope,
+            ))
         }
         "search_memory" => {
             let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-            Ok(crate::memory::api_search(q))
+            Ok(crate::services::memory::api_search(q))
         }
-        "recall_memory" => Ok(crate::memory::api_recall()),
+        "recall_memory" => Ok(crate::services::memory::api_recall()),
         "list_memories" => {
             let tag = args.get("tag").and_then(|v| v.as_str()).unwrap_or("");
-            Ok(crate::memory::api_list(tag))
+            Ok(crate::services::memory::api_list(tag))
         }
         "forget_memory" => {
             let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            Ok(crate::memory::api_forget(id))
+            Ok(crate::services::memory::api_forget(id))
         }
-        "consolidate_memory" => Ok(crate::memory::api_consolidate()),
-        "memory_stats" => Ok(crate::memory::api_stats()),
+        "consolidate_memory" => Ok(crate::services::memory::api_consolidate()),
+        "memory_stats" => Ok(crate::services::memory::api_stats()),
         _ => Err(format!("unknown tool: {}", name)),
     };
     match res {

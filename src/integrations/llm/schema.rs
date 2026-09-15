@@ -326,7 +326,7 @@ pub fn native_tool_definitions() -> Vec<Value> {
 
 pub async fn tool_definitions() -> Vec<Value> {
     let mut v = native_tool_definitions();
-    let mcp_tools = crate::mcp::mcp_tool_definitions().await;
+    let mcp_tools = crate::integrations::mcp::mcp_tool_definitions().await;
     v.extend(mcp_tools);
     v
 }
@@ -364,14 +364,14 @@ pub fn responses_tool_definitions_from(chat_defs: &[Value]) -> Vec<Value> {
 pub async fn responses_tool_definitions() -> Vec<Value> {
     let chat = native_tool_definitions();
     let mut v = responses_tool_definitions_from(&chat);
-    let mcp_tools = crate::mcp::mcp_tool_definitions().await;
+    let mcp_tools = crate::integrations::mcp::mcp_tool_definitions().await;
     v.extend(responses_tool_definitions_from(&mcp_tools));
     v
 }
 
-pub async fn tool_definitions_for(mode: &crate::models::ApiMode) -> Vec<Value> {
+pub async fn tool_definitions_for(mode: &crate::integrations::models::ApiMode) -> Vec<Value> {
     match mode {
-        crate::models::ApiMode::Responses => responses_tool_definitions().await,
+        crate::integrations::models::ApiMode::Responses => responses_tool_definitions().await,
         _ => tool_definitions().await,
     }
 }

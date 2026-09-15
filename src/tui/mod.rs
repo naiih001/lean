@@ -1,5 +1,5 @@
 use crate::agent::{self, AgentEvent};
-use crate::dictate;
+use crate::integrations::dictate;
 use crate::tui::theme::{ASHEN, THEME};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use ratatui::backend::CrosstermBackend;
@@ -29,10 +29,10 @@ pub struct RunOpts {
 
 pub async fn run(opts: RunOpts) -> anyhow::Result<()> {
     // propagate guards globally
-    crate::bash_guard::set_disabled(opts.bash_guard_disabled);
-    crate::dir_guard::set_disabled(opts.dir_guard_disabled);
-    crate::dir_guard::init(None);
-    crate::question::set_interactive(true);
+    crate::guards::bash::set_disabled(opts.bash_guard_disabled);
+    crate::guards::dir::set_disabled(opts.dir_guard_disabled);
+    crate::guards::dir::init(None);
+    crate::services::question::set_interactive(true);
     let _model = opts.model.clone();
 
     crossterm::terminal::enable_raw_mode()?;
@@ -1269,7 +1269,7 @@ fn format_context_label(est: usize, window: usize) -> String {
 }
 
 fn draw_subagent_summary(f: &mut Frame, area: Rect, tick: usize) {
-    let subs: Vec<_> = crate::agents::list_subagents()
+    let subs: Vec<_> = crate::services::agents::list_subagents()
         .into_iter()
         .filter(|s| s.status == "running")
         .collect();
@@ -1297,7 +1297,7 @@ fn draw_subagent_summary(f: &mut Frame, area: Rect, tick: usize) {
 }
 
 fn draw_subagent_list(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
-    let mut subs: Vec<_> = crate::agents::list_subagents()
+    let mut subs: Vec<_> = crate::services::agents::list_subagents()
         .into_iter()
         .filter(|s| s.status == "running")
         .collect();
@@ -1453,7 +1453,7 @@ fn draw_subagent_list(f: &mut Frame, area: Rect, selected: usize, scroll: usize)
 }
 
 fn draw_subagent_detail(f: &mut Frame, area: Rect, idx: usize, scroll: u16) {
-    let subs: Vec<_> = crate::agents::list_subagents()
+    let subs: Vec<_> = crate::services::agents::list_subagents()
         .into_iter()
         .filter(|s| s.status == "running")
         .collect();
@@ -1577,7 +1577,7 @@ fn draw_subagent_detail(f: &mut Frame, area: Rect, idx: usize, scroll: u16) {
     }
 }
 
-fn detail_total_for_width(sub: &crate::agents::SubagentStatus, width: usize) -> usize {
+fn detail_total_for_width(sub: &crate::services::agents::SubagentStatus, width: usize) -> usize {
     if sub.transcript.is_empty() {
         return 1;
     }
@@ -1624,7 +1624,7 @@ fn draw_footer(
     cwd: &str,
     agent_busy: bool,
     spinner_tick: usize,
-    dictate_state: crate::dictate::State,
+    dictate_state: crate::integrations::dictate::State,
     dictate_meter: &[f32; 6],
 ) {
     // Always clear footer area first to avoid ghosting when popup was over it
@@ -1735,15 +1735,15 @@ fn draw_footer(
         String::new()
     };
     let dictate_right: Option<String> = match dictate_state {
-        crate::dictate::State::Recording => {
+        crate::integrations::dictate::State::Recording => {
             let meter_str = dictate::meter_string(dictate_meter);
             Some(format!("● {} listening…", meter_str))
         }
-        crate::dictate::State::Transcribing => {
+        crate::integrations::dictate::State::Transcribing => {
             let frame = spinner[spinner_tick % spinner.len()];
             Some(format!("{} transcribing…", frame))
         }
-        crate::dictate::State::Idle => None,
+        crate::integrations::dictate::State::Idle => None,
     };
     let dictate_len = dictate_right
         .as_ref()
@@ -1808,7 +1808,7 @@ fn draw_footer(
         Style::default().bg(THEME.page_bg),
     ));
     if let Some(prefix) = dictate_right.clone() {
-        let is_recording = dictate_state == crate::dictate::State::Recording;
+        let is_recording = dictate_state == crate::integrations::dictate::State::Recording;
         if is_recording {
             if let Some(pos) = prefix.find('●') {
                 let before = &prefix[..pos];
@@ -1964,7 +1964,7 @@ fn autocomplete_matches(input: &str) -> Vec<String> {
     // Model alias completion: "/model " or "/model <prefix>"
     if input.starts_with("/model ") {
         let prefix = input.strip_prefix("/model ").unwrap_or("");
-        if let Ok(cfg) = crate::models::load() {
+        if let Ok(cfg) = crate::integrations::models::load() {
             let mut aliases: Vec<String> = cfg.models.keys().cloned().collect();
             aliases.sort();
             let filtered: Vec<String> = aliases
@@ -2039,7 +2039,7 @@ fn detect_at_mention(textarea: &TextArea<'_>) -> Option<AtMention> {
 }
 
 fn collect_files() -> Vec<String> {
-    let root = crate::dir_guard::project_root();
+    let root = crate::guards::dir::project_root();
     let mut files = Vec::new();
     let walker = walkdir::WalkDir::new(&root)
         .follow_links(false)
@@ -2695,7 +2695,7 @@ fn expand_at_mentions(prompt: &str) -> String {
     // Find @<path> tokens that resolve to existing files and $skill tokens that force skills, appending contents.
     // Images (@*.png etc.) are encoded as <<IMAGE:mime:b64>> (handled by agent.rs, shown as placeholder in TUI).
     // Remote @https:// URLs are fetched (4MB cap) or left as URL for vision models.
-    let root = crate::dir_guard::project_root();
+    let root = crate::guards::dir::project_root();
     let mut files: Vec<String> = Vec::new();
     let mut remotes: Vec<String> = Vec::new();
     let mut skills: Vec<String> = Vec::new();
@@ -3001,9 +3001,9 @@ fn draw_autocomplete(
     f.render_widget(para, inner);
 }
 
-fn draw_approval(f: &mut Frame, area: Rect, req: &crate::approval::ApprovalRequest) {
+fn draw_approval(f: &mut Frame, area: Rect, req: &crate::guards::approval::ApprovalRequest) {
     let width = (area.width.saturating_sub(4)).min(90);
-    let queued = crate::approval::queue_len();
+    let queued = crate::guards::approval::queue_len();
     let queue_label = if queued > 0 {
         format!(" [{}/{}]", 1, queued + 1)
     } else {
@@ -3046,8 +3046,8 @@ fn draw_approval(f: &mut Frame, area: Rect, req: &crate::approval::ApprovalReque
     f.render_widget(Clear, rect);
     f.render_widget(block, rect);
     let sev = match req.severity {
-        crate::bash_guard::Severity::High => "HIGH",
-        crate::bash_guard::Severity::Medium => "MEDIUM",
+        crate::guards::bash::Severity::High => "HIGH",
+        crate::guards::bash::Severity::Medium => "MEDIUM",
     };
     let sev_style = if sev == "HIGH" {
         Style::default()
@@ -3167,8 +3167,8 @@ fn draw_sudo(
 fn draw_question(
     f: &mut Frame,
     area: Rect,
-    req: &crate::question::AskRequest,
-    wizard: &crate::question::Wizard,
+    req: &crate::services::question::AskRequest,
+    wizard: &crate::services::question::Wizard,
 ) {
     let _ = req;
     let width = (area.width.saturating_sub(6)).min(84);
@@ -3311,17 +3311,17 @@ fn draw_sessions(
     show_all: bool,
     cwd: &str,
 ) {
-    let all = crate::session::Session::list();
+    let all = crate::services::session::Session::list();
     // Per-directory filtering: default shows only sessions for current cwd, Tab toggles all
     let cwd_norm = cwd.trim_end_matches('/');
-    let dir_filtered: Vec<crate::session::Session> = if show_all {
+    let dir_filtered: Vec<crate::services::session::Session> = if show_all {
         all
     } else {
         all.into_iter()
             .filter(|s| s.cwd.trim_end_matches('/') == cwd_norm)
             .collect()
     };
-    let filtered: Vec<crate::session::Session> = if filter.is_empty() {
+    let filtered: Vec<crate::services::session::Session> = if filter.is_empty() {
         dir_filtered
     } else {
         let lower = filter.to_lowercase();
@@ -3424,7 +3424,7 @@ fn draw_sessions(
 }
 
 fn draw_mcp(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
-    let servers = crate::mcp::snapshot();
+    let servers = crate::integrations::mcp::snapshot();
     let width = (area.width.saturating_sub(4)).min(90);
     let height = (18.min(servers.len() * 2 + 7) as u16).min(area.height.saturating_sub(4));
     let x = area.x + (area.width.saturating_sub(width)) / 2;
@@ -3437,10 +3437,10 @@ fn draw_mcp(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
     };
     let connected = servers
         .iter()
-        .filter(|s| matches!(s.status, crate::mcp::ServerStatus::Connected))
+        .filter(|s| matches!(s.status, crate::integrations::mcp::ServerStatus::Connected))
         .count();
     let total = servers.len();
-    let global_off = crate::mcp::is_global_disabled();
+    let global_off = crate::integrations::mcp::is_global_disabled();
     let mut title = if total == 0 {
         " MCP Servers — No servers configured ".to_string()
     } else if global_off {
@@ -3503,12 +3503,18 @@ fn draw_mcp(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
             Style::default().fg(ASHEN.smoke)
         };
         let (status_str, status_style) = match srv.status {
-            crate::mcp::ServerStatus::Connected => ("connected", Style::default().fg(ASHEN.moss)),
-            crate::mcp::ServerStatus::Connecting => {
+            crate::integrations::mcp::ServerStatus::Connected => {
+                ("connected", Style::default().fg(ASHEN.moss))
+            }
+            crate::integrations::mcp::ServerStatus::Connecting => {
                 ("connecting", Style::default().fg(ASHEN.frost))
             }
-            crate::mcp::ServerStatus::Error(_) => ("error", Style::default().fg(ASHEN.ember)),
-            crate::mcp::ServerStatus::Disabled => ("disabled", Style::default().fg(ASHEN.charcoal)),
+            crate::integrations::mcp::ServerStatus::Error(_) => {
+                ("error", Style::default().fg(ASHEN.ember))
+            }
+            crate::integrations::mcp::ServerStatus::Disabled => {
+                ("disabled", Style::default().fg(ASHEN.charcoal))
+            }
         };
         let tool_cnt = srv.tools.len();
         let header = Line::from(vec![
@@ -3555,8 +3561,8 @@ fn draw_mcp(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
 }
 
 fn draw_allowlist(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
-    let bash_list = crate::bash_guard::allowlist_list();
-    let dir_list = crate::dir_guard::allowlist_list();
+    let bash_list = crate::guards::bash::allowlist_list();
+    let dir_list = crate::guards::dir::allowlist_list();
     let mut combined: Vec<(String, String)> = Vec::new(); // (kind, pat)
     for p in bash_list {
         combined.push(("bash".into(), p));
@@ -3577,8 +3583,8 @@ fn draw_allowlist(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
     };
     let title = format!(
         " Allowlist (bash:{}, dir:{}) — Enter keep, d delete, c clear all, Esc close ",
-        crate::bash_guard::allowlist_list().len(),
-        crate::dir_guard::allowlist_list().len()
+        crate::guards::bash::allowlist_list().len(),
+        crate::guards::dir::allowlist_list().len()
     );
     let block = Block::default()
         .title(title)
@@ -3671,7 +3677,7 @@ fn history_from_messages(msgs: &[Msg]) -> Vec<serde_json::Value> {
 }
 
 fn llm_history_for_spawn(
-    session: &Option<crate::session::Session>,
+    session: &Option<crate::services::session::Session>,
     msgs: &[Msg],
 ) -> Vec<serde_json::Value> {
     if let Some(sess) = session {
@@ -3697,7 +3703,7 @@ async fn app_loop(
         None
     } else if let Some(ref rid) = opts.resume_id {
         // prefix match
-        let list = crate::session::Session::list();
+        let list = crate::services::session::Session::list();
         let found = list.into_iter().find(|sess| sess.id.starts_with(rid));
         match found {
             Some(sess) => {
@@ -3726,11 +3732,11 @@ async fn app_loop(
                     elapsed_ms: None,
                 };
                 messages.push(m);
-                Some(crate::session::Session::new(&model))
+                Some(crate::services::session::Session::new(&model))
             }
         }
     } else if opts.continue_session {
-        if let Some(sess) = crate::session::Session::latest() {
+        if let Some(sess) = crate::services::session::Session::latest() {
             messages = sess
                 .messages
                 .iter()
@@ -3745,21 +3751,21 @@ async fn app_loop(
                 .collect();
             Some(sess)
         } else {
-            Some(crate::session::Session::new(&model))
+            Some(crate::services::session::Session::new(&model))
         }
     } else {
-        Some(crate::session::Session::new(&model))
+        Some(crate::services::session::Session::new(&model))
     };
     // TODO: remove if unnecessary
     // Warn if resumed session has a legacy alias not in models.json
     if let Some(ref sess) = session {
-        if crate::models::resolve(Some(&sess.model)).is_err() {
+        if crate::integrations::models::resolve(Some(&sess.model)).is_err() {
             messages.push(Msg {
                 role: "system".into(),
                 content: format!(
                     "[warn: session model '{}' not in {} — use /model to switch]",
                     sess.model,
-                    crate::models::path_display()
+                    crate::integrations::models::path_display()
                 ),
                 tool_id: None,
                 tool_name: None,
@@ -3781,31 +3787,32 @@ async fn app_loop(
             Some("startup")
         };
         if let Some(ref sess) = session {
-            crate::herdr::report_session_obj(sess, start_source);
-            crate::herdr::report_idle_force();
+            crate::integrations::herdr::report_session_obj(sess, start_source);
+            crate::integrations::herdr::report_idle_force();
         } else {
-            crate::herdr::report_idle_force();
+            crate::integrations::herdr::report_idle_force();
         }
     }
 
     // helper to persist (cur_model passed explicitly to avoid borrow across mutation)
-    let persist = |msgs: &Vec<Msg>, sess: &mut Option<crate::session::Session>, cur_model: &str| {
-        if let Some(s) = sess {
-            s.model = cur_model.to_string();
-            s.cwd = std::env::current_dir()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default();
-            s.messages = msgs
-                .iter()
-                .map(|m| crate::session::SavedMsg {
-                    role: m.role.clone(),
-                    content: m.content.clone(),
-                })
-                .collect();
-            let _ = s.save();
-            crate::session::Session::prune(50);
-        }
-    };
+    let persist =
+        |msgs: &Vec<Msg>, sess: &mut Option<crate::services::session::Session>, cur_model: &str| {
+            if let Some(s) = sess {
+                s.model = cur_model.to_string();
+                s.cwd = std::env::current_dir()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+                s.messages = msgs
+                    .iter()
+                    .map(|m| crate::services::session::SavedMsg {
+                        role: m.role.clone(),
+                        content: m.content.clone(),
+                    })
+                    .collect();
+                let _ = s.save();
+                crate::services::session::Session::prune(50);
+            }
+        };
     let mut scroll: u16 = 0;
     let mut auto_scroll = true;
     let mut step_info = String::new();
@@ -3850,9 +3857,9 @@ async fn app_loop(
     let mut agent_handle: Option<tokio::task::JoinHandle<()>> = None;
     let mut spinner_tick: usize = 0;
     let (done_tx, _) = broadcast::channel::<()>(4);
-    let mut pending_approval: Option<crate::approval::ApprovalRequest> = None;
-    let mut pending_question: Option<crate::question::AskRequest> = None;
-    let mut question_wizard: Option<crate::question::Wizard> = None;
+    let mut pending_approval: Option<crate::guards::approval::ApprovalRequest> = None;
+    let mut pending_question: Option<crate::services::question::AskRequest> = None;
+    let mut question_wizard: Option<crate::services::question::Wizard> = None;
     let mut show_sessions = false;
     let mut sessions_scroll: usize = 0;
     let mut sessions_selected: usize = 0;
@@ -3868,7 +3875,7 @@ async fn app_loop(
     let mut subagent_selected: usize = 0;
     let mut subagent_scroll: usize = 0;
     let mut subagent_detail: Option<usize> = None;
-    let mut pending_sudo: Option<crate::sudo::SudoRequest> = None;
+    let mut pending_sudo: Option<crate::guards::sudo::SudoRequest> = None;
     let mut sudo_input = String::new();
     let mut sudo_error: Option<String> = None;
     let mut sudo_attempt: usize = 1;
@@ -3879,7 +3886,7 @@ async fn app_loop(
     let mut subagent_list_auto_scroll = true;
     let mut subagent_kill_confirm = false;
     // ── Dictate (voice) state ──────────────────────────────────
-    let mut dictate_state = crate::dictate::State::Idle;
+    let mut dictate_state = crate::integrations::dictate::State::Idle;
     let mut dictate_chunks: Vec<Vec<u8>> = Vec::new();
     let mut dictate_child: Option<tokio::process::Child> = None;
     let mut dictate_meter: [f32; 6] = [0.0; 6];
@@ -3893,7 +3900,7 @@ async fn app_loop(
     let mut dictate_meter_last = std::time::Instant::now();
     // Eager MCP init (background)
     tokio::spawn(async move {
-        crate::mcp::init().await;
+        crate::integrations::mcp::init().await;
     });
 
     // Redraw only when something changed; the spinner forces redraws while busy.
@@ -3915,23 +3922,25 @@ async fn app_loop(
 
     loop {
         // Poll for approval requests — suppressed while auto-accept is ON
-        if !crate::approval::is_auto_accept() && pending_approval.is_none() {
-            if let Some(req) = crate::approval::take_pending() {
+        if !crate::guards::approval::is_auto_accept() && pending_approval.is_none() {
+            if let Some(req) = crate::guards::approval::take_pending() {
                 pending_approval = Some(req);
                 dirty = true;
             }
         }
         // Poll for question requests — never suppressed, even in auto-accept
         if pending_question.is_none() {
-            if let Some(req) = crate::question::take_pending() {
-                question_wizard = Some(crate::question::Wizard::new(req.questions.clone()));
+            if let Some(req) = crate::services::question::take_pending() {
+                question_wizard = Some(crate::services::question::Wizard::new(
+                    req.questions.clone(),
+                ));
                 pending_question = Some(req);
                 dirty = true;
             }
         }
         // Poll for sudo password requests
         if pending_sudo.is_none() {
-            if let Some(req) = crate::sudo::take_pending() {
+            if let Some(req) = crate::guards::sudo::take_pending() {
                 sudo_input.clear();
                 sudo_error = None;
                 sudo_attempt = 1;
@@ -3958,14 +3967,14 @@ async fn app_loop(
             };
             if let Some((st, msg)) = herdr_state {
                 match st {
-                    "blocked" => crate::herdr::report_blocked(msg.as_deref()),
-                    "working" => crate::herdr::report_working(),
-                    _ => crate::herdr::report_idle(),
+                    "blocked" => crate::integrations::herdr::report_blocked(msg.as_deref()),
+                    "working" => crate::integrations::herdr::report_working(),
+                    _ => crate::integrations::herdr::report_idle(),
                 }
             }
         }
         // Poll for subagent wake messages — render as tool call on master list (like pi)
-        let wakes = crate::agents::take_wake_messages();
+        let wakes = crate::services::agents::take_wake_messages();
         if !wakes.is_empty() {
             for w in wakes {
                 if w.id.is_empty() && w.agent.is_empty() {
@@ -4025,12 +4034,12 @@ async fn app_loop(
         }
         // ── Dictate: drain audio chunks + update meter ─────────
         while let Ok(chunk) = dictate_audio_rx.try_recv() {
-            let lvl = crate::dictate::rms_from_pcm16(&chunk);
+            let lvl = crate::integrations::dictate::rms_from_pcm16(&chunk);
             dictate_current_level = lvl;
             dictate_chunks.push(chunk);
         }
         // meter tick every 60ms while recording
-        if dictate_state == crate::dictate::State::Recording
+        if dictate_state == crate::integrations::dictate::State::Recording
             && dictate_meter_last.elapsed().as_millis() >= 60
         {
             dictate_meter_last = std::time::Instant::now();
@@ -4083,7 +4092,7 @@ async fn app_loop(
                         }
                     }
                     // always reset to idle after delivery
-                    dictate_state = crate::dictate::State::Idle;
+                    dictate_state = crate::integrations::dictate::State::Idle;
                     dictate_chunks.clear();
                     dictate_current_level = 0.0;
                     dictate_meter = [0.0; 6];
@@ -4098,7 +4107,7 @@ async fn app_loop(
                         tool_args: None,
                         elapsed_ms: None,
                     });
-                    dictate_state = crate::dictate::State::Idle;
+                    dictate_state = crate::integrations::dictate::State::Idle;
                     dictate_chunks.clear();
                     dictate_current_level = 0.0;
                     dictate_meter = [0.0; 6];
@@ -4109,7 +4118,7 @@ async fn app_loop(
             }
         }
         // Check if ffmpeg child exited unexpectedly while recording
-        if dictate_state == crate::dictate::State::Recording {
+        if dictate_state == crate::integrations::dictate::State::Recording {
             if let Some(child) = dictate_child.as_mut() {
                 match child.try_wait() {
                     Ok(Some(status)) => {
@@ -4128,18 +4137,19 @@ async fn app_loop(
                         }
                         // cleanup handles dictate reset; keep chunks for transcribe if any
                         if dictate_chunks.is_empty() {
-                            dictate_state = crate::dictate::State::Idle;
+                            dictate_state = crate::integrations::dictate::State::Idle;
                             dictate_child = None;
                             dictate_task = None;
                             dictate_generation += 1;
                         } else {
                             // treat as stop -> transcribe what we have
-                            dictate_state = crate::dictate::State::Transcribing;
-                            let wav = crate::dictate::build_wav(&dictate_chunks);
+                            dictate_state = crate::integrations::dictate::State::Transcribing;
+                            let wav = crate::integrations::dictate::build_wav(&dictate_chunks);
                             let tx = dictate_result_tx.clone();
                             let gen = dictate_generation;
                             tokio::spawn(async move {
-                                let res = crate::dictate::transcribe_with_groq(wav).await;
+                                let res =
+                                    crate::integrations::dictate::transcribe_with_groq(wav).await;
                                 let _ = tx.send(res);
                                 let _ = gen;
                             });
@@ -4221,7 +4231,7 @@ async fn app_loop(
         }
         if subagent_detail.is_some() {
             if let Some(idx) = subagent_detail {
-                let subs = crate::agents::list_subagents();
+                let subs = crate::services::agents::list_subagents();
                 if let Some(sub) = subs.get(idx) {
                     let inner_w = (term_size.width as usize).saturating_sub(4).max(10);
                     let inner_h = (term_size.height as usize).saturating_sub(6).max(5);
@@ -4275,7 +4285,7 @@ async fn app_loop(
             }
         } else if show_subagents {
             if subagent_list_auto_scroll {
-                let total = crate::agents::list_subagents().len();
+                let total = crate::services::agents::list_subagents().len();
                 let popup_h = (term_size.height as usize * 60 / 100).max(6);
                 let inner_h = popup_h.saturating_sub(2);
                 let vis = (inner_h / 2).max(1);
@@ -4375,7 +4385,7 @@ async fn app_loop(
                     }
                 }
                 // Approval / question / sudo on top of all overlays (visible even inside subagent view)
-                if !crate::approval::is_auto_accept() {
+                if !crate::guards::approval::is_auto_accept() {
                     if let Some(ref req) = pending_approval {
                         draw_approval(f, f.area(), req);
                     }
@@ -4414,9 +4424,9 @@ async fn app_loop(
 
         // Handle keyboard and mouse events
         // Poll faster while dictate is active (60ms for meter, 80ms for transcribing spinner), else 10fps when busy, 4fps idle
-        let poll_ms = if dictate_state == crate::dictate::State::Recording {
+        let poll_ms = if dictate_state == crate::integrations::dictate::State::Recording {
             60
-        } else if dictate_state == crate::dictate::State::Transcribing {
+        } else if dictate_state == crate::integrations::dictate::State::Transcribing {
             80
         } else if agent_busy {
             100
@@ -4428,7 +4438,7 @@ async fn app_loop(
             dirty = true;
             match term_event {
                 Event::Paste(data) => {
-                    crate::telemetry::record("paste");
+                    crate::support::telemetry::record("paste");
                     let max_cols = (chunks[7].width as usize).saturating_sub(1);
                     textarea.insert_str(hard_wrap_str(&data, max_cols));
                     wrap_cursor_line(&mut textarea, max_cols);
@@ -4461,7 +4471,7 @@ async fn app_loop(
                                         subagent_detail_auto_scroll = true;
                                     }
                                 } else {
-                                    let total = crate::agents::list_subagents().len();
+                                    let total = crate::services::agents::list_subagents().len();
                                     let popup_h = (term_size.height as usize * 60 / 100).max(6);
                                     let vis_rows =
                                         (popup_h.saturating_sub(2) / 2).max(1).min(total.max(1));
@@ -4508,7 +4518,7 @@ async fn app_loop(
                     if is_alt_m {
                         // Alt+M toggle
                         match dictate_state {
-                            crate::dictate::State::Idle => {
+                            crate::integrations::dictate::State::Idle => {
                                 // Start guard: GROQ key required
                                 if std::env::var("GROQ_API_KEY")
                                     .unwrap_or_default()
@@ -4517,7 +4527,7 @@ async fn app_loop(
                                 {
                                     messages.push(Msg { role: "system".into(), content: "Dictation: GROQ_API_KEY not set in environment — add to .env or export".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None });
                                 } else {
-                                    match crate::dictate::spawn_ffmpeg() {
+                                    match crate::integrations::dictate::spawn_ffmpeg() {
                                         Ok(mut child) => {
                                             dictate_generation = dictate_generation.wrapping_add(1);
                                             let gen = dictate_generation;
@@ -4525,7 +4535,8 @@ async fn app_loop(
                                             dictate_meter = [0.0; 6];
                                             dictate_current_level = 0.0;
                                             dictate_meter_last = std::time::Instant::now();
-                                            dictate_state = crate::dictate::State::Recording;
+                                            dictate_state =
+                                                crate::integrations::dictate::State::Recording;
                                             // Spawn reader task for stdout
                                             if let Some(stdout) = child.stdout.take() {
                                                 dictate_child = Some(child);
@@ -4567,10 +4578,10 @@ async fn app_loop(
                                     }
                                 }
                             }
-                            crate::dictate::State::Recording => {
+                            crate::integrations::dictate::State::Recording => {
                                 // Stop -> transcribe
                                 dictate_generation = dictate_generation.wrapping_add(1);
-                                dictate_state = crate::dictate::State::Transcribing;
+                                dictate_state = crate::integrations::dictate::State::Transcribing;
                                 // Kill ffmpeg
                                 if let Some(mut child) = dictate_child.take() {
                                     let _ = child.kill().await;
@@ -4592,17 +4603,20 @@ async fn app_loop(
                                         tool_args: None,
                                         elapsed_ms: None,
                                     });
-                                    dictate_state = crate::dictate::State::Idle;
+                                    dictate_state = crate::integrations::dictate::State::Idle;
                                 } else {
-                                    let wav = crate::dictate::build_wav(&dictate_chunks);
+                                    let wav =
+                                        crate::integrations::dictate::build_wav(&dictate_chunks);
                                     let tx = dictate_result_tx.clone();
                                     tokio::spawn(async move {
-                                        let res = crate::dictate::transcribe_with_groq(wav).await;
+                                        let res =
+                                            crate::integrations::dictate::transcribe_with_groq(wav)
+                                                .await;
                                         let _ = tx.send(res);
                                     });
                                 }
                             }
-                            crate::dictate::State::Transcribing => {
+                            crate::integrations::dictate::State::Transcribing => {
                                 // Ignore Alt+M while transcribing
                             }
                         }
@@ -4611,7 +4625,7 @@ async fn app_loop(
                     }
                     if is_alt_n {
                         // Alt+N cancel
-                        if dictate_state != crate::dictate::State::Idle {
+                        if dictate_state != crate::integrations::dictate::State::Idle {
                             dictate_generation = dictate_generation.wrapping_add(1);
                             if let Some(mut child) = dictate_child.take() {
                                 let _ = child.kill().await;
@@ -4622,7 +4636,7 @@ async fn app_loop(
                             dictate_chunks.clear();
                             dictate_meter = [0.0; 6];
                             dictate_current_level = 0.0;
-                            dictate_state = crate::dictate::State::Idle;
+                            dictate_state = crate::integrations::dictate::State::Idle;
                             // drain channels
                             while dictate_audio_rx.try_recv().is_ok() {}
                             while dictate_result_rx.try_recv().is_ok() {}
@@ -4651,21 +4665,21 @@ async fn app_loop(
                                         let _ = tx.send(true);
                                     }
                                 }
-                                while let Some(mut req) = crate::approval::take_pending() {
+                                while let Some(mut req) = crate::guards::approval::take_pending() {
                                     if let Some(tx) = req.tx.take() {
                                         let _ = tx.send(true);
                                     }
                                 }
-                                crate::telemetry::record("mode_auto");
+                                crate::support::telemetry::record("mode_auto");
                             }
                             crate::agent::Mode::Plan => {
-                                crate::telemetry::record("mode_plan");
+                                crate::support::telemetry::record("mode_plan");
                             }
                             crate::agent::Mode::Ask => {
-                                crate::telemetry::record("mode_ask");
+                                crate::support::telemetry::record("mode_ask");
                             }
                             crate::agent::Mode::Norm => {
-                                crate::telemetry::record("mode_norm");
+                                crate::support::telemetry::record("mode_norm");
                             }
                         }
                         continue;
@@ -4679,16 +4693,16 @@ async fn app_loop(
                         let outcome = match k.code {
                             KeyCode::Up => {
                                 wizard.move_up();
-                                crate::question::WizardOutcome::Continue
+                                crate::services::question::WizardOutcome::Continue
                             }
                             KeyCode::Down => {
                                 wizard.move_down();
-                                crate::question::WizardOutcome::Continue
+                                crate::services::question::WizardOutcome::Continue
                             }
                             KeyCode::BackTab | KeyCode::Left => wizard.back(),
                             KeyCode::Backspace => {
                                 wizard.backspace();
-                                crate::question::WizardOutcome::Continue
+                                crate::services::question::WizardOutcome::Continue
                             }
                             KeyCode::Char('c') if q_ctrl => wizard.cancel(),
                             KeyCode::Char(c) if !q_ctrl && !q_alt => {
@@ -4697,28 +4711,28 @@ async fn app_loop(
                                 } else if c == ' ' {
                                     wizard.toggle();
                                 }
-                                crate::question::WizardOutcome::Continue
+                                crate::services::question::WizardOutcome::Continue
                             }
                             KeyCode::Enter => wizard.confirm(),
                             KeyCode::Esc => wizard.cancel(),
-                            _ => crate::question::WizardOutcome::Continue,
+                            _ => crate::services::question::WizardOutcome::Continue,
                         };
                         match outcome {
-                            crate::question::WizardOutcome::Continue => {
+                            crate::services::question::WizardOutcome::Continue => {
                                 pending_question = Some(req);
                                 question_wizard = Some(wizard);
                             }
-                            crate::question::WizardOutcome::Submit => {
+                            crate::services::question::WizardOutcome::Submit => {
                                 if let Some(tx) = req.tx.take() {
                                     let _ = tx.send(wizard.answers());
                                 }
-                                crate::telemetry::record("ask_user_answered");
+                                crate::support::telemetry::record("ask_user_answered");
                             }
-                            crate::question::WizardOutcome::Cancel => {
+                            crate::services::question::WizardOutcome::Cancel => {
                                 if let Some(tx) = req.tx.take() {
                                     let _ = tx.send(Vec::new());
                                 }
-                                crate::telemetry::record("ask_user_skipped");
+                                crate::support::telemetry::record("ask_user_skipped");
                             }
                         }
                         dirty = true;
@@ -4734,7 +4748,7 @@ async fn app_loop(
                                 if let Some(tx) = req.tx.take() {
                                     let _ = tx.send(true);
                                 }
-                                crate::telemetry::record(if is_mcp {
+                                crate::support::telemetry::record(if is_mcp {
                                     "mcp_guard_allow_once"
                                 } else if is_dir {
                                     "dir_guard_allow_once"
@@ -4748,7 +4762,7 @@ async fn app_loop(
                                     if let Some(tx) = req.tx.take() {
                                         let _ = tx.send(true);
                                     }
-                                    crate::telemetry::record("mcp_guard_allow_once");
+                                    crate::support::telemetry::record("mcp_guard_allow_once");
                                 } else if is_dir {
                                     // Extract offending paths from reasons "outside CWD (path → resolved)"
                                     for r in &req.reasons {
@@ -4756,7 +4770,7 @@ async fn app_loop(
                                             if let Some(e) = r.find(" →") {
                                                 let raw = r[s + 1..e].trim();
                                                 if !raw.is_empty() {
-                                                    crate::dir_guard::allowlist_add(raw);
+                                                    crate::guards::dir::allowlist_add(raw);
                                                 }
                                             }
                                         }
@@ -4773,20 +4787,20 @@ async fn app_loop(
                                         req.cmd.clone()
                                     };
                                     if !fallback.is_empty() {
-                                        crate::dir_guard::allowlist_add(&fallback);
+                                        crate::guards::dir::allowlist_add(&fallback);
                                     }
                                     // For bash, also allowlist the full command for exact match
                                     if req.cmd.contains('/') || req.cmd.contains(' ') {
-                                        crate::dir_guard::allowlist_add(&req.cmd);
+                                        crate::guards::dir::allowlist_add(&req.cmd);
                                     }
                                 } else {
-                                    crate::bash_guard::allowlist_add(&req.cmd);
+                                    crate::guards::bash::allowlist_add(&req.cmd);
                                 }
                                 if !is_mcp {
                                     if let Some(tx) = req.tx.take() {
                                         let _ = tx.send(true);
                                     }
-                                    crate::telemetry::record(if is_dir {
+                                    crate::support::telemetry::record(if is_dir {
                                         "dir_guard_allow_always"
                                     } else {
                                         "bash_guard_allow_always"
@@ -4797,7 +4811,7 @@ async fn app_loop(
                                 if let Some(tx) = req.tx.take() {
                                     let _ = tx.send(false);
                                 }
-                                crate::telemetry::record(if is_mcp {
+                                crate::support::telemetry::record(if is_mcp {
                                     "mcp_guard_deny"
                                 } else {
                                     "bash_guard_deny"
@@ -4807,7 +4821,7 @@ async fn app_loop(
                                 if let Some(tx) = req.tx.take() {
                                     let _ = tx.send(true);
                                 }
-                                crate::telemetry::record(if is_mcp {
+                                crate::support::telemetry::record(if is_mcp {
                                     "mcp_guard_allow_once"
                                 } else if is_dir {
                                     "dir_guard_allow_once"
@@ -4819,7 +4833,7 @@ async fn app_loop(
                                 if let Some(tx) = req.tx.take() {
                                     let _ = tx.send(false);
                                 }
-                                crate::telemetry::record(if is_mcp {
+                                crate::support::telemetry::record(if is_mcp {
                                     "mcp_guard_deny"
                                 } else {
                                     "bash_guard_deny"
@@ -4883,9 +4897,9 @@ async fn app_loop(
                             match k.code {
                                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                                     if let Some(idx) = subagent_detail {
-                                        let subs = crate::agents::list_subagents();
+                                        let subs = crate::services::agents::list_subagents();
                                         if let Some(sub) = subs.get(idx) {
-                                            crate::agents::kill_subagent(&sub.id);
+                                            crate::services::agents::kill_subagent(&sub.id);
                                         }
                                     }
                                     subagent_kill_confirm = false;
@@ -4971,7 +4985,7 @@ async fn app_loop(
                             KeyCode::Down => {
                                 let popup_h = (term_size.height as usize * 60 / 100).max(6);
                                 let vis = (popup_h.saturating_sub(2) / 2).max(1);
-                                let len = crate::agents::list_subagents().len();
+                                let len = crate::services::agents::list_subagents().len();
                                 if subagent_selected + 1 < len {
                                     subagent_selected += 1;
                                     if subagent_selected >= subagent_scroll + vis {
@@ -4998,7 +5012,7 @@ async fn app_loop(
                                 let popup_h = (term_size.height as usize * 60 / 100).max(6);
                                 let vis = (popup_h.saturating_sub(2) / 2).max(1);
                                 let step = vis;
-                                let len = crate::agents::list_subagents().len();
+                                let len = crate::services::agents::list_subagents().len();
                                 subagent_selected =
                                     (subagent_selected + step).min(len.saturating_sub(1));
                                 let total = len;
@@ -5014,7 +5028,7 @@ async fn app_loop(
                                 subagent_list_auto_scroll = false;
                             }
                             KeyCode::End => {
-                                let len = crate::agents::list_subagents().len();
+                                let len = crate::services::agents::list_subagents().len();
                                 if len > 0 {
                                     subagent_selected = len - 1;
                                 }
@@ -5053,8 +5067,8 @@ async fn app_loop(
                                 }
                             }
                             KeyCode::Down => {
-                                let bash_len = crate::bash_guard::allowlist_list().len();
-                                let dir_len = crate::dir_guard::allowlist_list().len();
+                                let bash_len = crate::guards::bash::allowlist_list().len();
+                                let dir_len = crate::guards::dir::allowlist_list().len();
                                 let len = bash_len + dir_len;
                                 if allowlist_selected + 1 < len {
                                     allowlist_selected += 1;
@@ -5065,8 +5079,8 @@ async fn app_loop(
                             }
                             KeyCode::Char('d') | KeyCode::Delete => {
                                 // rebuild combined as in draw
-                                let bash_list = crate::bash_guard::allowlist_list();
-                                let dir_list = crate::dir_guard::allowlist_list();
+                                let bash_list = crate::guards::bash::allowlist_list();
+                                let dir_list = crate::guards::dir::allowlist_list();
                                 let mut combined: Vec<(String, String)> = Vec::new();
                                 for p in &bash_list {
                                     combined.push(("bash".into(), p.clone()));
@@ -5078,20 +5092,20 @@ async fn app_loop(
                                 if let Some((kind, pat)) = combined.get(allowlist_selected).cloned()
                                 {
                                     if kind == "dir" {
-                                        crate::dir_guard::allowlist_remove(&pat);
+                                        crate::guards::dir::allowlist_remove(&pat);
                                     } else {
-                                        crate::bash_guard::allowlist_remove(&pat);
+                                        crate::guards::bash::allowlist_remove(&pat);
                                     }
-                                    let new_len = crate::bash_guard::allowlist_list().len()
-                                        + crate::dir_guard::allowlist_list().len();
+                                    let new_len = crate::guards::bash::allowlist_list().len()
+                                        + crate::guards::dir::allowlist_list().len();
                                     if allowlist_selected >= new_len && allowlist_selected > 0 {
                                         allowlist_selected -= 1;
                                     }
                                 }
                             }
                             KeyCode::Char('c') => {
-                                crate::bash_guard::allowlist_clear();
-                                crate::dir_guard::allowlist_clear();
+                                crate::guards::bash::allowlist_clear();
+                                crate::guards::dir::allowlist_clear();
                                 allowlist_selected = 0;
                                 allowlist_scroll = 0;
                             }
@@ -5115,9 +5129,9 @@ async fn app_loop(
                             }
                             KeyCode::Enter => {
                                 // Apply same ordering as draw: dir filter + text filter
-                                let all = crate::session::Session::list();
+                                let all = crate::services::session::Session::list();
                                 let cwd_norm = cwd.trim_end_matches('/');
-                                let dir_filtered: Vec<crate::session::Session> =
+                                let dir_filtered: Vec<crate::services::session::Session> =
                                     if sessions_show_all {
                                         all
                                     } else {
@@ -5125,7 +5139,7 @@ async fn app_loop(
                                             .filter(|s| s.cwd.trim_end_matches('/') == cwd_norm)
                                             .collect()
                                     };
-                                let filtered: Vec<crate::session::Session> =
+                                let filtered: Vec<crate::services::session::Session> =
                                     if sessions_filter.is_empty() {
                                         dir_filtered
                                     } else {
@@ -5164,7 +5178,10 @@ async fn app_loop(
                                     });
                                     session = Some(sess);
                                     if let Some(ref s) = session {
-                                        crate::herdr::report_session_obj(s, Some("resume"));
+                                        crate::integrations::herdr::report_session_obj(
+                                            s,
+                                            Some("resume"),
+                                        );
                                     }
                                 }
                                 show_sessions = false;
@@ -5182,9 +5199,9 @@ async fn app_loop(
                             }
                             KeyCode::Down => {
                                 // Compute filtered len with dir + text filters
-                                let all = crate::session::Session::list();
+                                let all = crate::services::session::Session::list();
                                 let cwd_norm = cwd.trim_end_matches('/');
-                                let dir_filtered: Vec<crate::session::Session> =
+                                let dir_filtered: Vec<crate::services::session::Session> =
                                     if sessions_show_all {
                                         all
                                     } else {
@@ -5240,39 +5257,44 @@ async fn app_loop(
                                 mcp_scroll = 0;
                             }
                             KeyCode::Enter | KeyCode::Char('r') => {
-                                let servers = crate::mcp::snapshot();
+                                let servers = crate::integrations::mcp::snapshot();
                                 if let Some(srv) = servers.get(mcp_selected).cloned() {
-                                    if crate::mcp::is_server_disabled(&srv.name)
-                                        || matches!(srv.status, crate::mcp::ServerStatus::Disabled)
+                                    if crate::integrations::mcp::is_server_disabled(&srv.name)
+                                        || matches!(
+                                            srv.status,
+                                            crate::integrations::mcp::ServerStatus::Disabled
+                                        )
                                     {
                                         // stay open, show [disabled] instantly — no chat spam
                                     } else {
                                         let name = srv.name.clone();
                                         tokio::spawn(async move {
-                                            let _ = crate::mcp::reconnect(&name).await;
+                                            let _ =
+                                                crate::integrations::mcp::reconnect(&name).await;
                                         });
                                     }
                                 }
                             }
                             KeyCode::Char('d') | KeyCode::Char('t') | KeyCode::Char(' ') => {
-                                let servers = crate::mcp::snapshot();
+                                let servers = crate::integrations::mcp::snapshot();
                                 if let Some(srv) = servers.get(mcp_selected).cloned() {
                                     let now_disabled =
-                                        crate::mcp::toggle_server_disabled(&srv.name);
+                                        crate::integrations::mcp::toggle_server_disabled(&srv.name);
                                     if !now_disabled {
                                         let name = srv.name.clone();
                                         tokio::spawn(async move {
-                                            let _ = crate::mcp::reconnect(&name).await;
+                                            let _ =
+                                                crate::integrations::mcp::reconnect(&name).await;
                                         });
                                     }
                                 }
                             }
                             KeyCode::Char('g') => {
-                                let was = crate::mcp::is_global_disabled();
-                                crate::mcp::set_global_disabled(!was);
+                                let was = crate::integrations::mcp::is_global_disabled();
+                                crate::integrations::mcp::set_global_disabled(!was);
                                 if was {
                                     tokio::spawn(async move {
-                                        crate::mcp::init().await;
+                                        crate::integrations::mcp::init().await;
                                     });
                                 }
                             }
@@ -5285,7 +5307,7 @@ async fn app_loop(
                                 }
                             }
                             KeyCode::Down => {
-                                let len = crate::mcp::snapshot().len();
+                                let len = crate::integrations::mcp::snapshot().len();
                                 if mcp_selected + 1 < len {
                                     mcp_selected += 1;
                                     if mcp_selected >= mcp_scroll + 8 {
@@ -5312,7 +5334,7 @@ async fn app_loop(
                             } else if agent_busy {
                                 // Abort the running agent - keep braille/spinner alive if queue pending
                                 if let Some(handle) = agent_handle.take() {
-                                    crate::telemetry::record("interrupt");
+                                    crate::support::telemetry::record("interrupt");
                                     handle.abort();
                                 }
                                 if !msg_queue.is_empty() {
@@ -5371,7 +5393,7 @@ async fn app_loop(
                         }
                         KeyCode::Char('d') if ctrl => break,
                         KeyCode::Char('o') if ctrl => {
-                            if !crate::agents::list_subagents().is_empty() {
+                            if !crate::services::agents::list_subagents().is_empty() {
                                 show_subagents = true;
                                 subagent_selected = 0;
                                 subagent_scroll = 0;
@@ -5391,18 +5413,18 @@ async fn app_loop(
                             // Emacs Ctrl+U kill to start of line (override textarea undo)
                             // delete from head using textarea API
                             textarea.delete_line_by_head();
-                            crate::telemetry::record("kill_line");
+                            crate::support::telemetry::record("kill_line");
                             ac_matches = current_completions(&textarea);
                             ac_idx = 0;
                         }
                         KeyCode::Char('k') if ctrl => {
                             textarea.delete_line_by_end();
-                            crate::telemetry::record("kill_line_end");
+                            crate::support::telemetry::record("kill_line_end");
                             ac_matches = current_completions(&textarea);
                             ac_idx = 0;
                         }
                         KeyCode::Char('z') if ctrl => {
-                            crate::telemetry::record("input_undo");
+                            crate::support::telemetry::record("input_undo");
                             textarea.undo();
                             ac_matches = current_completions(&textarea);
                             ac_idx = 0;
@@ -5431,7 +5453,7 @@ async fn app_loop(
                                     let placeholder = format!("[[IMAGE #{}]] ", idx);
                                     textarea.insert_str(&placeholder);
                                 }
-                                crate::telemetry::record("image_paste");
+                                crate::support::telemetry::record("image_paste");
                                 ac_matches = current_completions(&textarea);
                                 ac_idx = 0;
                             } else {
@@ -5442,14 +5464,14 @@ async fn app_loop(
                                     // No text pasted and no image found — likely image clipboard without tool support
                                     messages.push(Msg { role: "system".into(), content: "no image in clipboard (and no text). Tip: copy screenshot as PNG (Flameshot/Spectacle), ensure wl-clipboard installed, or use @path/to/image.png — see wl-paste --list-types to debug.".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                 }
-                                crate::telemetry::record("paste");
+                                crate::support::telemetry::record("paste");
                                 ac_matches = current_completions(&textarea);
                                 ac_idx = 0;
                             }
                         }
                         KeyCode::Char('y') if ctrl => {
                             textarea.paste();
-                            crate::telemetry::record("paste");
+                            crate::support::telemetry::record("paste");
                             ac_matches = current_completions(&textarea);
                             ac_idx = 0;
                         }
@@ -5464,7 +5486,7 @@ async fn app_loop(
                             }
                         }
                         KeyCode::Enter if shift && !ctrl && !alt => {
-                            crate::telemetry::record("newline");
+                            crate::support::telemetry::record("newline");
                             let inp = crossterm_key_to_input(k);
                             textarea.input(inp);
                             ac_matches = current_completions(&textarea);
@@ -5580,7 +5602,7 @@ async fn app_loop(
                                     ac_idx - 1
                                 };
                             } else if !history.is_empty() {
-                                crate::telemetry::record("prompt_recall");
+                                crate::support::telemetry::record("prompt_recall");
                                 // Only hijack Up for history when cursor at top line (native fish-like)
                                 let r = textarea.cursor().0;
                                 if r == 0 {
@@ -5607,7 +5629,7 @@ async fn app_loop(
                             // telemetry for history nav handled inside
                             if !ac_matches.is_empty() {
                                 ac_idx = (ac_idx + 1) % ac_matches.len();
-                                crate::telemetry::record("prompt_jump_down");
+                                crate::support::telemetry::record("prompt_jump_down");
                             } else if let Some(idx) = hist_idx {
                                 if idx + 1 < history.len() {
                                     hist_idx = Some(idx + 1);
@@ -5737,11 +5759,11 @@ async fn app_loop(
                         KeyCode::Left if alt => {
                             // Alt+Left word jump
                             textarea.move_cursor(CursorMove::WordBack);
-                            crate::telemetry::record("word_back");
+                            crate::support::telemetry::record("word_back");
                         }
                         KeyCode::Right if alt => {
                             textarea.move_cursor(CursorMove::WordForward);
-                            crate::telemetry::record("word_forward");
+                            crate::support::telemetry::record("word_forward");
                         }
                         KeyCode::PageUp => {
                             scroll = scroll.saturating_sub(content_height as u16);
@@ -5852,12 +5874,16 @@ async fn app_loop(
                                     msg_queue.clear();
                                     agent_busy = false;
                                     if !opts.no_session {
-                                        session = Some(crate::session::Session::new(&model));
+                                        session =
+                                            Some(crate::services::session::Session::new(&model));
                                         if let Some(ref s) = session {
-                                            crate::herdr::report_session_obj(s, Some("new"));
+                                            crate::integrations::herdr::report_session_obj(
+                                                s,
+                                                Some("new"),
+                                            );
                                         }
                                     } else {
-                                        crate::herdr::report_idle_force();
+                                        crate::integrations::herdr::report_idle_force();
                                     }
                                 }
                                 "/help" => {
@@ -5876,21 +5902,21 @@ async fn app_loop(
                                     crate::agent::set_mode(next);
                                     match next {
                                         crate::agent::Mode::Plan => {
-                                            crate::telemetry::record("mode_plan")
+                                            crate::support::telemetry::record("mode_plan")
                                         }
-                                        _ => crate::telemetry::record("mode_norm"),
+                                        _ => crate::support::telemetry::record("mode_norm"),
                                     }
                                 }
                                 "/init" => {
                                     // Fast deterministic fallback + LLM enrichment
-                                    let created = crate::context::ensure_init_files();
+                                    let created = crate::core::context::ensure_init_files();
                                     if !created.is_empty() {
                                         messages.push(Msg { role: "system".into(), content: format!("init: created {} — now enriching with project analysis…", created.join(", ")), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                     } else {
                                         messages.push(Msg { role: "system".into(), content: "init: AGENTS.md already exists — refreshing via agent…".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                     }
                                     let cwd =
-                                        crate::dir_guard::project_root().display().to_string();
+                                        crate::guards::dir::project_root().display().to_string();
                                     let init_prompt = format!(
                                         r#"Initialize project memory for lean. Current directory: {cwd}
 
@@ -5931,7 +5957,7 @@ Be thorough but concise. Read before write; use unique oldText for edits."#
                                             done_tx.clone(),
                                         ));
                                     }
-                                    crate::telemetry::record("init");
+                                    crate::support::telemetry::record("init");
                                     // already handled textarea clear below; mark so we don't double-clear
                                     textarea.select_all();
                                     textarea.cut();
@@ -5946,7 +5972,7 @@ Be thorough but concise. Read before write; use unique oldText for edits."#
                                         messages.push(Msg { role: "system".into(), content: "usage: /init — analyze project and create/update AGENTS.md. Files are auto-loaded on startup (project AGENTS.md + global ~/.lean/MEMORY.md updated silently in background).".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                     } else if !rest.is_empty() {
                                         // /init with extra text — treat as note for the agent
-                                        let created = crate::context::ensure_init_files();
+                                        let created = crate::core::context::ensure_init_files();
                                         if !created.is_empty() {
                                             messages.push(Msg {
                                                 role: "system".into(),
@@ -5960,8 +5986,9 @@ Be thorough but concise. Read before write; use unique oldText for edits."#
                                                 elapsed_ms: None,
                                             });
                                         }
-                                        let cwd2 =
-                                            crate::dir_guard::project_root().display().to_string();
+                                        let cwd2 = crate::guards::dir::project_root()
+                                            .display()
+                                            .to_string();
                                         let extra = format!("\nAdditional user note: {}", rest);
                                         let init_prompt2 = format!(
                                             r#"Initialize project memory for lean. CWD: {cwd2}{extra}
@@ -5991,7 +6018,7 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                                 done_tx.clone(),
                                             ));
                                         }
-                                        crate::telemetry::record("init");
+                                        crate::support::telemetry::record("init");
                                     } else {
                                         messages.push(Msg {
                                             role: "system".into(),
@@ -6026,7 +6053,7 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                     allowlist_scroll = 0;
                                 }
                                 "/memory" => {
-                                    let stats = crate::memory::api_stats();
+                                    let stats = crate::services::memory::api_stats();
                                     messages.push(Msg {
                                         role: "system".into(),
                                         content: stats,
@@ -6037,7 +6064,7 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                     });
                                 }
                                 "/memory stats" => {
-                                    let stats = crate::memory::api_stats();
+                                    let stats = crate::services::memory::api_stats();
                                     messages.push(Msg {
                                         role: "system".into(),
                                         content: stats,
@@ -6048,7 +6075,7 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                     });
                                 }
                                 "/memory consolidate" => {
-                                    let out = crate::memory::api_consolidate();
+                                    let out = crate::services::memory::api_consolidate();
                                     messages.push(Msg {
                                         role: "system".into(),
                                         content: out,
@@ -6075,15 +6102,15 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                                 }
                                             }
                                             while let Some(mut req) =
-                                                crate::approval::take_pending()
+                                                crate::guards::approval::take_pending()
                                             {
                                                 if let Some(tx) = req.tx.take() {
                                                     let _ = tx.send(true);
                                                 }
                                             }
-                                            crate::telemetry::record("mode_auto");
+                                            crate::support::telemetry::record("mode_auto");
                                         }
-                                        _ => crate::telemetry::record("mode_norm"),
+                                        _ => crate::support::telemetry::record("mode_norm"),
                                     }
                                 }
                                 _ if prompt.starts_with("/auto-accept ") => {
@@ -6113,15 +6140,15 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                                     }
                                                 }
                                                 while let Some(mut req) =
-                                                    crate::approval::take_pending()
+                                                    crate::guards::approval::take_pending()
                                                 {
                                                     if let Some(tx) = req.tx.take() {
                                                         let _ = tx.send(true);
                                                     }
                                                 }
-                                                crate::telemetry::record("mode_auto");
+                                                crate::support::telemetry::record("mode_auto");
                                             } else {
-                                                crate::telemetry::record("mode_norm");
+                                                crate::support::telemetry::record("mode_norm");
                                             }
                                         }
                                     } else {
@@ -6138,8 +6165,8 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                 _ if prompt.starts_with("/allowlist ") => {
                                     let rest = prompt.strip_prefix("/allowlist ").unwrap().trim();
                                     if rest == "clear" {
-                                        crate::bash_guard::allowlist_clear();
-                                        crate::dir_guard::allowlist_clear();
+                                        crate::guards::bash::allowlist_clear();
+                                        crate::guards::dir::allowlist_clear();
                                         messages.push(Msg {
                                             role: "system".into(),
                                             content: "allowlists cleared (bash + dir)".into(),
@@ -6155,7 +6182,7 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                             || pat.starts_with('~')
                                             || pat.starts_with('.')
                                         {
-                                            crate::dir_guard::allowlist_add(pat);
+                                            crate::guards::dir::allowlist_add(pat);
                                             messages.push(Msg {
                                                 role: "system".into(),
                                                 content: format!("dir-allowlisted: {}", pat),
@@ -6165,7 +6192,7 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                                 elapsed_ms: None,
                                             });
                                         } else {
-                                            crate::bash_guard::allowlist_add(pat);
+                                            crate::guards::bash::allowlist_add(pat);
                                             messages.push(Msg {
                                                 role: "system".into(),
                                                 content: format!("allowlisted: {}", pat),
@@ -6181,8 +6208,8 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                             .split_once(' ')
                                             .map(|(_, p)| p.trim())
                                             .unwrap_or(rest);
-                                        crate::bash_guard::allowlist_remove(pat);
-                                        crate::dir_guard::allowlist_remove(pat);
+                                        crate::guards::bash::allowlist_remove(pat);
+                                        crate::guards::dir::allowlist_remove(pat);
                                         messages.push(Msg {
                                             role: "system".into(),
                                             content: format!("removed: {}", pat),
@@ -6194,7 +6221,7 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                     } else {
                                         // heuristics: path-like → dir
                                         if rest.contains('/') || rest.starts_with('~') {
-                                            crate::dir_guard::allowlist_add(rest);
+                                            crate::guards::dir::allowlist_add(rest);
                                             messages.push(Msg {
                                                 role: "system".into(),
                                                 content: format!("dir-allowlisted: {}", rest),
@@ -6204,7 +6231,7 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                                 elapsed_ms: None,
                                             });
                                         } else {
-                                            crate::bash_guard::allowlist_add(rest);
+                                            crate::guards::bash::allowlist_add(rest);
                                             messages.push(Msg {
                                                 role: "system".into(),
                                                 content: format!("allowlisted: {}", rest),
@@ -6218,7 +6245,7 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                 }
                                 _ if prompt.starts_with("/resume ") => {
                                     let rid = prompt.strip_prefix("/resume ").unwrap().trim();
-                                    let list = crate::session::Session::list();
+                                    let list = crate::services::session::Session::list();
                                     if let Some(sess) =
                                         list.into_iter().find(|sess| sess.id.starts_with(rid))
                                     {
@@ -6245,7 +6272,10 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                         });
                                         session = Some(sess);
                                         if let Some(ref s) = session {
-                                            crate::herdr::report_session_obj(s, Some("resume"));
+                                            crate::integrations::herdr::report_session_obj(
+                                                s,
+                                                Some("resume"),
+                                            );
                                         }
                                     } else {
                                         messages.push(Msg {
@@ -6260,15 +6290,15 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                 }
                                 "/model" => {
                                     // List current alias + available
-                                    match crate::models::load() {
+                                    match crate::integrations::models::load() {
                                         Ok(cfg) => {
                                             let entry = cfg.models.get(&model);
                                             let detail = if let Some(e) = entry {
                                                 let api_tag = match e.api_mode() {
-                                                    crate::models::ApiMode::Responses => {
+                                                    crate::integrations::models::ApiMode::Responses => {
                                                         "responses"
                                                     }
-                                                    crate::models::ApiMode::Anthropic => {
+                                                    crate::integrations::models::ApiMode::Anthropic => {
                                                         "anthropic"
                                                     }
                                                     _ => "chat",
@@ -6292,10 +6322,10 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                                 .map(|a| {
                                                     if let Some(e) = cfg.models.get(a) {
                                                         let tag = match e.api_mode() {
-                                                            crate::models::ApiMode::Responses => {
+                                                            crate::integrations::models::ApiMode::Responses => {
                                                                 "responses"
                                                             }
-                                                            crate::models::ApiMode::Anthropic => {
+                                                            crate::integrations::models::ApiMode::Anthropic => {
                                                                 "anthropic"
                                                             }
                                                             _ => "chat",
@@ -6309,7 +6339,7 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                             let available = decorated.join(", ");
                                             messages.push(Msg {
                                                 role: "system".into(),
-                                                content: format!("current model: {}{} (available: {})\nconfig: {} — use /model <alias> to switch", model, detail, available, crate::models::path_display()), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                                content: format!("current model: {}{} (available: {})\nconfig: {} — use /model <alias> to switch", model, detail, available, crate::integrations::models::path_display()), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                         }
                                         Err(e) => {
                                             messages.push(Msg {
@@ -6327,7 +6357,7 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                     let m = prompt.strip_prefix("/model ").unwrap().trim();
                                     if m.is_empty() {
                                         // bare /model with trailing space → list
-                                        match crate::models::load() {
+                                        match crate::integrations::models::load() {
                                             Ok(cfg) => {
                                                 let mut aliases: Vec<String> =
                                                     cfg.models.keys().cloned().collect();
@@ -6355,7 +6385,7 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                             }),
                                         }
                                     } else {
-                                        match crate::models::resolve(Some(m)) {
+                                        match crate::integrations::models::resolve(Some(m)) {
                                             Ok(r) => {
                                                 model = r.alias.clone();
                                                 if let Some(s) = &mut session {
@@ -6363,10 +6393,10 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                                     let _ = s.save();
                                                 }
                                                 let api_tag = match r.api_mode {
-                                                    crate::models::ApiMode::Responses => {
+                                                    crate::integrations::models::ApiMode::Responses => {
                                                         "responses"
                                                     }
-                                                    crate::models::ApiMode::Anthropic => {
+                                                    crate::integrations::models::ApiMode::Anthropic => {
                                                         "anthropic"
                                                     }
                                                     _ => "chat",
@@ -6397,7 +6427,7 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                         if crate::agent::current_mode() != crate::agent::Mode::Plan
                                         {
                                             crate::agent::set_mode(crate::agent::Mode::Plan);
-                                            crate::telemetry::record("mode_plan");
+                                            crate::support::telemetry::record("mode_plan");
                                         }
                                         // Treat task as normal prompt but in plan mode
                                         let expanded_task = expand_at_mentions(&task);
@@ -6620,10 +6650,10 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                             .rev()
                             .map(|m| (m.role.clone(), m.content.clone()))
                             .collect();
-                        let chunk = crate::observer::build_chunk_text(&chunk_pairs);
+                        let chunk = crate::integrations::observer::build_chunk_text(&chunk_pairs);
                         let obs_model = model.clone();
                         tokio::spawn(async move {
-                            crate::observer::observe_chunk(chunk, obs_model).await;
+                            crate::integrations::observer::observe_chunk(chunk, obs_model).await;
                         });
                     }
                     agent_handle.take();
@@ -6711,7 +6741,7 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
             last_persist_fingerprint = persist_fp;
         }
         // Advance spinner; force a redraw while it or any subagent is animating — now 10fps not 60fps
-        let has_running_subagent = crate::agents::list_subagents()
+        let has_running_subagent = crate::services::agents::list_subagents()
             .iter()
             .any(|s| s.status == "running");
         if agent_busy || has_running_subagent || show_subagents {

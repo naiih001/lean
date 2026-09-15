@@ -25,7 +25,7 @@ pub async fn observe_chunk(chunk: String, model: String) {
     if chunk.trim().len() < 40 {
         return;
     }
-    let client = crate::llm::Client::from_env();
+    let client = crate::integrations::llm::Client::from_env();
     let use_model = if model.is_empty() {
         "mimo-v2.5-free".to_string()
     } else {
@@ -90,7 +90,7 @@ pub async fn observe_chunk(chunk: String, model: String) {
             if obs.starts_with('-') || obs.starts_with('*') || obs.starts_with('#') {
                 continue;
             }
-            crate::memory::api_remember(
+            crate::services::memory::api_remember(
                 obs,
                 "fact",
                 vec!["observer".to_string(), "auto".to_string()],

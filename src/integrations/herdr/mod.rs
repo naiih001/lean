@@ -389,7 +389,7 @@ pub fn report_session(session_id: &str, session_path: &Path, start_source: Optio
 }
 
 /// Convenience: report session from &Session
-pub fn report_session_obj(sess: &crate::session::Session, start_source: Option<&str>) {
+pub fn report_session_obj(sess: &crate::services::session::Session, start_source: Option<&str>) {
     report_session(&sess.id, &sess.file_path(), start_source);
 }
 

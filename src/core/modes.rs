@@ -16,7 +16,7 @@ pub fn current_mode() -> Mode {
         Mode::Plan
     } else if is_ask_mode() {
         Mode::Ask
-    } else if crate::approval::is_auto_accept() {
+    } else if crate::guards::approval::is_auto_accept() {
         Mode::Auto
     } else {
         Mode::Norm
@@ -28,22 +28,22 @@ pub fn set_mode(m: Mode) {
         Mode::Norm => {
             set_plan_mode(false);
             set_ask_mode(false);
-            crate::approval::set_auto_accept(false);
+            crate::guards::approval::set_auto_accept(false);
         }
         Mode::Plan => {
             set_plan_mode(true);
             set_ask_mode(false);
-            crate::approval::set_auto_accept(false);
+            crate::guards::approval::set_auto_accept(false);
         }
         Mode::Ask => {
             set_plan_mode(false);
             set_ask_mode(true);
-            crate::approval::set_auto_accept(false);
+            crate::guards::approval::set_auto_accept(false);
         }
         Mode::Auto => {
             set_plan_mode(false);
             set_ask_mode(false);
-            crate::approval::set_auto_accept(true);
+            crate::guards::approval::set_auto_accept(true);
         }
     }
 }

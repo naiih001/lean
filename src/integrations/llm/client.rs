@@ -7,8 +7,8 @@ pub struct Client {
     pub api_key: String,
     pub base_url: String,
     pub http: reqwest::Client,
-    pub provider: crate::models::Provider,
-    pub api_mode: crate::models::ApiMode,
+    pub provider: crate::integrations::models::Provider,
+    pub api_mode: crate::integrations::models::ApiMode,
 }
 
 impl Client {
@@ -26,14 +26,14 @@ impl Client {
                 .timeout(std::time::Duration::from_secs(60))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
-            provider: crate::models::Provider::Generic,
-            api_mode: crate::models::ApiMode::ChatCompletions,
+            provider: crate::integrations::models::Provider::Generic,
+            api_mode: crate::integrations::models::ApiMode::ChatCompletions,
         }
     }
 
-    pub fn from_resolved(resolved: &crate::models::ResolvedModel) -> Self {
+    pub fn from_resolved(resolved: &crate::integrations::models::ResolvedModel) -> Self {
         let timeout_secs = match resolved.provider {
-            crate::models::Provider::Ollama => 30,
+            crate::integrations::models::Provider::Ollama => 30,
             _ => 60,
         };
         Self {
@@ -64,8 +64,10 @@ impl Client {
 
     pub fn is_opencode(&self) -> bool {
         self.base_url.contains("opencode.ai")
-            || matches!(self.provider, crate::models::Provider::Generic)
-                && self.base_url.contains("opencode")
+            || matches!(
+                self.provider,
+                crate::integrations::models::Provider::Generic
+            ) && self.base_url.contains("opencode")
     }
 
     pub fn opencode_headers(&self) -> Vec<(String, String)> {
@@ -82,8 +84,9 @@ impl Client {
     }
 
     pub fn is_anthropic(&self) -> bool {
-        let is_anthropic_api = self.api_mode == crate::models::ApiMode::Anthropic;
-        let is_anthropic_provider = self.provider == crate::models::Provider::Anthropic;
+        let is_anthropic_api = self.api_mode == crate::integrations::models::ApiMode::Anthropic;
+        let is_anthropic_provider =
+            self.provider == crate::integrations::models::Provider::Anthropic;
         let base_is_anthropic = self.base_url.contains("api.anthropic.com");
         (is_anthropic_api || is_anthropic_provider) && base_is_anthropic
     }

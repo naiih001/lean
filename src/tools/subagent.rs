@@ -2,12 +2,12 @@ pub async fn run_subagent(agent_name: &str, task: &str, label: &str) -> String {
     if label.trim().is_empty() {
         return "Error: subagent 'name' is required — provide a unique label (e.g. 'research-auth')".to_string();
     }
-    let agent = match crate::agents::load_agent(agent_name).await {
+    let agent = match crate::services::agents::load_agent(agent_name).await {
         Ok(a) => a,
         Err(e) => return format!("Error: {}", e),
     };
     // auto-suffix if duplicate label among running agents
-    let existing: std::collections::HashSet<String> = crate::agents::list_subagents()
+    let existing: std::collections::HashSet<String> = crate::services::agents::list_subagents()
         .into_iter()
         .filter(|s| s.status == "running")
         .map(|s| s.label.clone())
@@ -25,7 +25,7 @@ pub async fn run_subagent(agent_name: &str, task: &str, label: &str) -> String {
         }
     }
     let id = format!("{}-{}", display_label, &uuid_simple());
-    crate::agents::register_subagent(
+    crate::services::agents::register_subagent(
         id.clone(),
         agent_name.to_string(),
         display_label.clone(),
@@ -38,7 +38,7 @@ pub async fn run_subagent(agent_name: &str, task: &str, label: &str) -> String {
     let model = agent
         .model
         .clone()
-        .unwrap_or_else(|| crate::llm::DEFAULT_MODEL.to_string());
+        .unwrap_or_else(|| crate::integrations::llm::DEFAULT_MODEL.to_string());
     let max_steps = 15usize;
     let id_clone = id.clone();
     let display_clone = display_label.clone();
@@ -57,9 +57,9 @@ pub async fn run_subagent(agent_name: &str, task: &str, label: &str) -> String {
             let mut last_error: Option<String> = None;
             let mut tool_start_times: std::collections::HashMap<String, std::time::Instant> =
                 std::collections::HashMap::new();
-            crate::agents::append_subagent_msg(
+            crate::services::agents::append_subagent_msg(
                 &id_clone,
-                crate::agents::SubagentMsg {
+                crate::services::agents::SubagentMsg {
                     role: "system".to_string(),
                     content: format!("[{}] started: {}", agent_name_clone, task_clone),
                     tool_name: None,
@@ -73,9 +73,9 @@ pub async fn run_subagent(agent_name: &str, task: &str, label: &str) -> String {
                     crate::agent::AgentEvent::Text { delta } => {
                         final_text.push_str(&delta);
                         if !delta.trim().is_empty() {
-                            crate::agents::append_subagent_msg(
+                            crate::services::agents::append_subagent_msg(
                                 &id_clone,
-                                crate::agents::SubagentMsg {
+                                crate::services::agents::SubagentMsg {
                                     role: "assistant".to_string(),
                                     content: delta.clone(),
                                     tool_name: None,
@@ -88,9 +88,9 @@ pub async fn run_subagent(agent_name: &str, task: &str, label: &str) -> String {
                     }
                     crate::agent::AgentEvent::Reasoning { delta } => {
                         if !delta.trim().is_empty() {
-                            crate::agents::append_subagent_msg(
+                            crate::services::agents::append_subagent_msg(
                                 &id_clone,
-                                crate::agents::SubagentMsg {
+                                crate::services::agents::SubagentMsg {
                                     role: "thinking".to_string(),
                                     content: delta.clone(),
                                     tool_name: None,
@@ -109,9 +109,9 @@ pub async fn run_subagent(agent_name: &str, task: &str, label: &str) -> String {
                         let args_str =
                             serde_json::to_string(&args).unwrap_or_else(|_| format!("{:?}", args));
                         tool_start_times.insert(tool_id.clone(), std::time::Instant::now());
-                        crate::agents::append_subagent_msg(
+                        crate::services::agents::append_subagent_msg(
                             &id_clone,
-                            crate::agents::SubagentMsg {
+                            crate::services::agents::SubagentMsg {
                                 role: "tool".to_string(),
                                 content: format!("{} {}", name, args_str),
                                 tool_name: Some(name.clone()),
@@ -137,9 +137,9 @@ pub async fn run_subagent(agent_name: &str, task: &str, label: &str) -> String {
                         } else {
                             0
                         };
-                        crate::agents::append_subagent_msg(
+                        crate::services::agents::append_subagent_msg(
                             &id_clone,
-                            crate::agents::SubagentMsg {
+                            crate::services::agents::SubagentMsg {
                                 role: "tool".to_string(),
                                 content: format!("{} → {}", name, result),
                                 tool_name: Some(name.clone()),
@@ -158,27 +158,27 @@ pub async fn run_subagent(agent_name: &str, task: &str, label: &str) -> String {
             }
             let result_text = if final_text.trim().is_empty() {
                 if let Some(e) = last_error {
-                    crate::agents::update_subagent(&id_clone, "error");
+                    crate::services::agents::update_subagent(&id_clone, "error");
                     format!("[subagent {} error] {}", display_clone, e)
                 } else {
-                    crate::agents::append_subagent_transcript(
+                    crate::services::agents::append_subagent_transcript(
                         &id_clone,
                         "[error] no output".to_string(),
                     );
-                    crate::agents::update_subagent(&id_clone, "error");
+                    crate::services::agents::update_subagent(&id_clone, "error");
                     format!("[subagent {}] no output", display_clone)
                 }
             } else {
-                crate::agents::append_subagent_transcript(
+                crate::services::agents::append_subagent_transcript(
                     &id_clone,
                     format!("done: {} chars", final_text.len()),
                 );
-                crate::agents::update_subagent(&id_clone, "done");
+                crate::services::agents::update_subagent(&id_clone, "done");
                 format!("[subagent:{}]\n{}", display_clone, final_text)
             };
-            crate::agents::append_subagent_msg(
+            crate::services::agents::append_subagent_msg(
                 &id_clone,
-                crate::agents::SubagentMsg {
+                crate::services::agents::SubagentMsg {
                     role: "system".to_string(),
                     content: result_text.clone(),
                     tool_name: None,
@@ -191,7 +191,7 @@ pub async fn run_subagent(agent_name: &str, task: &str, label: &str) -> String {
                 .duration_since(started)
                 .unwrap_or_default()
                 .as_millis() as u64;
-            crate::agents::push_wake_tool(crate::agents::WakeMessage {
+            crate::services::agents::push_wake_tool(crate::services::agents::WakeMessage {
                 id: id_clone.clone(),
                 agent: agent_name_clone.clone(),
                 label: display_clone.clone(),
@@ -201,7 +201,7 @@ pub async fn run_subagent(agent_name: &str, task: &str, label: &str) -> String {
             });
             // keep done visible for 2s then remove from session
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            crate::agents::remove_subagent(&id_clone);
+            crate::services::agents::remove_subagent(&id_clone);
         };
         if let Some(h) = handle {
             let _ = h.block_on(fut);

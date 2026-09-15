@@ -18,9 +18,9 @@ impl RetryPolicy {
             base_delays_ms: vec![300, 600],
         }
     }
-    pub fn for_provider(provider: &crate::models::Provider) -> Self {
+    pub fn for_provider(provider: &crate::integrations::models::Provider) -> Self {
         match provider {
-            crate::models::Provider::Ollama => Self::ollama(),
+            crate::integrations::models::Provider::Ollama => Self::ollama(),
             _ => Self::default(),
         }
     }

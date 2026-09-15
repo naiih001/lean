@@ -18,7 +18,7 @@ pub fn set_auto_accept(v: bool) {
 #[derive(Debug)]
 pub struct ApprovalRequest {
     pub cmd: String,
-    pub severity: crate::bash_guard::Severity,
+    pub severity: crate::guards::bash::Severity,
     pub reasons: Vec<String>,
     pub tx: Option<oneshot::Sender<bool>>,
 }
@@ -34,7 +34,7 @@ fn pending_lock() -> &'static Mutex<VecDeque<ApprovalRequest>> {
 /// If no TUI is running (pending not consumed within 200ms), falls back to blocking behavior handled by caller.
 pub async fn request(
     cmd: String,
-    severity: crate::bash_guard::Severity,
+    severity: crate::guards::bash::Severity,
     reasons: Vec<String>,
 ) -> bool {
     // Session auto-accept bypass — no queue, no prompt, silent
@@ -42,7 +42,7 @@ pub async fn request(
         return true;
     }
     // If bash guard disabled, auto-approve
-    if crate::bash_guard::is_disabled() {
+    if crate::guards::bash::is_disabled() {
         return true;
     }
     let (tx, rx) = oneshot::channel();

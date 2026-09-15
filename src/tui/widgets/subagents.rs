@@ -9,7 +9,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 pub fn draw_subagent_summary(f: &mut Frame, area: Rect, tick: usize) {
-    let subs: Vec<_> = crate::agents::list_subagents()
+    let subs: Vec<_> = crate::services::agents::list_subagents()
         .into_iter()
         .filter(|s| s.status == "running")
         .collect();
@@ -37,7 +37,7 @@ pub fn draw_subagent_summary(f: &mut Frame, area: Rect, tick: usize) {
 }
 
 pub fn draw_subagent_list(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
-    let mut subs: Vec<_> = crate::agents::list_subagents()
+    let mut subs: Vec<_> = crate::services::agents::list_subagents()
         .into_iter()
         .filter(|s| s.status == "running")
         .collect();
@@ -193,7 +193,7 @@ pub fn draw_subagent_list(f: &mut Frame, area: Rect, selected: usize, scroll: us
 }
 
 pub fn draw_subagent_detail(f: &mut Frame, area: Rect, idx: usize, scroll: u16) {
-    let subs: Vec<_> = crate::agents::list_subagents()
+    let subs: Vec<_> = crate::services::agents::list_subagents()
         .into_iter()
         .filter(|s| s.status == "running")
         .collect();
