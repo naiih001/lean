@@ -36,6 +36,8 @@ pub struct Theme {
     pub input_bg: Color,
     pub page_bg: Color,
     pub separator: Color,
+    pub user_bg: Color,
+    pub assistant_bg: Color,
 }
 
 pub const THEME: Theme = Theme {
@@ -44,4 +46,6 @@ pub const THEME: Theme = Theme {
     header_bg: Color::Rgb(0x22, 0x22, 0x26),
     input_bg: Color::Rgb(0x1e, 0x1e, 0x22),
     separator: Color::Rgb(0x36, 0x36, 0x3a),
+    user_bg: Color::Rgb(0x25, 0x2b, 0x32),
+    assistant_bg: Color::Rgb(0x2a, 0x30, 0x28),
 };

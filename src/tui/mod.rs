@@ -364,26 +364,14 @@ impl Msg {
         match self.role.as_str() {
             "user" => {
                 let display = sanitize_display_content(&self.content);
-                let mut lines = vec![Line::from(vec![
-                    Span::styled("  ", Style::default()),
-                    Span::styled(
-                        ">>",
-                        Style::default()
-                            .fg(ASHEN.slate)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        " you",
-                        Style::default()
-                            .fg(ASHEN.slate)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ])];
+                let wash = THEME.user_bg;
+                let mut lines: Vec<Line<'static>> = Vec::new();
+                // No header — full-width wash block instead (subtle slate tint)
                 for l in display.lines() {
-                    // Highlight @file mentions in ember color
+                    // Highlight @file mentions in ember color, $mentions in moss — all on wash bg
                     let mut spans: Vec<Span<'static>> = vec![Span::styled(
                         "     ".to_string(),
-                        Style::default().fg(ASHEN.bone),
+                        Style::default().fg(ASHEN.bone).bg(wash),
                     )];
                     let chars: Vec<char> = l.chars().collect();
                     let mut i = 0;
@@ -392,7 +380,7 @@ impl Msg {
                         if !buf.is_empty() {
                             spans.push(Span::styled(
                                 std::mem::take(buf),
-                                Style::default().fg(ASHEN.bone),
+                                Style::default().fg(ASHEN.bone).bg(wash),
                             ));
                         }
                     };
@@ -421,11 +409,15 @@ impl Msg {
                                 flush_buf(&mut spans, &mut buf);
                                 let m: String = chars[i..j].iter().collect();
                                 let style = if prefix_char == '$' {
-                                    Style::default().fg(ASHEN.moss).add_modifier(Modifier::BOLD)
+                                    Style::default()
+                                        .fg(ASHEN.moss)
+                                        .add_modifier(Modifier::BOLD)
+                                        .bg(wash)
                                 } else {
                                     Style::default()
                                         .fg(ASHEN.ember)
                                         .add_modifier(Modifier::BOLD)
+                                        .bg(wash)
                                 };
                                 spans.push(Span::styled(m, style));
                                 i = j;
@@ -436,20 +428,48 @@ impl Msg {
                         i += 1;
                     }
                     flush_buf(&mut spans, &mut buf);
-                    lines.push(Line::from(spans));
+                    let mut line = Line::from(spans);
+                    line.style = Style::default().bg(wash);
+                    lines.push(line);
+                }
+                // Empty user message: still show an empty wash line so block is visible
+                if lines.is_empty() {
+                    let mut line = Line::from(vec![Span::styled(
+                        "     ".to_string(),
+                        Style::default().bg(wash),
+                    )]);
+                    line.style = Style::default().bg(wash);
+                    lines.push(line);
                 }
                 lines
             }
             "assistant" => {
-                let mut lines = vec![Line::from(vec![
-                    Span::styled("  ", Style::default()),
-                    Span::styled(
-                        "lean",
-                        Style::default().fg(ASHEN.moss).add_modifier(Modifier::BOLD),
-                    ),
-                ])];
-                lines.extend(markdown::render_markdown(&self.content, 5));
-                lines
+                let wash = THEME.assistant_bg;
+                let mut md = markdown::render_markdown(&self.content, 5);
+                // Apply subtle moss wash to every non-code line; keep stone bg for code blocks nested inside
+                for line in &mut md {
+                    let is_code = line.spans.iter().any(|s| s.style.bg == Some(ASHEN.stone));
+                    if is_code {
+                        // Keep stone full-width for code lines (nested inside wash)
+                        line.style = Style::default().bg(ASHEN.stone);
+                        for span in &mut line.spans {
+                            if span.style.bg.is_none() {
+                                // Pad/indent spans inside code block should be stone too
+                                span.style = span.style.bg(ASHEN.stone);
+                            }
+                        }
+                        continue;
+                    }
+                    // Non-code: give wash — blank lines inside the block also get wash for solid block look
+                    line.style = Style::default().bg(wash);
+                    for span in &mut line.spans {
+                        if span.style.bg.is_none() {
+                            span.style = span.style.bg(wash);
+                        }
+                    }
+                    // Empty line inside markdown (Line::from("")) has no spans — keep its line.style wash
+                }
+                md
             }
             "thinking" => {
                 // Render thinking as a single collapsed block.
@@ -913,17 +933,39 @@ fn draw_separator(f: &mut Frame, area: Rect) {
     f.render_widget(sep, area);
 }
 
-/// Wrap lines to fit within a given width.
+/// Wrap lines to fit within a given width. Preserves line.style bg (used for
+/// full-width wash behind user/assistant blocks) and pads each washed line to
+/// `width` with trailing spaces so the bg extends to the right edge.
 fn wrap_lines(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
     if width == 0 {
         return lines;
     }
     let mut out = Vec::new();
     for line in lines {
+        // Preserve the line-level bg (wash) for wrapped segments.
+        let line_bg = line.style.bg;
         // Calculate total text width of this line
         let total: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
         if total <= width {
-            out.push(line);
+            let mut padded = line;
+            let pad_len = width.saturating_sub(total);
+            if pad_len > 0 {
+                // Only pad lines that are part of a washed block (user/assistant).
+                // Blank separator lines have no bg — leave them unpadded (page_bg).
+                let wash_bg = padded
+                    .style
+                    .bg
+                    .or_else(|| padded.spans.iter().find_map(|s| s.style.bg));
+                if let Some(bg) = wash_bg {
+                    padded
+                        .spans
+                        .push(Span::styled(" ".repeat(pad_len), Style::default().bg(bg)));
+                    if padded.style.bg.is_none() {
+                        padded.style = Style::default().bg(bg);
+                    }
+                }
+            }
+            out.push(padded);
             continue;
         }
         // Split into segments that fit
@@ -939,14 +981,36 @@ fn wrap_lines(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
                 remaining -= take - pos;
                 pos = take;
                 if remaining == 0 {
-                    out.push(Line::from(seg_spans));
+                    let mut seg_line = Line::from(seg_spans);
+                    if let Some(bg) = line_bg {
+                        seg_line.style = Style::default().bg(bg);
+                    } else if let Some(bg) = seg_line.spans.iter().find_map(|s| s.style.bg) {
+                        seg_line.style = Style::default().bg(bg);
+                    }
+                    // Pad segment already exactly `width`, no extra filler needed
+                    out.push(seg_line);
                     seg_spans = Vec::new();
                     remaining = width;
                 }
             }
         }
         if !seg_spans.is_empty() {
-            out.push(Line::from(seg_spans));
+            let total_seg: usize = seg_spans.iter().map(|s| s.content.chars().count()).sum();
+            let pad_len = width.saturating_sub(total_seg);
+            // Pad last wrapped segment to full width if it was part of a washed block
+            let wash_bg = line_bg.or_else(|| seg_spans.iter().find_map(|s| s.style.bg));
+            let mut seg_line = Line::from(seg_spans);
+            if let Some(bg) = wash_bg {
+                if pad_len > 0 {
+                    seg_line
+                        .spans
+                        .push(Span::styled(" ".repeat(pad_len), Style::default().bg(bg)));
+                }
+                seg_line.style = Style::default().bg(bg);
+            } else if let Some(bg) = line_bg {
+                seg_line.style = Style::default().bg(bg);
+            }
+            out.push(seg_line);
         }
     }
     out
