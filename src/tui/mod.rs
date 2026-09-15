@@ -3702,6 +3702,25 @@ async fn app_loop(
         }
     }
 
+    // ── Herdr: report session identity ──
+    {
+        let start_source = if opts.resume_id.is_some() {
+            Some("resume")
+        } else if opts.continue_session {
+            Some("continue")
+        } else if opts.no_session {
+            None
+        } else {
+            Some("startup")
+        };
+        if let Some(ref sess) = session {
+            crate::herdr::report_session_obj(sess, start_source);
+            crate::herdr::report_idle_force();
+        } else {
+            crate::herdr::report_idle_force();
+        }
+    }
+
     // helper to persist (cur_model passed explicitly to avoid borrow across mutation)
     let persist = |msgs: &Vec<Msg>, sess: &mut Option<crate::session::Session>, cur_model: &str| {
         if let Some(s) = sess {
@@ -3851,6 +3870,31 @@ async fn app_loop(
                 sudo_attempt = 1;
                 pending_sudo = Some(req);
                 dirty = true;
+            }
+        }
+        // ── Herdr: publish derived agent state (blocked > working > idle) ──
+        {
+            let herdr_state = if pending_approval.is_some() {
+                let label = pending_approval
+                    .as_ref()
+                    .map(|r| r.cmd.chars().take(60).collect::<String>())
+                    .unwrap_or_else(|| "approval".to_string());
+                Some(("blocked", Some(label)))
+            } else if pending_sudo.is_some() {
+                Some(("blocked", Some("sudo password".to_string())))
+            } else if pending_question.is_some() {
+                Some(("blocked", Some("ask_user".to_string())))
+            } else if agent_busy {
+                Some(("working", None))
+            } else {
+                Some(("idle", None))
+            };
+            if let Some((st, msg)) = herdr_state {
+                match st {
+                    "blocked" => crate::herdr::report_blocked(msg.as_deref()),
+                    "working" => crate::herdr::report_working(),
+                    _ => crate::herdr::report_idle(),
+                }
             }
         }
         // Poll for subagent wake messages — render as tool call on master list (like pi)
@@ -5052,6 +5096,9 @@ async fn app_loop(
                                         elapsed_ms: None,
                                     });
                                     session = Some(sess);
+                                    if let Some(ref s) = session {
+                                        crate::herdr::report_session_obj(s, Some("resume"));
+                                    }
                                 }
                                 show_sessions = false;
                                 sessions_filter.clear();
@@ -5739,6 +5786,11 @@ async fn app_loop(
                                     agent_busy = false;
                                     if !opts.no_session {
                                         session = Some(crate::session::Session::new(&model));
+                                        if let Some(ref s) = session {
+                                            crate::herdr::report_session_obj(s, Some("new"));
+                                        }
+                                    } else {
+                                        crate::herdr::report_idle_force();
                                     }
                                 }
                                 "/help" => {
@@ -6125,6 +6177,9 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                             elapsed_ms: None,
                                         });
                                         session = Some(sess);
+                                        if let Some(ref s) = session {
+                                            crate::herdr::report_session_obj(s, Some("resume"));
+                                        }
                                     } else {
                                         messages.push(Msg {
                                             role: "system".into(),
