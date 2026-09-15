@@ -1,5 +1,4 @@
 pub mod agent;
-pub mod mcp;
 pub mod tools;
 
 // New foldered modules (1:1)
@@ -7,6 +6,7 @@ pub mod core;
 pub mod guards;
 pub mod integrations;
 pub mod llm;
+pub mod mcp;
 pub mod services;
 pub mod support;
 pub mod tui;
