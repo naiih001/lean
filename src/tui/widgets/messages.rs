@@ -315,7 +315,20 @@ impl Msg {
                     line.style = Style::default().bg(wash);
                     lines.push(line);
                 }
-                lines
+                // Top/bottom padding by one row — keeps highlight block breathing
+                let pad = {
+                    let mut l = Line::from(vec![Span::styled(
+                        " ".to_string(),
+                        Style::default().bg(wash),
+                    )]);
+                    l.style = Style::default().bg(wash);
+                    l
+                };
+                let mut padded = Vec::with_capacity(lines.len() + 2);
+                padded.push(pad.clone());
+                padded.extend(lines);
+                padded.push(pad);
+                padded
             }
             "assistant" => {
                 let wash = THEME.assistant_bg;
@@ -343,7 +356,20 @@ impl Msg {
                     }
                     // Empty line inside markdown (Line::from("")) has no spans — keep its line.style wash
                 }
-                md
+                // Top/bottom padding by one row for the highlight block
+                let pad = {
+                    let mut l = Line::from(vec![Span::styled(
+                        " ".to_string(),
+                        Style::default().bg(wash),
+                    )]);
+                    l.style = Style::default().bg(wash);
+                    l
+                };
+                let mut padded = Vec::with_capacity(md.len() + 2);
+                padded.push(pad.clone());
+                padded.extend(md);
+                padded.push(pad);
+                padded
             }
             "thinking" => {
                 // Render thinking as a single collapsed block.
