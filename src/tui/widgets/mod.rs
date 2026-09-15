@@ -1,1 +1,4 @@
-// TODO: shim — will be wired in Phase B/C
+pub mod header;
+pub mod input;
+pub mod messages;
+pub mod subagents;

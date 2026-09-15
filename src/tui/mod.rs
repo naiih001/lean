@@ -12,8 +12,10 @@ use ratatui_textarea::{CursorMove, Input as TAInput, Key as TAKey, TextArea};
 use std::io::Stdout;
 use tokio::sync::broadcast;
 
+pub mod layout;
 pub mod markdown;
 pub mod theme;
+pub mod widgets;
 
 #[derive(Debug, Clone)]
 pub struct RunOpts {
