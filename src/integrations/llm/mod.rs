@@ -11,6 +11,6 @@ pub use schema::{
     tool_definitions_for,
 };
 pub use sse::{
-    maybe_chat_chunk, parse_responses_event, ChatChunk, Choice, Delta, FunctionDelta, ResponsesCompleted,
-    ResponsesEvent, ResponsesItem, ToolCallDelta, Usage,
+    maybe_chat_chunk, parse_responses_event, ChatChunk, Choice, Delta, FunctionDelta,
+    ResponsesCompleted, ResponsesEvent, ResponsesItem, ToolCallDelta, Usage,
 };

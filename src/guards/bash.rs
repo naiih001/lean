@@ -84,7 +84,6 @@ pub struct Risk {
     pub reasons: Vec<String>,
 }
 
-
 /// Very light shell tokenization — enough for guard heuristics.
 /// Handles single/double quotes, escapes, pipes, redirects, &&, ||, ;, &, ()
 fn tokenize(cmd: &str) -> Vec<String> {
@@ -137,7 +136,6 @@ fn tokenize(cmd: &str) -> Vec<String> {
     }
     tokens
 }
-
 
 pub fn analyze(command: &str) -> Option<Risk> {
     if is_disabled() {

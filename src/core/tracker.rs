@@ -1,5 +1,5 @@
-use serde_json::Value;
 use crate::core::modes::{is_ask_mode, is_plan_mode, set_mode, Mode};
+use serde_json::Value;
 
 pub(crate) fn is_mutating_tool(name: &str) -> bool {
     matches!(name, "write" | "write_file" | "edit" | "edit_file" | "bash") || name.contains("__")

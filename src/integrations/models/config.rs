@@ -1,8 +1,8 @@
+use crate::integrations::models::provider::{ApiMode, Provider};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use crate::integrations::models::provider::{ApiMode, Provider};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelEntry {

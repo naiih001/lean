@@ -1,6 +1,6 @@
+use crate::services::memory::store::MemoryEntry;
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
-use crate::services::memory::store::MemoryEntry;
 
 pub fn extract_keywords(text: &str) -> Vec<String> {
     let stop: HashSet<&str> = [

@@ -71,5 +71,3 @@ pub fn set_ask_mode(v: bool) {
 pub fn is_ask_mode() -> bool {
     ASK_MODE.load(Ordering::Relaxed)
 }
-
-

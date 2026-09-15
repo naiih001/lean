@@ -224,4 +224,3 @@ pub(crate) fn uuid_simple() -> String {
         .as_nanos();
     format!("{:x}", nanos & 0xffffff)
 }
-

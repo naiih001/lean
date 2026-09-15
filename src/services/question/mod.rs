@@ -291,5 +291,4 @@ mod tests {
         assert_eq!(wizard.confirm(), WizardOutcome::Submit);
         assert_eq!(wizard.answers()[1].selected, vec!["c".to_string()]);
     }
-
 }

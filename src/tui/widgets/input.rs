@@ -1,10 +1,10 @@
 use crate::tui::theme::{ASHEN, THEME};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::Frame;
 use ratatui::widgets::{Block, Borders};
-use ratatui_textarea::{TextArea, Input as TAInput, Key as TAKey};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::Frame;
+use ratatui_textarea::{Input as TAInput, Key as TAKey, TextArea};
 
 pub fn crossterm_key_to_input(k: crossterm::event::KeyEvent) -> TAInput {
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
@@ -39,7 +39,6 @@ pub fn crossterm_key_to_input(k: crossterm::event::KeyEvent) -> TAInput {
 
 // ── Hard wrap ──────────────────────────────────────────────────
 
-
 pub fn draw_input(f: &mut Frame, area: Rect, textarea: &mut TextArea<'_>) {
     // Apply ash styling every frame (cheap)
     textarea.set_style(Style::default().fg(ASHEN.bone).bg(THEME.input_bg));
@@ -63,4 +62,3 @@ pub fn draw_input(f: &mut Frame, area: Rect, textarea: &mut TextArea<'_>) {
     // Render textarea as widget (single-line height, multiline expands via scrolling)
     f.render_widget(&*textarea, area);
 }
-

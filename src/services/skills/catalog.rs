@@ -1,5 +1,5 @@
-use anyhow::Result;
 use crate::services::skills::loader::discover_skills;
+use anyhow::Result;
 
 pub async fn get_skill_catalog() -> String {
     let skills = discover_skills().await;

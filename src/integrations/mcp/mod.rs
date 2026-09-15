@@ -4,14 +4,14 @@ pub mod transport;
 
 pub use config::{load_config, ServerConfig};
 pub use registry::{
-    apply_global_disabled, is_global_disabled, is_server_disabled, set_global_disabled,
-    toggle_server_disabled, McpServerInfo, McpToolInfo, ServerStatus, snapshot,
+    apply_global_disabled, is_global_disabled, is_server_disabled, set_global_disabled, snapshot,
+    toggle_server_disabled, McpServerInfo, McpToolInfo, ServerStatus,
 };
 pub use transport::{init, reconnect};
 
-use serde_json::Value;
 use crate::integrations::mcp::registry::{invalidate_tool_cache, registry_lock, tool_cache_lock};
 use crate::integrations::mcp::transport::sanitize_schema;
+use serde_json::Value;
 
 pub async fn mcp_tool_definitions() -> Vec<Value> {
     if registry::is_global_disabled() {
@@ -78,8 +78,7 @@ pub async fn call_tool(server: &str, tool: &str, args: Value) -> Result<String, 
         params.arguments = Some(obj.clone());
     } else if args.is_object() {
     } else if !args.is_null() {
-        if args != Value::Null {
-        }
+        if args != Value::Null {}
     }
     let result = peer
         .call_tool(params)

@@ -5,12 +5,20 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::time::Duration;
 
-
 // Re-exports from core modules for thin agent loop
-pub(crate) use crate::core::history::{build_user_content, drop_orphaned_tool_outputs, history_slice_for_api, prune_context_messages, strip_images_for_non_vision};
+pub(crate) use crate::core::history::{
+    build_user_content, drop_orphaned_tool_outputs, history_slice_for_api, prune_context_messages,
+    strip_images_for_non_vision,
+};
 pub(crate) use crate::core::modes::{is_ask_mode, is_plan_mode};
-pub(crate) use crate::core::prompts::{build_system_prompt, truncate_chars, truncate_for_llm, truncate_str, truncate_to_bytes, ASK_READONLY_DENY_MSG, SYSTEM_PROMPT};
-pub(crate) use crate::core::tracker::{is_mcp_read, is_mutating_tool, is_permission_to_leave_plan, is_plan_exempt_write, is_readonly_bash, is_stay_in_plan, PlanTracker, MAX_NOCALL_STREAK};
+pub(crate) use crate::core::prompts::{
+    build_system_prompt, truncate_chars, truncate_for_llm, truncate_str, truncate_to_bytes,
+    ASK_READONLY_DENY_MSG, SYSTEM_PROMPT,
+};
+pub(crate) use crate::core::tracker::{
+    is_mcp_read, is_mutating_tool, is_permission_to_leave_plan, is_plan_exempt_write,
+    is_readonly_bash, is_stay_in_plan, PlanTracker, MAX_NOCALL_STREAK,
+};
 
 pub enum AgentEvent {
     Text {
@@ -47,7 +55,6 @@ struct ToolAccum {
     name: String,
     args: String,
 }
-
 
 fn is_retryable_status(status: u16) -> bool {
     matches!(status, 429 | 500..=599)
@@ -156,7 +163,6 @@ async fn post_with_retry(
     }
     Err(last_err.unwrap_or_else(|| "[LLM error: max retries exceeded]".to_string()))
 }
-
 
 pub fn run_agent(
     user_prompt: String,

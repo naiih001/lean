@@ -681,4 +681,3 @@ pub fn merge_thinking(messages: &[Msg]) -> Vec<Msg> {
 }
 
 // ── Rendering helpers ──────────────────────────────────────────
-

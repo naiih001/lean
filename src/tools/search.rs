@@ -1,5 +1,5 @@
-use std::path::Path;
 use crate::tools::fs::{truncate_output, TruncateStrategy};
+use std::path::Path;
 
 pub async fn grep(pattern: &str, path: Option<&str>) -> Result<String, String> {
     let base = path.unwrap_or(".");
@@ -97,4 +97,3 @@ pub async fn ls(path: Option<&str>) -> Result<String, String> {
     entries.sort();
     Ok(truncate_output(&entries.join("\n"), TruncateStrategy::Head))
 }
-

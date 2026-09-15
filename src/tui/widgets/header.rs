@@ -1,5 +1,5 @@
 use crate::tui::theme::{ASHEN, THEME};
-use crate::tui::widgets::messages::{merge_thinking, Msg, sanitize_display_content};
+use crate::tui::widgets::messages::{merge_thinking, sanitize_display_content, Msg};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -271,4 +271,3 @@ pub fn build_content_lines(messages: &[Msg]) -> Vec<Line<'static>> {
 
     all_lines
 }
-

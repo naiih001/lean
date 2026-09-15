@@ -1,9 +1,9 @@
+use crate::services::memory::recall::{extract_keywords, score_entry};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
-use crate::services::memory::recall::{extract_keywords, score_entry};
 
 pub(crate) const MAX_MEMORIES: usize = 500;
 pub(crate) const RECALL_LIMIT: usize = 8;

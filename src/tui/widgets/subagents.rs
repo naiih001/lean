@@ -36,7 +36,6 @@ pub fn draw_subagent_summary(f: &mut Frame, area: Rect, tick: usize) {
     f.render_widget(para, area);
 }
 
-
 pub fn draw_subagent_list(f: &mut Frame, area: Rect, selected: usize, scroll: usize) {
     let mut subs: Vec<_> = crate::agents::list_subagents()
         .into_iter()
@@ -193,7 +192,6 @@ pub fn draw_subagent_list(f: &mut Frame, area: Rect, selected: usize, scroll: us
     }
 }
 
-
 pub fn draw_subagent_detail(f: &mut Frame, area: Rect, idx: usize, scroll: u16) {
     let subs: Vec<_> = crate::agents::list_subagents()
         .into_iter()
@@ -319,7 +317,6 @@ pub fn draw_subagent_detail(f: &mut Frame, area: Rect, idx: usize, scroll: u16) 
     }
 }
 
-
 pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -339,8 +336,13 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
-
-pub fn draw_scrollbar(f: &mut Frame, area: Rect, total_lines: usize, viewport_h: usize, scroll: u16) {
+pub fn draw_scrollbar(
+    f: &mut Frame,
+    area: Rect,
+    total_lines: usize,
+    viewport_h: usize,
+    scroll: u16,
+) {
     if total_lines <= viewport_h {
         return;
     }

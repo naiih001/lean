@@ -1,7 +1,10 @@
-use std::collections::HashMap;
-use serde_json::Value;
 use crate::integrations::mcp::config::{load_config, validate_config, ServerConfig};
-use crate::integrations::mcp::registry::{invalidate_tool_cache, is_global_disabled, is_server_disabled, registry_lock, ServerStatus, LiveEntry, McpServerInfo, McpToolInfo};
+use crate::integrations::mcp::registry::{
+    invalidate_tool_cache, is_global_disabled, is_server_disabled, registry_lock, LiveEntry,
+    McpServerInfo, McpToolInfo, ServerStatus,
+};
+use serde_json::Value;
+use std::collections::HashMap;
 
 pub(crate) fn sanitize_pattern(pat: &str) -> String {
     // OpenAI strict validator rejects \0 (null byte) in ECMA regex
@@ -168,7 +171,6 @@ pub(crate) fn sanitize_schema(value: Value) -> Value {
 }
 
 // ── Tool definitions (cached) ──────────────────────────────────
-
 
 pub(crate) fn resolve_stdio_command(cmd: &str, args: &[String]) -> (String, Vec<String>) {
     // If using npx -y @modelcontextprotocol/server-github, try to use global install to avoid 3s npx overhead

@@ -4,7 +4,10 @@ pub mod search;
 pub mod subagent;
 pub mod web;
 
-pub use fs::{edit_file, human_size, image_mime_type, is_image_file, read_file, truncate_output, write_file, TruncateStrategy};
+pub use fs::{
+    edit_file, human_size, image_mime_type, is_image_file, read_file, truncate_output, write_file,
+    TruncateStrategy,
+};
 
 use serde_json::Value;
 
@@ -156,7 +159,6 @@ async fn guard_mcp(server: &str, tool: &str, args: &serde_json::Value) -> Option
     }
     None
 }
-
 
 pub async fn execute_tool(name: &str, args: serde_json::Value) -> String {
     // MCP namespaced tools: server__tool

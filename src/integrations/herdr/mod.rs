@@ -59,7 +59,9 @@ fn current_path_cell() -> &'static Mutex<Option<String>> {
 }
 
 fn enabled() -> bool {
-    std::env::var("HERDR_ENV").map(|v| v == "1").unwrap_or(false)
+    std::env::var("HERDR_ENV")
+        .map(|v| v == "1")
+        .unwrap_or(false)
         && std::env::var("HERDR_PANE_ID")
             .map(|v| !v.is_empty())
             .unwrap_or(false)
@@ -72,14 +74,18 @@ fn pane_id() -> Option<String> {
     if !enabled() {
         return None;
     }
-    std::env::var("HERDR_PANE_ID").ok().filter(|s| !s.is_empty())
+    std::env::var("HERDR_PANE_ID")
+        .ok()
+        .filter(|s| !s.is_empty())
 }
 
 fn socket_path() -> Option<String> {
     if !enabled() {
         return None;
     }
-    std::env::var("HERDR_SOCKET_PATH").ok().filter(|s| !s.is_empty())
+    std::env::var("HERDR_SOCKET_PATH")
+        .ok()
+        .filter(|s| !s.is_empty())
 }
 
 fn request_id() -> String {
@@ -334,7 +340,8 @@ fn drain_queue() {
                     let json = serde_json::to_string(&req).unwrap_or_default();
                     if let Some(p) = socket_path() {
                         if let Ok(mut s) = std::os::unix::net::UnixStream::connect(&p) {
-                            let _ = s.set_write_timeout(Some(std::time::Duration::from_millis(500)));
+                            let _ =
+                                s.set_write_timeout(Some(std::time::Duration::from_millis(500)));
                             let payload = format!("{}\n", json);
                             let _ = std::io::Write::write_all(&mut s, payload.as_bytes());
                         }

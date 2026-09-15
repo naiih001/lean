@@ -56,4 +56,3 @@ pub async fn web_fetch(url: &str) -> Result<String, String> {
         .map_err(|e| format!("fetch read error: {}", e))?;
     Ok(truncate_output(&text, TruncateStrategy::Head))
 }
-

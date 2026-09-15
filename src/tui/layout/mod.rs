@@ -1,5 +1,7 @@
 pub mod wrap;
-pub use wrap::{char_display_width, hard_wrap_str, line_display_width, wrap_cursor_line, wrap_split};
+pub use wrap::{
+    char_display_width, hard_wrap_str, line_display_width, wrap_cursor_line, wrap_split,
+};
 
 use crate::tui::widgets::messages::Msg;
 
@@ -47,4 +49,3 @@ pub fn format_context_label(est: usize, window: usize) -> String {
     };
     format!("{} / {}", pct_str, window_str)
 }
-

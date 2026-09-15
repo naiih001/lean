@@ -4,9 +4,9 @@ pub mod store;
 pub use recall::{extract_keywords, format_memories, score_entry};
 pub use store::{MemoryEntry, MemoryStore};
 
+use recall::autorecall_context;
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::store_lock;
-use recall::autorecall_context;
 
 pub fn api_remember(content: &str, category: &str, tags: Vec<String>, scope: &str) -> String {
     let mut lock = store_lock().lock().unwrap();

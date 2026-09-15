@@ -37,7 +37,10 @@ pub(crate) fn inject_sudo_s(cmd: &str) -> String {
     out
 }
 
-pub(crate) async fn run_bash_with_password(command: &str, password: &str) -> Result<String, String> {
+pub(crate) async fn run_bash_with_password(
+    command: &str,
+    password: &str,
+) -> Result<String, String> {
     use tokio::io::AsyncWriteExt;
     let injected = inject_sudo_s(command);
     let mut child = tokio::process::Command::new("bash")
@@ -112,4 +115,3 @@ pub async fn run_bash(command: &str) -> Result<String, String> {
     }
     Ok(truncate_output(&combined, TruncateStrategy::Tail))
 }
-

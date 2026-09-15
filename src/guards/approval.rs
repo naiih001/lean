@@ -15,7 +15,6 @@ pub fn set_auto_accept(v: bool) {
     AUTO_ACCEPT.store(v, Ordering::Relaxed);
 }
 
-
 #[derive(Debug)]
 pub struct ApprovalRequest {
     pub cmd: String,

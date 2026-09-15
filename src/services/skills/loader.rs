@@ -1,9 +1,9 @@
+use crate::services::skills::Skill;
+use dirs::home_dir;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
-use dirs::home_dir;
-use crate::services::skills::Skill;
 
 pub(crate) const CACHE_TTL: Duration = Duration::from_secs(60);
 
