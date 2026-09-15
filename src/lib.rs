@@ -1,11 +1,6 @@
 pub mod agent;
-pub mod approval;
-pub mod bash_guard;
-pub mod dictate;
-pub mod dir_guard;
 pub mod llm;
 pub mod mcp;
-pub mod sudo;
 pub mod tools;
 
 // New foldered modules (1:1)
@@ -18,6 +13,11 @@ pub mod tui;
 
 // Compat re-exports — keep old crate:: paths working during refactor
 pub use core::context;
+pub use guards::approval;
+pub use guards::bash as bash_guard;
+pub use guards::dir as dir_guard;
+pub use guards::sudo;
+pub use integrations::dictate;
 pub use integrations::herdr;
 pub use integrations::models as models;
 pub use integrations::observer;

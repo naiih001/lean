@@ -1,1 +1,5 @@
-// TODO: shim — will be wired in Phase B/C
+pub mod allowlist;
+pub mod approval;
+pub mod bash;
+pub mod dir;
+pub mod sudo;
