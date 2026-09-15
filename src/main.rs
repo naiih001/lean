@@ -1,26 +1,5 @@
-mod agent;
-mod agents;
-mod approval;
-mod bash_guard;
-mod context;
-mod dictate;
-mod dir_guard;
-mod llm;
-mod mcp;
-mod memory;
-mod models;
-mod observer;
-mod question;
-mod session;
-mod skills;
-mod herdr;
-mod sudo;
-mod telemetry;
-mod theme;
-mod tools;
-mod tui;
-
 use clap::Parser;
+use lean::{models, tui};
 
 #[derive(Parser, Debug)]
 #[command(name = "lean", about = "lean — light coding assistant (Rust port)")]

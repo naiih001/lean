@@ -1,6 +1,6 @@
 use crate::agent::{self, AgentEvent};
 use crate::dictate;
-use crate::theme::{ASHEN, THEME};
+use crate::tui::theme::{ASHEN, THEME};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -12,7 +12,8 @@ use ratatui_textarea::{CursorMove, Input as TAInput, Key as TAKey, TextArea};
 use std::io::Stdout;
 use tokio::sync::broadcast;
 
-mod markdown;
+pub mod markdown;
+pub mod theme;
 
 #[derive(Debug, Clone)]
 pub struct RunOpts {

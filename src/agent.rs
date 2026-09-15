@@ -1172,7 +1172,15 @@ pub fn run_agent_with_history(
                     }
                     strip_images_for_non_vision(&pruned)
                 };
-                let (mut instructions, input) = llm::chat_messages_to_responses_input(&pruned, &system);
+                // Responses is strict: every function_call_output must have a matching function_call.
+                // history_slice_for_api can cut off the assistant turn but keep the tool output,
+                // so drop orphans before converting to input (Chat is tolerant; Responses 400s).
+                let mut pruned_for_input = pruned;
+                drop_orphaned_tool_outputs(&mut pruned_for_input);
+                let (mut instructions, mut input) = llm::chat_messages_to_responses_input(&pruned_for_input, &system);
+                if input.is_empty() {
+                    input.push(json!({"type":"message","role":"user","content":[{"type":"input_text","text": user_prompt.clone()}]}));
+                }
                 instructions = format!("{}\n\n{}", instructions, focus);
                 // Build tools for responses
                 let tools = llm::responses_tool_definitions().await;
