@@ -34,6 +34,7 @@ pub fn project_root() -> PathBuf {
 // ---- allowlist ----
 
 fn allowlist_path() -> PathBuf {
+    // kept for allowlist_clear's remove_file; storage delegated to shared helper
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("~"))
         .join(".lean")
@@ -41,24 +42,11 @@ fn allowlist_path() -> PathBuf {
 }
 
 fn load_allowlist() -> std::collections::HashSet<String> {
-    let path = allowlist_path();
-    if let Ok(txt) = std::fs::read_to_string(&path) {
-        if let Ok(v) = serde_json::from_str::<Vec<String>>(&txt) {
-            return v.into_iter().collect();
-        }
-    }
-    std::collections::HashSet::new()
+    super::allowlist::load("dir_allowlist.json")
 }
 
 fn save_allowlist(set: &std::collections::HashSet<String>) {
-    let path = allowlist_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let vec: Vec<String> = set.iter().cloned().collect();
-    if let Ok(json) = serde_json::to_string_pretty(&vec) {
-        let _ = std::fs::write(path, json);
-    }
+    super::allowlist::save("dir_allowlist.json", set)
 }
 
 pub fn is_allowlisted(path: &str) -> bool {

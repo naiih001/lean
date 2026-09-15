@@ -11,6 +11,7 @@ pub fn is_disabled() -> bool {
 }
 
 fn allowlist_path() -> std::path::PathBuf {
+    super::allowlist::load("allowlist.json"); // ensure module linked
     dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("~"))
         .join(".lean")
@@ -18,24 +19,11 @@ fn allowlist_path() -> std::path::PathBuf {
 }
 
 fn load_allowlist() -> std::collections::HashSet<String> {
-    let path = allowlist_path();
-    if let Ok(txt) = std::fs::read_to_string(&path) {
-        if let Ok(v) = serde_json::from_str::<Vec<String>>(&txt) {
-            return v.into_iter().collect();
-        }
-    }
-    std::collections::HashSet::new()
+    super::allowlist::load("allowlist.json")
 }
 
 fn save_allowlist(set: &std::collections::HashSet<String>) {
-    let path = allowlist_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let vec: Vec<String> = set.iter().cloned().collect();
-    if let Ok(json) = serde_json::to_string_pretty(&vec) {
-        let _ = std::fs::write(path, json);
-    }
+    super::allowlist::save("allowlist.json", set)
 }
 
 pub fn is_allowlisted(cmd: &str) -> bool {
