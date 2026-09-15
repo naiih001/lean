@@ -1,4 +1,5 @@
 use crate::core::modes::{is_ask_mode, is_plan_mode, set_mode, Mode};
+use crate::core::prompts::truncate_str;
 use serde_json::Value;
 
 pub(crate) fn is_mutating_tool(name: &str) -> bool {
@@ -152,6 +153,80 @@ pub(crate) fn is_conversational_str(goal: &str) -> bool {
     false
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RequestMode {
+    Conversational,
+    ReadOnly,
+    IssueSolving,
+    Planning,
+}
+
+fn classify_request_mode(goal: &str) -> RequestMode {
+    if is_plan_mode() {
+        return RequestMode::Planning;
+    }
+    if is_ask_mode() {
+        return RequestMode::ReadOnly;
+    }
+    if is_conversational_str(goal) {
+        return RequestMode::Conversational;
+    }
+    let lower = goal.to_lowercase();
+    let readonly_markers = [
+        "explain",
+        "inspect",
+        "show",
+        "describe",
+        "what",
+        "why",
+        "how",
+        "list",
+        "search",
+        "find",
+        "tell me",
+        "summarize",
+        "overview",
+        "read ",
+        "read README",
+    ];
+    if readonly_markers.iter().any(|v| lower.contains(v)) {
+        return RequestMode::ReadOnly;
+    }
+    let issue_verbs = [
+        "fix",
+        "add",
+        "update",
+        "remove",
+        "refactor",
+        "make",
+        "create",
+        "implement",
+        "edit",
+        "write",
+        "delete",
+        "build",
+        "change",
+        "patch",
+        "resolve",
+        "repair",
+        "modify",
+        "adjust",
+        "correct",
+        "handle",
+        "improve",
+        "test",
+        "run",
+    ];
+    if issue_verbs.iter().any(|v| lower.contains(v)) {
+        return RequestMode::IssueSolving;
+    }
+    // Default to issue-solving for non-trivial requests that imply work
+    if lower.split_whitespace().count() > 3 {
+        return RequestMode::IssueSolving;
+    }
+    RequestMode::ReadOnly
+}
+
 #[derive(Debug)]
 pub struct PlanTracker {
     goal: String,
@@ -160,6 +235,20 @@ pub struct PlanTracker {
     pub(crate) nocall_streak: usize,
     requires_approval: bool,
     approved: bool,
+    // Evidence-driven state (behaviour plan)
+    pub(crate) mode: RequestMode,
+    pub(crate) inspected: bool,
+    pub(crate) mutation_attempted: bool,
+    pub(crate) mutation_succeeded: bool,
+    pub(crate) verification_attempted: bool,
+    pub(crate) verification_passed: bool,
+    pub(crate) verification_failed: bool,
+    pub(crate) verification_blocked: bool,
+    pub(crate) tool_failed: bool,
+    pub(crate) has_blocker: bool,
+    pub(crate) blocker_reason: Option<String>,
+    pub(crate) last_failure: Option<String>,
+    pub(crate) failed_signatures: Vec<String>,
 }
 
 pub(crate) const MAX_NOCALL_STREAK: usize = 3;
@@ -189,6 +278,7 @@ const COMPLETE_SIGNALS: [&str; 10] = [
 impl PlanTracker {
     pub fn new(goal: &str) -> Self {
         let requires_approval = is_plan_mode() && !is_conversational_str(goal);
+        let mode = classify_request_mode(goal);
         Self {
             goal: goal.to_string(),
             steps_done: Vec::new(),
@@ -196,7 +286,209 @@ impl PlanTracker {
             nocall_streak: 0,
             requires_approval,
             approved: false,
+            mode,
+            inspected: false,
+            mutation_attempted: false,
+            mutation_succeeded: false,
+            verification_attempted: false,
+            verification_passed: false,
+            verification_failed: false,
+            verification_blocked: false,
+            tool_failed: false,
+            has_blocker: false,
+            blocker_reason: None,
+            last_failure: None,
+            failed_signatures: Vec::new(),
         }
+    }
+
+    pub fn request_mode(&self) -> &RequestMode {
+        &self.mode
+    }
+
+    fn is_verification_command(cmd: &str) -> bool {
+        let lower = cmd.to_lowercase();
+        // Cargo / JS / generic project checks — broadened to avoid All-done loops on non-cargo projects
+        lower.contains("cargo check")
+            || lower.contains("cargo test")
+            || lower.contains("cargo clippy")
+            || lower.contains("cargo fmt")
+            || lower.contains("cargo build")
+            || lower.contains("npm test")
+            || lower.contains("npm run")
+            || lower.contains("pnpm")
+            || lower.contains("yarn")
+            || lower.contains("make test")
+            || lower.contains("make check")
+            || lower.contains("pytest")
+            || lower.contains("go test")
+            || lower.contains("svelte-check")
+            || lower.contains("svelte-kit")
+            || lower.contains("check")
+            || lower.contains("lint")
+            || lower.contains("build")
+            || lower.contains("test")
+    }
+
+    fn classify_tool_result(result: &str) -> bool {
+        let lower = result.to_lowercase();
+        lower.contains("error:")
+            || lower.contains("[error")
+            || lower.contains("failed")
+            || lower.contains("failure")
+            || lower.contains("blocked")
+            || lower.contains("not found")
+            || lower.contains("old text not found")
+            || lower.contains("unknown tool")
+            || lower.contains("malformed")
+    }
+
+    pub fn note_tool_result(&mut self, name: &str, args: &Value, result: &str) {
+        let is_failure = Self::classify_tool_result(result)
+            || result.contains("[ASK BLOCKED]")
+            || result.contains("[GATING BLOCKED")
+            || result.contains("[dir-guard BLOCKED")
+            || result.contains("[bash-guard BLOCKED");
+        let sig = format!("{}:{}", name, args.to_string());
+        if is_failure {
+            self.tool_failed = true;
+            self.last_failure = Some(result.chars().take(300).collect());
+            if !self.failed_signatures.contains(&sig) {
+                self.failed_signatures.push(sig);
+                if self.failed_signatures.len() > 10 {
+                    self.failed_signatures.remove(0);
+                }
+            }
+            // Detect blocker conditions
+            if result.contains("BLOCKED")
+                || result.contains("approval")
+                || result.contains("permission")
+            {
+                self.has_blocker = true;
+                self.blocker_reason = Some(result.chars().take(300).collect());
+            }
+            if name == "edit" || name == "edit_file" {
+                if result.to_lowercase().contains("old text not found") {
+                    self.last_failure = Some("edit oldText not found".to_string());
+                }
+            }
+        } else {
+            // Success path — update evidence flags
+            if matches!(
+                name,
+                "read"
+                    | "read_file"
+                    | "grep"
+                    | "find"
+                    | "ls"
+                    | "web_search"
+                    | "web_fetch"
+                    | "read_skill"
+                    | "read_agent"
+                    | "search_memory"
+                    | "recall_memory"
+                    | "list_memories"
+            ) || name.contains("__") && is_mcp_read(name)
+            {
+                self.inspected = true;
+            }
+            if is_mutating_tool(name) && name != "bash" {
+                self.mutation_attempted = true;
+                self.mutation_succeeded = true;
+                self.inspected = true;
+            }
+            if name == "bash" {
+                if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
+                    if Self::is_verification_command(cmd) {
+                        self.verification_attempted = true;
+                        // Heuristic: failure already handled above; if not failure, treat as passed
+                        self.verification_passed = true;
+                        self.verification_failed = false;
+                    } else if !is_readonly_bash(cmd) {
+                        self.mutation_attempted = true;
+                        self.mutation_succeeded = true;
+                    } else {
+                        self.inspected = true;
+                    }
+                }
+            }
+            if name == "write" || name == "write_file" {
+                self.mutation_attempted = true;
+                self.mutation_succeeded = true;
+            }
+        }
+        // Verification failure/blocked override
+        if Self::is_verification_command(args.get("command").and_then(|v| v.as_str()).unwrap_or(""))
+        {
+            if is_failure {
+                self.verification_attempted = true;
+                self.verification_failed = true;
+                self.verification_passed = false;
+                if result.contains("BLOCKED") {
+                    self.verification_blocked = true;
+                    self.has_blocker = true;
+                }
+            }
+        }
+    }
+
+    pub fn can_complete(&self) -> bool {
+        match self.mode {
+            RequestMode::Conversational => true,
+            RequestMode::ReadOnly => self.inspected || self.steps_done.len() >= 1,
+            RequestMode::Planning => self.approved || self.inspected,
+            RequestMode::IssueSolving => {
+                if self.has_blocker {
+                    return true;
+                }
+                if !self.mutation_attempted {
+                    // No mutation needed — must have inspected evidence
+                    return self.inspected;
+                }
+                // Mutation happened — need verification or explicit blocked reason
+                if self.mutation_succeeded && self.verification_passed {
+                    return true;
+                }
+                if self.mutation_succeeded && self.verification_blocked {
+                    return true;
+                }
+                false
+            }
+        }
+    }
+
+    pub fn completion_blocker_hint(&self) -> Option<String> {
+        if self.mode != RequestMode::IssueSolving {
+            return None;
+        }
+        if !self.inspected && !self.mutation_attempted {
+            return Some(
+                "No inspection yet — read relevant files or search before editing.".to_string(),
+            );
+        }
+        if self.mutation_succeeded && !self.verification_attempted {
+            return Some("Mutation succeeded but verification not yet run — run the smallest relevant check (e.g. cargo check) or explain blocker.".to_string());
+        }
+        if self.verification_failed {
+            return Some(
+                "Verification failed — read the error, diagnose, and continue editing.".to_string(),
+            );
+        }
+        if self.tool_failed {
+            if let Some(last) = &self.last_failure {
+                if last.contains("oldText not found") {
+                    return Some("Edit failed (oldText not found) — re-read the file and retry with current content.".to_string());
+                }
+                return Some(format!(
+                    "Last tool failed — address the error before summarizing: {}",
+                    truncate_str(last, 200)
+                ));
+            }
+            return Some(
+                "A tool failed — retry with corrected args or an allowed alternative.".to_string(),
+            );
+        }
+        None
     }
 
     pub fn requires_approval(&self) -> bool {
@@ -227,7 +519,20 @@ impl PlanTracker {
         if PENDING_MARKERS.iter().any(|m| lower.contains(m)) {
             return false;
         }
-        COMPLETE_SIGNALS.iter().any(|s| lower.contains(s))
+        let has_signal = COMPLETE_SIGNALS.iter().any(|s| lower.contains(s));
+        if !has_signal {
+            return false;
+        }
+        // Phrase alone is not enough for issue-solving — require evidence state
+        if self.mode == RequestMode::IssueSolving && !self.can_complete() {
+            return false;
+        }
+        true
+    }
+
+    /// State-based completion check without phrase — used by agent loop.
+    pub fn is_state_complete(&self) -> bool {
+        self.can_complete()
     }
 
     pub fn is_conversational_goal(&self) -> bool {
@@ -235,7 +540,7 @@ impl PlanTracker {
     }
 
     pub fn focus_context(&self, step: usize) -> String {
-        if self.is_conversational_goal() {
+        if self.mode == RequestMode::Conversational || self.is_conversational_goal() {
             return format!("[Focus — conversational]\nGoal: \"{}\" — this is small talk. Reply warmly in 1-2 sentences and stop. No tools needed.\nStep: {}.", self.goal, step);
         }
         if is_ask_mode() {
@@ -277,6 +582,22 @@ impl PlanTracker {
         }
         let mut out = String::from("[Focus]\n");
         out.push_str(&format!("Goal: {}\n", self.goal));
+        out.push_str(&format!(
+            "Mode: {:?} | inspected={} mutation={}/{:?} verified={}/{:?} failed={}\n",
+            self.mode,
+            self.inspected,
+            self.mutation_attempted,
+            if self.mutation_succeeded { "ok" } else { "no" },
+            self.verification_attempted,
+            if self.verification_passed {
+                "pass"
+            } else if self.verification_failed {
+                "fail"
+            } else {
+                "-"
+            },
+            self.tool_failed
+        ));
         if self.requires_approval && self.approved {
             out.push_str("Gating: APPROVED — you have received `\u{2713} Proceed as proposed`. You may now use all tools in Phase 5 (Act).\n");
         }
@@ -291,10 +612,39 @@ impl PlanTracker {
         if !self.last_tools.is_empty() {
             out.push_str(&format!("Recent tools: {}\n", self.last_tools.join(", ")));
         }
-        if self.nocall_streak > 0 {
-            out.push_str(&format!("No tool call yet (attempt {}/{}): call a tool now, or if the work is done, summarize and end with \"All done.\"\n", self.nocall_streak, MAX_NOCALL_STREAK));
+        // Evidence-driven guidance
+        if let Some(hint) = self.completion_blocker_hint() {
+            out.push_str(&format!("Evidence gate: {}\n", hint));
         }
-        out.push_str(&format!("Step {}. Stay on track: take the next concrete step and don't repeat completed actions, don't re-read same file, don't re-verify. If the goal is met (and verified once if you mutated files), summarize and end with \"All done.\"\n", step));
+        if self.mode == RequestMode::IssueSolving
+            && self.mutation_succeeded
+            && !self.verification_attempted
+            && !self.has_blocker
+        {
+            out.push_str("Required: run the smallest relevant verification (e.g. cargo check) before completing.\n");
+        }
+        if self.tool_failed {
+            if let Some(sig) = self.failed_signatures.last() {
+                out.push_str(&format!("Last failure signature: {} — change file target, search query, command, or edit range before retry; do not repeat identical call.\n", truncate_str(sig, 180)));
+            }
+        }
+        if self.nocall_streak > 0 {
+            if self.mode == RequestMode::IssueSolving && !self.inspected {
+                out.push_str(&format!("No tool call yet (attempt {}/{}): inspect repo now — read relevant files or grep/find before editing.\n", self.nocall_streak, MAX_NOCALL_STREAK));
+            } else if self.mode == RequestMode::IssueSolving
+                && self.mutation_succeeded
+                && !self.verification_attempted
+            {
+                out.push_str(&format!("No tool call yet (attempt {}/{}): verification required — run cargo check or focused test now.\n", self.nocall_streak, MAX_NOCALL_STREAK));
+            } else {
+                out.push_str(&format!("No tool call yet (attempt {}/{}): call a tool now, or if evidence shows completion, summarize and end with \"All done.\"\n", self.nocall_streak, MAX_NOCALL_STREAK));
+            }
+        }
+        if self.can_complete() {
+            out.push_str(&format!("Step {} — evidence gate PASSED; you may summarize now (state what changed, verification result, residual risk) and end with \"All done.\"\n", step));
+        } else {
+            out.push_str(&format!("Step {} — continue: inspect → diagnose → act → verify. Do not repeat successful actions without reason; do repeat after failure with new evidence.\n", step));
+        }
         out
     }
 
@@ -303,11 +653,93 @@ impl PlanTracker {
         self.last_tools = tool_names.to_vec();
         for name in tool_names {
             self.steps_done.push(format!("called {}", name));
+            // Keep evidence flags in sync even before note_tool_result is called
+            if matches!(
+                name.as_str(),
+                "read"
+                    | "read_file"
+                    | "grep"
+                    | "find"
+                    | "ls"
+                    | "web_search"
+                    | "web_fetch"
+                    | "read_skill"
+                    | "read_agent"
+                    | "search_memory"
+                    | "recall_memory"
+                    | "list_memories"
+            ) || (name.contains("__") && is_mcp_read(name))
+            {
+                self.inspected = true;
+            }
+            if is_mutating_tool(name) && name.as_str() != "bash" {
+                self.mutation_attempted = true;
+                self.mutation_succeeded = true;
+                self.inspected = true;
+            }
+            if name.as_str() == "write" || name.as_str() == "write_file" {
+                self.mutation_attempted = true;
+                self.mutation_succeeded = true;
+            }
         }
     }
     pub fn record_text(&mut self, text: &str) {
         let trimmed = text.trim();
         if trimmed.is_empty() {
+            return;
+        }
+        // Don't record premature summaries as progress — they pollute the next focus
+        // and cause the model to reply to its own intermediate thoughts.
+        // Only record tool-related progress; free-form summaries are kept only if
+        // they signal completion and evidence gate is passed.
+        let lower = trimmed.to_lowercase();
+        let is_summary_like = lower.contains("all done")
+            || lower.contains("here's what i did")
+            || lower.contains("here is what i did")
+            || lower.contains("in summary")
+            || lower.contains("that completes");
+        if is_summary_like && self.mode == RequestMode::IssueSolving && !self.can_complete() {
+            return;
+        }
+        // For issue-solving tasks, ignore intermediate free-form text that is not
+        // a tool call and not yet evidence-complete. Keep only concise first sentence
+        // and deduplicate aggressively to prevent over-replies.
+        if self.mode == RequestMode::IssueSolving && !self.can_complete() {
+            // If text looks like a rephrased summary (repeated intent), drop it
+            // Lower threshold from 0.75 to 0.55 to catch paraphrased loops (portfolio case)
+            let summary = if let Some(period) = trimmed.find('.') {
+                if period < 200 {
+                    trimmed[..period + 1].to_string()
+                } else {
+                    trimmed.chars().take(200).collect()
+                }
+            } else {
+                trimmed.chars().take(200).collect()
+            };
+            if !self.steps_done.is_empty() {
+                let new_tokens: std::collections::HashSet<String> = summary
+                    .to_lowercase()
+                    .split_whitespace()
+                    .map(|s| s.to_string())
+                    .collect();
+                for prev in self.steps_done.iter().rev().take(3) {
+                    // Skip tool markers
+                    if prev.starts_with("called ") {
+                        continue;
+                    }
+                    let prev_tokens: std::collections::HashSet<String> = prev
+                        .to_lowercase()
+                        .split_whitespace()
+                        .map(|s| s.to_string())
+                        .collect();
+                    let inter = new_tokens.intersection(&prev_tokens).count() as f32;
+                    let union = new_tokens.union(&prev_tokens).count() as f32;
+                    if union > 0.0 && inter / union > 0.55 {
+                        return;
+                    }
+                }
+            }
+            // Don't push intermediate summaries at all if not complete — keep progress as tool calls only
             return;
         }
         let summary = if let Some(period) = trimmed.find('.') {

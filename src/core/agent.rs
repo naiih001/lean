@@ -494,7 +494,9 @@ pub fn run_agent_with_history(
                     }
                     tracker.nocall_streak += 1;
                     let complete = tracker.looks_complete(&accum_text);
-                    if complete || tracker.nocall_streak >= MAX_NOCALL_STREAK {
+                    // State-based completion: phrase alone is not enough for issue-solving; require evidence gate.
+                    // Also gate the nocall-streak fallback with can_complete to prevent premature summary.
+                    if complete || (tracker.nocall_streak >= MAX_NOCALL_STREAK && tracker.can_complete()) {
                         if !accum_text.is_empty() { {
                     let mut assistant_msg = json!({"role": "assistant", "content": accum_text.clone()});
                     if !accum_reasoning.is_empty() {
@@ -533,6 +535,8 @@ pub fn run_agent_with_history(
                 for (id, name, result, args_val, elapsed_ms) in results {
                     let display = result.find("<<IMAGE:").map_or_else(|| result.clone(), |pos| format!("{}[image data omitted for display]", result[..pos].trim_end()));
                     yield AgentEvent::ToolResult { name: name.clone(), result: display, id: id.clone(), elapsed_ms };
+                    // Classify tool outcome for evidence-driven tracker
+                    tracker.note_tool_result(&name, &args_val, &result);
                     // If this was ask_user, check for Proceed approval
                     if name == "ask_user" {
                         tracker.note_ask_result(&result);
@@ -705,7 +709,8 @@ pub fn run_agent_with_history(
                 }
                 tracker.nocall_streak += 1;
                 let complete = tracker.looks_complete(&accum_text);
-                if complete || tracker.nocall_streak >= MAX_NOCALL_STREAK {
+                // State-based completion: phrase alone is not enough for issue-solving; require evidence gate.
+                if complete || (tracker.nocall_streak >= MAX_NOCALL_STREAK && tracker.can_complete()) {
                     yield AgentEvent::Done { text: final_text.clone(), history: messages.clone() };
                     break;
                 }
@@ -749,6 +754,7 @@ pub fn run_agent_with_history(
             for (id, name, result, args_val, elapsed_ms) in results {
                 let display = result.find("<<IMAGE:").map_or_else(|| result.clone(), |pos| format!("{}[image data omitted for display]", result[..pos].trim_end()));
                 yield AgentEvent::ToolResult { name: name.clone(), result: display, id: id.clone(), elapsed_ms };
+                tracker.note_tool_result(&name, &args_val, &result);
                 if name == "ask_user" {
                     tracker.note_ask_result(&result);
                 }

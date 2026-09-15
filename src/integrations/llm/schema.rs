@@ -35,7 +35,7 @@ pub fn native_tool_definitions() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "edit",
-                "description": "Edit a file by replacing unique oldText with newText",
+                "description": "Edit a file by replacing unique oldText with newText — if oldText not found, re-read the file and retry with current content",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -51,7 +51,7 @@ pub fn native_tool_definitions() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "bash",
-                "description": "Execute a bash command",
+                "description": "Execute a bash command — after edits, use for narrow verification (e.g. cargo check); on failure, diagnose error and retry",
                 "parameters": {
                     "type": "object",
                     "properties": {
