@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-16
+
+### Added
+
+- **Skill catalog at startup with hard guarantee** — `8a061eb` `feat(core): show full skill catalog at startup with hard guarantee` — full catalog shown unconditionally on launch.
+- **Evidence-driven issue-solving loop** — `22ef18d` per behaviour plan.
+- **TUI washes, padding & markdown** — `b522f43` full-width subtle wash for user/assistant, `e4dd104` one-row top/bottom padding on highlight blocks, `b23107b` pi/opencode-style markdown (fix bold/hash stripping, airy spacing), `08ee2ce` remove footer message counter / move dictate to top-right.
+- **Subagent system** — `7b77502` `/init` + auto-load `AGENT.md`/`CLAUDE.md`/`MEMORY.md`; `5c1a314` extensible `worker`+`scout` agents with executors & wiring; `7de2ef5` pi-style UI (summary bar, `Ctrl+O` list, detail + cleaner tools); `4cbf70b` force via `@agent:` with autocomplete+intercept; `bfc0c66` migrate forced prefix `@agent:` → `#`; `a6c2dbc` scrollable 2-row list with label-first tracking & sticky header; `19ede23` subagent completion surfaced as tool call; `c0ee463` `subagents_list` polling; `30cd3d9` inline `#` hint + non-blocking subagents with wake & session cleanup; `eae3cc0` local `mimo` for all agents (subagent detail mirrors message list); `621c4f1` `scout` defaults to `mimo-v2.5-free`; `3c60301` `debugger` subagent — 4-phase root-cause workflow.
+- **Dictation parity with pi** — `9297f21` `Alt+M/N` Groq Whisper + footer meter on context row.
+- **Sudo masked modal with retry** — `f0513bb`.
+- **Herdr agent-state reporting** — `0b4b742`.
+
+### Fixed
+
+- **Agents catalog discovery** — `f3394d4` rename `AGENT.md` → `AGENTS.md` to match discovery; `42d8d7c` complete Phase B1 pure moves + repair `tui/theme` wiring.
+- **Modals & approvals** — `3b83a2c` approval/question modals top priority & always visible; `ebba014` sanitize MCP schemas (strict) + fix Responses `call_id` handling.
+- **LLM / session** — `be29e45` send `x-opencode-session`/`client` for opencode free tier; `bde1982` persist `reasoning_content` for thinking models; `3444e7c` image tool results keep tool string-only with follow-up user image; `97b671e` strip images for non-vision models.
+
+### Changed
+
+- **LLM client structure** — `a72242c` mirror `llms-sdk` with thin client (`RetryPolicy` + `MessagePart` + builder).
+- **Init/memory behaviour** — `5f3bd10` `/init` is `AGENT.md`-only, `MEMORY.md` stays global background.
+- **Code hygiene** — `b9fb4d2` cut 689 lines dead code/unused deps.
+
+### Refactored — 1:1 foldered layout (≈20 commits)
+
+- **Scaffold** — `84d554f` folder skeleton + shared `allowlist` helper.
+- **Phase B/B2** — `77226e0` move `skills/agents/question/memory/models` to foldered layout; `5fa7cb7` move `approval/sudo/bash_guard/dir_guard/dictate`; `18f03f4` dedup `guards/allowlist` via shared helper.
+- **Phase C** — `9169d2c` `agent.rs` → `core/*` (`prompts/modes/tracker/history` + thin loop); `83f2a4a` `llm.rs` → `integrations/llm/*`; `998fde8` `tools.rs` → `tools/*` (`fs/bash/search/web/subagent`); `a9a12fc` `mcp.rs` → `integrations/mcp/*` (`config/registry/transport`); `70c98f3` scaffold `tui/layout+widgets`; `47921a9` `memory.rs` → `memory/*`; `f04e37b` `services/*` (`skills/agents/question/models`).
+- **Phase D/E** — `0a024b4` `fmt` + D1 lib wiring (`core/guards/tools/integrations/services/support/tui` + shims); `2b5ebe4` D2 import sweep `crate::old` → `crate::new`; `63d4932` D3 docs `AGENT.md` structure + `docs/architecture.md` + `src/README.md`; `e222819` E1 lint `scripts/check-one-topic.sh` + `wc -l` + pub struct/enum audit.
+
+### Docs / Chore
+
+- `de81712` sync `README` to `v0.5.0` + wire `OLLAMA_HOST`; `1217a82` update install scripts for `v0.5.0`; `9e67b83` personalize `MEMORY.md` for `naet`; `8317359` add `ASK` mode + trim over-verification + fix plan gating (shipped before `v0.5.0` tag window but included in this range via `v0.5.0..HEAD`).
+
 ## [0.5.0] - 2026-09-12
 
 ### Added
@@ -135,7 +170,8 @@ Initial release. Light, fast autonomous coding assistant — single native binar
 - Tools: `read_file` (2000 lines/50 KB cap), `write_file`, `edit_file`, `bash` (50 KB tail), `web_search` (Exa → DuckDuckGo), memory tools
 - Config: CLI flags > env vars > `.env` > defaults; `OPENCODE_*`/`OPENAI_*`/`EXA_*` via `dotenvy`
 
-[Unreleased]: https://github.com/naiih001/lean/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/naiih001/lean/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/naiih001/lean/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/naiih001/lean/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/naiih001/lean/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/naiih001/lean/compare/v0.2.1...v0.3.0

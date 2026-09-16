@@ -65,7 +65,7 @@ Works with any OpenAI-compatible API.
 ```bash
 curl -fsSL https://raw.githubusercontent.com/naiih001/lean/main/install.sh | bash
 # pin to a version:
-LEAN_VERSION=v0.5.0 curl -fsSL https://raw.githubusercontent.com/naiih001/lean/main/install.sh | bash
+LEAN_VERSION=v0.6.0 curl -fsSL https://raw.githubusercontent.com/naiih001/lean/main/install.sh | bash
 ```
 
 **Windows (PowerShell):**
@@ -73,7 +73,7 @@ LEAN_VERSION=v0.5.0 curl -fsSL https://raw.githubusercontent.com/naiih001/lean/m
 ```powershell
 irm https://raw.githubusercontent.com/naiih001/lean/main/install.ps1 | iex
 # pin to a version:
-$env:LEAN_VERSION="v0.5.0"; irm https://raw.githubusercontent.com/naiih001/lean/main/install.ps1 | iex
+$env:LEAN_VERSION="v0.6.0"; irm https://raw.githubusercontent.com/naiih001/lean/main/install.ps1 | iex
 ```
 
 ### Prebuilt binaries
@@ -394,7 +394,7 @@ For general bugs, use the issue tracker.
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for release notes. `v0.5.0` adds `anthropic`/`ollama` providers with auto-detect, `PLAN` mode + `NORM/PLAN/AUTO` cycle, image paste + `vision` stripping, retries + 2-row context bar/scrollbar — `v0.4.0` added dual-stack `/v1/responses` and `ask_user` wizard.
+See [CHANGELOG.md](CHANGELOG.md) for release notes. `v0.6.0` adds skill catalog guarantee, subagent system (`worker`/`scout`/`debugger`), TUI polish & 1:1 foldered refactor — `v0.5.0` added `anthropic`/`ollama` providers with auto-detect, `PLAN` mode + `NORM/PLAN/AUTO` cycle, image paste + `vision` stripping.
 
 ---
 
