@@ -21,7 +21,7 @@ pub const REGULAR_SYSTEM_PROMPT: &str = "You are lean, a coding assistant in the
 - If a request is genuinely ambiguous (unclear target, scope, or preference) and you can't discover the answer from the repo, call ask_user with concrete options instead of guessing.\n\
 - Don't ask when you can find the answer yourself. For simple, low-risk tasks, bias toward doing — call the tool and stop.\n\n\
 ## Skills and memory\n\
-- Skills are markdown workflows listed below. If one matches the task, call read_skill and follow it.\n\
+- Skills are markdown workflows listed below. BEFORE acting, scan Available Skills — if one matches the task, you SHOULD call read_skill and follow it (strongly recommended, not mandatory; skip only if clearly irrelevant). Prefer skill guidance over improvising.\n\
 - Search memory only when prior context helps (multi-turn, user preference, project fact). Call remember when you learn something worth keeping.\n";
 
 pub const PLAN_SYSTEM_PROMPT: &str = "You are lean, a coding assistant in the terminal. Be direct, concise, and verify your work. You are in PLAN MODE — you plan, you do not implement (except the plan file).\n\n\
@@ -51,7 +51,7 @@ Continue while steps remain but don't loop or over-verify. If a tool fails, read
 ## Asking the user\n\
 - In plan mode, you MUST use ask_user in Phases 2-3 — to confirm scope, constraints, and approach and to get explicit `✓ Proceed as proposed` approval. Iterate until no assumptions remain. Ask until you are 100% sure.\n\n\
 ## Skills and memory\n\
-- Skills are markdown workflows listed below. If one matches the task, call read_skill and follow it — especially `plan` in this mode.\n\
+- Skills are markdown workflows listed below. BEFORE acting, scan Available Skills — if one matches the task, you SHOULD call read_skill and follow it (strongly recommended, not mandatory; skip only if clearly irrelevant) — especially `plan` in this mode. Prefer skill guidance over improvising.\n\
 - Search memory only when prior context helps (multi-turn, user preference, project fact). Call remember when you learn something worth keeping.\n";
 
 pub const ASK_SYSTEM_PROMPT: &str = "You are lean, a coding assistant in the terminal. You are in ASK MODE — read-only, answer without mutating.\n\n\
@@ -70,7 +70,7 @@ Don't loop or re-read the same file. Continue while steps remain but stop when a
 ## Asking the user\n\
 - If genuinely ambiguous and you can't discover the answer, call ask_user with concrete options. Otherwise answer directly; don't over-ask.\n\n\
 ## Skills and memory\n\
-- Skills are markdown workflows listed below. If one matches, call read_skill and follow it.\n\
+- Skills are markdown workflows listed below. BEFORE acting, scan Available Skills — if one matches the task, you SHOULD call read_skill and follow it (strongly recommended, not mandatory; skip only if clearly irrelevant). Prefer skill guidance over improvising.\n\
 - Search memory only when prior context helps. Call remember when you learn something worth keeping.\n";
 
 pub const ASK_READONLY_DENY_MSG: &str =
@@ -170,7 +170,7 @@ fn render_skill_catalog(raw_catalog: &str, max_lines: usize) -> String {
 
 fn skills_section(catalog: &str) -> String {
     format!(
-        "\n\n## Available Skills\n{}\n\nIf a skill matches the task, call read_skill to load its full guide.",
+        "\n\n## Available Skills\n{}\n\nBefore acting, scan this list — if a skill matches the task, you SHOULD call read_skill and follow it (strongly recommended, not mandatory; skip only if clearly irrelevant). Prefer skill guidance over improvising.",
         catalog
     )
 }
@@ -197,7 +197,7 @@ async fn agents_section() -> Option<String> {
     let lines: Vec<&str> = catalog.lines().collect();
     let take = 6.min(lines.len());
     let mut out = String::from("\n\n## Available Agents (subagents)\n");
-    out.push_str("You can delegate via `subagent` tool (requires unique `name` label, e.g. subagent(agent=\"scout\", task=\"...\", name=\"research-auth\") — label is shown first in popup, auto-suffixed if duplicate). Use scout for recon, researcher for web, worker for general tasks. Users can add agents via agents/<name>/AGENTS.md\n");
+    out.push_str("You SHOULD delegate via `subagent` when it saves context or parallelizes work (requires unique `name` label, e.g. subagent(agent=\"scout\", task=\"...\", name=\"research-auth\") — label is shown first in popup, auto-suffixed if duplicate). Use scout for recon, researcher for web, worker for general tasks. Prefer delegation for exploration/recon over doing it inline. Users can add agents via agents/<name>/AGENTS.md\n");
     for line in lines.iter().take(take) {
         out.push_str(line);
         out.push_str("\n");
