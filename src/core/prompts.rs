@@ -89,8 +89,7 @@ pub(crate) fn current_system_prompt() -> &'static str {
 }
 
 pub(crate) const TOTAL_BUDGET: usize = 12000;
-pub(crate) const SKILL_MAX_COUNT: usize = 8;
-const SKILL_LINE_MAX: usize = 120;
+const SKILL_LINE_MAX: usize = 200;
 
 /// Truncate to at most `max` characters, never splitting a UTF-8 boundary.
 pub(crate) fn truncate_str(s: &str, max: usize) -> String {
@@ -144,28 +143,22 @@ pub(crate) fn truncate_for_llm(s: &str) -> String {
     )
 }
 
-/// Render the skill catalog as `- name: description` lines, capped at `max_lines`.
-fn render_skill_catalog(raw_catalog: &str, max_lines: usize) -> String {
+/// Render the skill catalog as `- name: description` lines.
+fn render_skill_catalog(raw_catalog: &str) -> String {
     if raw_catalog.starts_with("No skills") {
         return truncate_str(raw_catalog, 300);
     }
-    let lines: Vec<&str> = raw_catalog.lines().collect();
-    let take = max_lines.min(lines.len());
-    let mut out: Vec<String> = Vec::with_capacity(take + 1);
-    for line in lines.iter().take(take) {
-        let short = match line.find(" (path:") {
-            Some(idx) => &line[..idx],
-            None => line,
-        };
-        out.push(truncate_str(short, SKILL_LINE_MAX));
-    }
-    if lines.len() > take {
-        out.push(format!(
-            "... +{} more (use read_skill to see)",
-            lines.len() - take
-        ));
-    }
-    out.join("\n")
+    raw_catalog
+        .lines()
+        .map(|line| {
+            let short = match line.find(" (path:") {
+                Some(idx) => &line[..idx],
+                None => line,
+            };
+            truncate_str(short, SKILL_LINE_MAX)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn skills_section(catalog: &str) -> String {
@@ -266,7 +259,8 @@ pub async fn build_system_prompt() -> String {
     };
 
     let agents = agents_section().await;
-    let full_catalog = render_skill_catalog(&raw_catalog, SKILL_MAX_COUNT);
+    // hard guarantee: full catalog (name + description) always emitted; bodies stay lazy via read_skill
+    let full_catalog = render_skill_catalog(&raw_catalog);
     let prompt = assemble(&full_catalog, context.as_deref(), agents.as_deref());
     if prompt.len() <= TOTAL_BUDGET {
         let with_mcp = format!("{}{}", prompt, mcp_section());
@@ -275,45 +269,58 @@ pub async fn build_system_prompt() -> String {
         }
     }
 
-    for lines in (1..SKILL_MAX_COUNT).rev() {
-        let catalog = render_skill_catalog(&raw_catalog, lines);
-        let candidate = assemble(&catalog, context.as_deref(), agents.as_deref());
-        if candidate.len() <= TOTAL_BUDGET {
-            return candidate;
-        }
-    }
-
+    // Overflow: shrink non-skill sections first, never drop skills.
     if let Some(ctx) = &context {
         let mut minimal_ctx = truncate_to_bytes(
             ctx,
             TOTAL_BUDGET.saturating_sub(
-                base.len() + confinement.as_ref().map(|s| s.len()).unwrap_or(0) + 500,
+                base.len()
+                    + skills_section(&full_catalog).len()
+                    + confinement.as_ref().map(|s| s.len()).unwrap_or(0)
+                    + agents.as_deref().map(|s| s.len()).unwrap_or(0)
+                    + 500,
             ),
         );
         if minimal_ctx.len() < ctx.len() {
             minimal_ctx.push_str("\n… [context truncated for budget]");
         }
-        let candidate = assemble(
-            &render_skill_catalog(&raw_catalog, 1),
-            Some(&minimal_ctx),
-            agents.as_deref(),
-        );
+        let candidate = assemble(&full_catalog, Some(&minimal_ctx), agents.as_deref());
         if candidate.len() <= TOTAL_BUDGET {
             return candidate;
         }
-        let mut no_skills = String::from(base);
-        no_skills.push_str(&minimal_ctx);
-        if let Some(note) = &confinement {
-            no_skills.push_str(note);
+        // Drop agents next, keep full catalog.
+        let candidate_no_agents = assemble(&full_catalog, Some(&minimal_ctx), None);
+        if candidate_no_agents.len() <= TOTAL_BUDGET {
+            return candidate_no_agents;
         }
-        if no_skills.len() <= TOTAL_BUDGET {
-            return no_skills;
+        let candidate_no_ctx = assemble(&full_catalog, None, agents.as_deref());
+        if candidate_no_ctx.len() <= TOTAL_BUDGET {
+            return candidate_no_ctx;
+        }
+        let mut skills_only = String::from(base);
+        skills_only.push_str(&skills_section(&full_catalog));
+        if let Some(note) = &confinement {
+            skills_only.push_str(note);
+        }
+        if skills_only.len() <= TOTAL_BUDGET {
+            return skills_only;
+        }
+    } else {
+        // No context: try without agents before hard guarantee.
+        let candidate_no_agents = assemble(&full_catalog, None, None);
+        if candidate_no_agents.len() <= TOTAL_BUDGET {
+            return candidate_no_agents;
         }
     }
 
+    // Hard guarantee fallback: return full catalog even if over TOTAL_BUDGET.
     let mut minimal = String::from(base);
+    minimal.push_str(&skills_section(&full_catalog));
     if let Some(note) = &confinement {
         minimal.push_str(note);
     }
-    truncate_to_bytes(&minimal, TOTAL_BUDGET)
+    if minimal.len() <= TOTAL_BUDGET {
+        return minimal;
+    }
+    minimal
 }
