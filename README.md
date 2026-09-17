@@ -305,21 +305,19 @@ cargo check
 cargo build --release
 ```
 
-**Project layout:**
+**Project layout (6-folder, see `src/README.md` + `docs/architecture.md`):**
 
 ```
 src/
-  main.rs        # CLI argument parsing
-  tui/           # Terminal UI (ratatui + crossterm)
-  agent.rs       # Agent loop (dual-stack: /chat/completions + /responses, SSE, tool routing)
-  llm.rs         # OpenAI-compatible client, tool defs, and Responses translation
-  tools.rs       # Tool execution
-  bash_guard.rs  # Bash allowlist guard
-  dir_guard.rs   # Directory confinement guard
-  session.rs     # Session persistence
-  memory.rs      # Memory store
-  skills.rs      # Skill discovery
-  models.rs      # Model config + ApiMode (chat vs responses)
+  main.rs        # Thin CLI entry (clap Args + tui::run)
+  lib.rs         # Re-exports for compat (pub use core::agent etc)
+  core/          # Agent orchestration — what it thinks
+  guards/        # Safety — what blocks
+  tools/         # Tool impls — what it does
+  integrations/  # External systems — who it talks to (llm/mcp/models/herdr/observer/dictate)
+  services/      # Local state — what it remembers (session/memory/skills/agents/question)
+  tui/           # Terminal UI — what the user sees
+  support/       # Telemetry
 ```
 
 ---
