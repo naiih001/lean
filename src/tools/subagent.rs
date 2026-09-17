@@ -51,7 +51,7 @@ pub async fn run_subagent(agent_name: &str, task: &str, label: &str) -> String {
         let fut = async move {
             use futures::StreamExt;
             let started = std::time::SystemTime::now();
-            let mut stream = crate::agent::run_agent(sub_prompt, model, max_steps);
+            let stream = crate::agent::run_agent(sub_prompt, model, max_steps);
             futures::pin_mut!(stream);
             let mut final_text = String::new();
             let mut last_error: Option<String> = None;

@@ -1,5 +1,5 @@
 use crate::tui::theme::{ASHEN, THEME};
-use crate::tui::widgets::messages::{merge_thinking, sanitize_display_content, Msg};
+use crate::tui::widgets::messages::{merge_thinking, Msg};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};

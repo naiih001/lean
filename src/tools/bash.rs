@@ -9,7 +9,7 @@ pub(crate) fn contains_sudo(cmd: &str) -> bool {
 pub(crate) fn inject_sudo_s(cmd: &str) -> String {
     // Insert -S -p '' after each sudo not already using -S
     let mut out = String::new();
-    let mut chars = cmd.chars().peekable();
+    let _chars = cmd.chars().peekable();
     let mut i = 0;
     let bytes: Vec<char> = cmd.chars().collect();
     while i < bytes.len() {

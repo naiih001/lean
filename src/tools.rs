@@ -9,7 +9,6 @@ pub use fs::{
     TruncateStrategy,
 };
 
-use serde_json::Value;
 
 async fn guard_path(path: &str, tool: &str) -> Option<String> {
     if crate::guards::approval::is_auto_accept() {

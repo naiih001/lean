@@ -199,7 +199,7 @@ pub async fn edit_file(path: &str, old: &str, new: &str) -> Result<String, Strin
             .context_radius(3)
             .header("before", "after")
             .to_string();
-        let mut out = format!("Edited {} — diff:\n{}", path, unified);
+        let out = format!("Edited {} — diff:\n{}", path, unified);
         let lines: Vec<&str> = out.lines().collect();
         if lines.len() > 120 {
             let kept = &lines[..120];

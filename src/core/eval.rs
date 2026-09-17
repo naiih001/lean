@@ -6,7 +6,7 @@
 
 use serde_json::json;
 
-use crate::core::tracker::{PlanTracker, RequestMode};
+use crate::core::tracker::PlanTracker;
 
 /// Result shape for a single eval (easy to display + assert).
 #[derive(Debug, Clone)]

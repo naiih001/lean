@@ -9,7 +9,6 @@ pub use registry::{
 };
 pub use transport::{init, reconnect};
 
-use crate::integrations::mcp::registry::{invalidate_tool_cache, registry_lock, tool_cache_lock};
 use crate::integrations::mcp::transport::sanitize_schema;
 use serde_json::Value;
 

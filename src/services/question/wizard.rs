@@ -1,4 +1,4 @@
-use crate::services::question::{Answer, OptionItem, Question, MAX_OTHER};
+use crate::services::question::{Answer, Question, MAX_OTHER};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WizardOutcome {

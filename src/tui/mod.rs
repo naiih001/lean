@@ -4934,7 +4934,7 @@ async fn app_loop(
                             }
                             continue;
                         }
-                        if let Some(idx) = subagent_detail {
+                        if let Some(_idx) = subagent_detail {
                             let max = subagent_detail_total
                                 .saturating_sub(subagent_detail_viewport_h)
                                 as u16;
@@ -5837,7 +5837,7 @@ async fn app_loop(
                                 }
                             } else {
                                 // Even if not modified, still recompute for typing
-                                let cur = textarea.lines().join("\n");
+                                let _cur = textarea.lines().join("\n");
                                 ac_matches = current_completions(&textarea);
                                 if ac_matches.is_empty() {
                                     ac_idx = 0;

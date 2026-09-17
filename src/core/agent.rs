@@ -1,5 +1,4 @@
 use crate::integrations::llm::{self, Client};
-use crate::services::skills;
 use futures::Stream;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -10,14 +9,14 @@ pub(crate) use crate::core::history::{
     build_user_content, drop_orphaned_tool_outputs, history_slice_for_api, prune_context_messages,
     strip_images_for_non_vision,
 };
-pub(crate) use crate::core::modes::{is_ask_mode, is_plan_mode};
+pub(crate) use crate::core::modes::is_ask_mode;
 pub(crate) use crate::core::prompts::{
-    build_system_prompt, truncate_chars, truncate_for_llm, truncate_str, truncate_to_bytes,
-    ASK_READONLY_DENY_MSG, SYSTEM_PROMPT,
+    build_system_prompt, truncate_chars, truncate_for_llm,
+    ASK_READONLY_DENY_MSG,
 };
 pub(crate) use crate::core::tracker::{
-    is_mcp_read, is_mutating_tool, is_permission_to_leave_plan, is_plan_exempt_write,
-    is_readonly_bash, is_stay_in_plan, PlanTracker, MAX_NOCALL_STREAK,
+    is_mcp_read, is_mutating_tool, is_plan_exempt_write,
+    is_readonly_bash, PlanTracker, MAX_NOCALL_STREAK,
 };
 
 pub enum AgentEvent {

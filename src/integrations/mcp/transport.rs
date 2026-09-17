@@ -197,7 +197,7 @@ pub(crate) fn resolve_stdio_command(cmd: &str, args: &[String]) -> (String, Vec<
         }
         // Try common global path
         if let Ok(home) = std::env::var("HOME") {
-            let p = std::path::Path::new(&home).join(".npm/_npx");
+            let _p = std::path::Path::new(&home).join(".npm/_npx");
             // fallback to npx
         }
     }
