@@ -120,47 +120,55 @@ fn current_session_ref() -> (Option<String>, Option<String>) {
 // Fire-and-forget socket write — matches pi's sendRequestAttempt with 500ms + 1500ms retry.
 // We spawn a tokio task so the TUI loop is never blocked.
 async fn send_once(request_json: String, timeout_ms: u64) -> bool {
-    let sock = match socket_path() {
-        Some(s) => s,
-        None => return false,
-    };
-    let stream = match tokio::time::timeout(
-        std::time::Duration::from_millis(timeout_ms),
-        tokio::net::UnixStream::connect(&sock),
-    )
-    .await
+    #[cfg(not(unix))]
     {
-        Ok(Ok(s)) => s,
-        _ => return false,
-    };
-    // Use the stream as async Read+Write
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut stream = stream;
-    let payload = format!("{}\n", request_json);
-    if tokio::time::timeout(
-        std::time::Duration::from_millis(timeout_ms),
-        stream.write_all(payload.as_bytes()),
-    )
-    .await
-    .is_err()
-    {
+        let _ = (request_json, timeout_ms);
         return false;
     }
-    if stream.flush().await.is_err() {
-        return false;
-    }
-    // Wait for any response byte (herdr sends JSON ack), or timeout. Even if no data, we delivered.
-    let mut buf = [0u8; 4096];
-    match tokio::time::timeout(
-        std::time::Duration::from_millis(timeout_ms),
-        stream.read(&mut buf),
-    )
-    .await
+    #[cfg(unix)]
     {
-        Ok(Ok(n)) if n > 0 => true,
-        Ok(Ok(_)) => true, // connected + wrote, treat as delivered even if empty
-        Ok(Err(_)) => false,
-        Err(_) => true, // timeout after write = likely delivered, pi treats this as success on second attempt
+        let sock = match socket_path() {
+            Some(s) => s,
+            None => return false,
+        };
+        let stream = match tokio::time::timeout(
+            std::time::Duration::from_millis(timeout_ms),
+            tokio::net::UnixStream::connect(&sock),
+        )
+        .await
+        {
+            Ok(Ok(s)) => s,
+            _ => return false,
+        };
+        // Use the stream as async Read+Write
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut stream = stream;
+        let payload = format!("{}\n", request_json);
+        if tokio::time::timeout(
+            std::time::Duration::from_millis(timeout_ms),
+            stream.write_all(payload.as_bytes()),
+        )
+        .await
+        .is_err()
+        {
+            return false;
+        }
+        if stream.flush().await.is_err() {
+            return false;
+        }
+        // Wait for any response byte (herdr sends JSON ack), or timeout. Even if no data, we delivered.
+        let mut buf = [0u8; 4096];
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(timeout_ms),
+            stream.read(&mut buf),
+        )
+        .await
+        {
+            Ok(Ok(n)) if n > 0 => true,
+            Ok(Ok(_)) => true, // connected + wrote, treat as delivered even if empty
+            Ok(Err(_)) => false,
+            Err(_) => true, // timeout after write = likely delivered, pi treats this as success on second attempt
+        }
     }
 }
 
@@ -183,6 +191,8 @@ fn spawn_send(value: serde_json::Value) {
         });
     } else {
         // Fallback: blocking UnixStream in a thread (for non-tokio contexts like tests)
+        // No-op on Windows — herdr uses Unix sockets only.
+        #[cfg(unix)]
         std::thread::spawn(move || {
             let json = serde_json::to_string(&value).unwrap_or_default();
             if json.is_empty() || pane_id().is_none() || socket_path().is_none() {
@@ -199,6 +209,10 @@ fn spawn_send(value: serde_json::Value) {
                 }
             }
         });
+        #[cfg(not(unix))]
+        {
+            let _ = value;
+        }
     }
 }
 
@@ -325,7 +339,8 @@ fn drain_queue() {
             }
         });
     } else {
-        // No runtime — send synchronously in a thread
+        // No runtime — send synchronously in a thread (Unix only; herdr uses Unix sockets)
+        #[cfg(unix)]
         std::thread::spawn(|| {
             loop {
                 let next = { queued_cell().lock().unwrap().take() };
@@ -350,6 +365,10 @@ fn drain_queue() {
             }
             SEND_IN_FLIGHT.store(false, Ordering::Relaxed);
         });
+        #[cfg(not(unix))]
+        {
+            SEND_IN_FLIGHT.store(false, Ordering::Relaxed);
+        }
     }
 }
 
