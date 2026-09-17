@@ -12,7 +12,7 @@ src/
 │   ├── modes.rs         # Mode enum + PLAN_MODE/ASK_MODE
 │   ├── tracker.rs       # PlanTracker + gating (is_mutating, is_readonly_bash)
 │   ├── history.rs       # prune/history_slice/build_user_content
-│   └── context.rs       # AGENT.md/MEMORY.md loading
+│   └── context.rs       # AGENTS.md loading
 ├── guards/              # What blocks — leaf, no tools dep
 │   ├── allowlist.rs     # Shared JSON helper (load/save)
 │   ├── bash.rs          # Severity/Risk/analyze
@@ -31,11 +31,9 @@ src/
 │   ├── mcp/{config,registry,transport}.rs
 │   ├── models/{provider,config}.rs
 │   ├── herdr/mod.rs
-│   ├── observer/mod.rs
 │   └── dictate/mod.rs   # kept single (179) unless audio expansion
-├── services/            # What it remembers — local state/catalogs
+├── services/            # Local state/catalogs
 │   ├── session/mod.rs
-│   ├── memory/{store,recall}.rs
 │   ├── skills/{loader,catalog}.rs
 │   ├── agents/{catalog,runtime}.rs
 │   └── question/{wizard}.rs

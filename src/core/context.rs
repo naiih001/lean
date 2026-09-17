@@ -4,8 +4,7 @@ const MAX_FILE_CHARS: usize = 8000;
 const MAX_TOTAL_CHARS: usize = 24000;
 
 /// All context filenames we support.
-/// Project: only AGENTS.md (created by /init).
-/// Global (background): AGENTS.md + MEMORY.md (MEMORY.md auto-updated silently in ~/.lean/).
+/// Project + global: only AGENTS.md (created by /init).
 const FILENAMES: &[&str] = &["AGENTS.md"];
 
 fn home_dir() -> Option<PathBuf> {
@@ -18,7 +17,6 @@ fn project_root() -> PathBuf {
 
 /// All candidate paths in priority order: global first, then project.
 /// Duplicates are deduped by canonical check at load time.
-/// Project only loads AGENTS.md; MEMORY.md is global-only (background, ~/.lean/).
 fn candidate_paths() -> Vec<(PathBuf, &'static str)> {
     let mut out = Vec::new();
     let home = home_dir();
@@ -26,21 +24,17 @@ fn candidate_paths() -> Vec<(PathBuf, &'static str)> {
 
     // Global candidates — low priority, shown first.
     if let Some(home) = &home {
-        // ~/.lean/AGENTS.md + MEMORY.md (global config, MEMORY.md updated silently in background)
+        // ~/.lean/AGENTS.md (global config)
         for name in FILENAMES {
             out.push((home.join(".lean").join(name), "global"));
         }
-        out.push((home.join(".lean").join("MEMORY.md"), "global"));
-        // ~/.claude compat (legacy)
-        out.push((home.join(".claude").join("MEMORY.md"), "global"));
         // ~/AGENTS.md (direct home)
         for name in FILENAMES {
             out.push((home.join(name), "global"));
         }
-        out.push((home.join("MEMORY.md"), "global"));
     }
 
-    // Project candidates — higher priority. Only AGENTS.md; MEMORY.md is global-only.
+    // Project candidates — higher priority. Only AGENTS.md.
     for name in FILENAMES {
         out.push((cwd.join(name), "project"));
     }
@@ -150,8 +144,8 @@ pub fn load_context_section() -> Option<String> {
     }
 
     let mut out = String::new();
-    out.push_str("## Project & User Context (AGENTS.md + global MEMORY.md)\n");
-    out.push_str("The following files were loaded from disk — treat them as high-priority persistent context. Project AGENTS.md overrides global ones when they conflict. Global MEMORY.md (~/.lean/MEMORY.md) is updated silently in the background. Follow their instructions, conventions, and preferences.\n\n");
+    out.push_str("## Project & User Context (AGENTS.md)\n");
+    out.push_str("The following files were loaded from disk — treat them as high-priority persistent context. Project AGENTS.md overrides global ones when they conflict. Follow their instructions, conventions, and preferences.\n\n");
     out.push_str(&sections.join("\n\n---\n\n"));
     Some(out)
 }
@@ -262,45 +256,9 @@ pub fn claude_mirror_note() -> String {
     "This file mirrors AGENTS.md for Claude Code compatibility. Keep them in sync (or symlink CLAUDE.md → AGENTS.md).".to_string()
 }
 
-#[allow(dead_code)]
-pub fn memory_template() -> String {
-    r#"# MEMORY.md — Who I Am (User Persona)
-
-> This file is loaded on every lean session to personalize assistance. 3-5 short sections is ideal — concise but enough for the agent to understand your perspective. Edit freely; the agent will respect it.
-
-## About Me
-- **Name / handle:** [your name]
-- **Role:** [e.g., indie hacker, senior backend engineer, student]
-- **Location / timezone:** [e.g., UTC+8, Europe/Berlin]
-- **Experience:** [1-2 lines about your background]
-
-## Preferences
-- **Communication style:** [e.g., direct and concise, thorough with examples, prefer code over prose]
-- **Code style:** [e.g., idiomatic Rust, functional preference, explicit error handling]
-- **Tools:** [e.g., Neovim, VS Code, Ghostty, Linux]
-- **Language:** [e.g., English, or mix]
-
-## Goals
-- **Current focus:** [what you're building or learning right now]
-- **Long-term:** [bigger direction, if you want the agent to know]
-
-## Working Style
-- **How I like to work:** [e.g., plan first then build, bias to doing, ask before big changes]
-- **When to ask vs. act:** [e.g., ask for ambiguous scope, otherwise proceed]
-- **Constraints:** [e.g., avoid over-engineering, keep diffs minimal]
-
-## Context the Agent Should Remember
-- [Anything else: past decisions, product context, team notes — keep to a few paragraphs]
-
----
-*Tip: run `/init` to regenerate AGENTS.md from the codebase; edit this file directly to refine how lean understands you.*
-"#.to_string()
-}
-
 /// Ensure init files exist, creating them with templates if missing.
 /// Returns list of created/updated paths for display.
-/// Only creates ./AGENTS.md in the project — MEMORY.md is global-only
-/// and updated silently in the background (~/.lean/MEMORY.md).
+/// Only creates ./AGENTS.md in the project.
 /// This is the deterministic fallback used when the LLM is unavailable;
 /// the primary `/init` flow spawns an agent to generate richer content.
 pub fn ensure_init_files() -> Vec<String> {
@@ -333,7 +291,6 @@ mod tests {
     #[test]
     fn templates_non_empty() {
         assert!(agent_template("test").contains("AGENTS.md"));
-        assert!(memory_template().contains("MEMORY.md"));
     }
 
     #[test]

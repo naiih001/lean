@@ -15,7 +15,7 @@ Use this when the user wants a plan, or before any write/mutating work in PLAN m
 
 ## The 5 Phases (MANDATORY in PLAN)
 
-**Phase 1 — DISCOVER (read-only):** `read_file`, `read_skill`, `web_search`, `search_memory`, readonly `bash` (`ls/cat/grep/find/rg/git log|status|diff|show`, `2>/dev/null`, pipes), MCP reads. No mutations. `write_file` only to `.lean/plans/**` is allowed.
+**Phase 1 — DISCOVER (read-only):** `read_file`, `read_skill`, `web_search`, readonly `bash` (`ls/cat/grep/find/rg/git log|status|diff|show`, `2>/dev/null`, pipes), MCP reads. No mutations. `write_file` only to `.lean/plans/**` is allowed.
 
 **Phase 2 — CLARIFY:** `ask_user` until 100% clear. For each ambiguity present 2-3 options with pros/cons. Cover: goal, non-goals, files/modules in scope, UX/constraints, edge cases.
 
@@ -29,7 +29,7 @@ Use this when the user wants a plan, or before any write/mutating work in PLAN m
 
 ## Allowed vs Blocked in Phases 1-4
 
-- **Allowed auto-run:** `read_file`, `read_skill`, `web_search`, `search_memory`/`recall_memory`/`list_memories`, `ask_user`, readonly `bash`, MCP reads (`*read`, `*list`, `*get`, `*search`, `*query`, `*fetch`).
+- **Allowed auto-run:** `read_file`, `read_skill`, `web_search`, `ask_user`, readonly `bash`, MCP reads (`*read`, `*list`, `*get`, `*search`, `*query`, `*fetch`).
 - **Blocked until Proceed:** `write_file` (except `.lean/plans/**`), `edit_file`, mutating `bash` (contains `rm/mv/cp/mkdir/touch/chmod/chown/sed -i/tee/rmdir/unlink/shred`, `cargo build/test/run`, `npm run/install/publish`, `git commit/push/checkout`, `> file`/`>> file`), MCP writes.
 
 `ASK` mode is permanently read-only — same allowed set, same `> file` block, with deny message `ASK is read-only — switch to Norm (Shift+Tab) or Plan to build.` It never enters Phase 4/4b.

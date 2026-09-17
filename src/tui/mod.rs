@@ -1973,9 +1973,6 @@ const COMMANDS: &[&str] = &[
     "/allowlist",
     "/allowlist clear",
     "/mcp",
-    "/memory",
-    "/memory stats",
-    "/memory consolidate",
     "/auto-accept",
     "/plan",
     "/init",
@@ -5915,7 +5912,7 @@ async fn app_loop(
                                 "/help" => {
                                     messages.push(Msg {
                                         role: "system".into(),
-                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /mcp /memory stats|consolidate /model <name> /clear /exit /auto-accept /plan /init  ·  Enter send · Shift+Enter newline · Shift+Tab NORM/PLAN/ASK/AUTO · @file $skill · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll — /plan toggles PLAN, /auto-accept toggles AUTO, Shift+Tab cycles — /init creates AGENTS.md (MEMORY.md is global-only, auto-updated silently in ~/.lean/)".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /mcp /model <name> /clear /exit /auto-accept /plan /init  ·  Enter send · Shift+Enter newline · Shift+Tab NORM/PLAN/ASK/AUTO · @file $skill · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll — /plan toggles PLAN, /auto-accept toggles AUTO, Shift+Tab cycles — /init creates AGENTS.md".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                 }
                                 "/plan" => {
                                     let next = if crate::agent::current_mode()
@@ -5944,13 +5941,12 @@ async fn app_loop(
                                     let cwd =
                                         crate::guards::dir::project_root().display().to_string();
                                     let init_prompt = format!(
-                                        r#"Initialize project memory for lean. Current directory: {cwd}
+                                        r#"Initialize project context for lean. Current directory: {cwd}
 
 Tasks:
 1. Explore the codebase: run `ls -la`, read README.md, Cargo.toml / package.json / pyproject.toml / go.mod if present, and list src/ structure. Use read and bash (read-only) to gather facts.
-2. Create or update AGENTS.md at ./AGENTS.md. Include: Project Overview (what it does), Tech Stack, Commands (build/run/test/lint exactly as found), Project Structure (key dirs), Conventions (style, commits), Architecture Notes, Gotchas. Keep concise, actionable, 1-2 pages. Use only facts you found — don't invent. Do NOT create CLAUDE.md or any MEMORY.md file in the project — AGENTS.md only.
-3. MEMORY.md is global-only (~/.lean/MEMORY.md) and is updated silently in the background via the memory system — do NOT create ./MEMORY.md, do NOT use ask_user for persona, do NOT mention it in the project.
-4. After writing, verify by reading ./AGENTS.md and summarize what was created/updated. End with "All done."
+2. Create or update AGENTS.md at ./AGENTS.md. Include: Project Overview (what it does), Tech Stack, Commands (build/run/test/lint exactly as found), Project Structure (key dirs), Conventions (style, commits), Architecture Notes, Gotchas. Keep concise, actionable, 1-2 pages. Use only facts you found — don't invent. Do NOT create CLAUDE.md — AGENTS.md only.
+3. After writing, verify by reading ./AGENTS.md and summarize what was created/updated. End with "All done."
 
 Be thorough but concise. Read before write; use unique oldText for edits."#
                                     );
@@ -5995,7 +5991,7 @@ Be thorough but concise. Read before write; use unique oldText for edits."#
                                 _ if prompt.starts_with("/init") => {
                                     let rest = prompt.strip_prefix("/init").unwrap_or("").trim();
                                     if rest == "--help" || rest == "-h" || rest == "help" {
-                                        messages.push(Msg { role: "system".into(), content: "usage: /init — analyze project and create/update AGENTS.md. Files are auto-loaded on startup (project AGENTS.md + global ~/.lean/MEMORY.md updated silently in background).".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        messages.push(Msg { role: "system".into(), content: "usage: /init — analyze project and create/update AGENTS.md. Files are auto-loaded on startup (project AGENTS.md).".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                     } else if !rest.is_empty() {
                                         // /init with extra text — treat as note for the agent
                                         let created = crate::core::context::ensure_init_files();
@@ -6017,9 +6013,9 @@ Be thorough but concise. Read before write; use unique oldText for edits."#
                                             .to_string();
                                         let extra = format!("\nAdditional user note: {}", rest);
                                         let init_prompt2 = format!(
-                                            r#"Initialize project memory for lean. CWD: {cwd2}{extra}
+                                            r#"Initialize project context for lean. CWD: {cwd2}{extra}
 
-Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (project: overview, stack, commands, structure, conventions, architecture, gotchas — concise). Do NOT create CLAUDE.md or any MEMORY.md in the project — AGENTS.md only. MEMORY.md is global-only (~/.lean/MEMORY.md, silent background). Verify by reading ./AGENTS.md."#
+Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (project: overview, stack, commands, structure, conventions, architecture, gotchas — concise). Do NOT create CLAUDE.md — AGENTS.md only. Verify by reading ./AGENTS.md."#
                                         );
                                         let hist = llm_history_for_spawn(&session, &messages);
                                         let expanded = expand_at_mentions(&init_prompt2);
@@ -6077,39 +6073,6 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                     show_allowlist = true;
                                     allowlist_selected = 0;
                                     allowlist_scroll = 0;
-                                }
-                                "/memory" => {
-                                    let stats = crate::services::memory::api_stats();
-                                    messages.push(Msg {
-                                        role: "system".into(),
-                                        content: stats,
-                                        tool_id: None,
-                                        tool_name: None,
-                                        tool_args: None,
-                                        elapsed_ms: None,
-                                    });
-                                }
-                                "/memory stats" => {
-                                    let stats = crate::services::memory::api_stats();
-                                    messages.push(Msg {
-                                        role: "system".into(),
-                                        content: stats,
-                                        tool_id: None,
-                                        tool_name: None,
-                                        tool_args: None,
-                                        elapsed_ms: None,
-                                    });
-                                }
-                                "/memory consolidate" => {
-                                    let out = crate::services::memory::api_consolidate();
-                                    messages.push(Msg {
-                                        role: "system".into(),
-                                        content: out,
-                                        tool_id: None,
-                                        tool_name: None,
-                                        tool_args: None,
-                                        elapsed_ms: None,
-                                    });
                                 }
                                 "/auto-accept" => {
                                     let next = if crate::agent::current_mode()
@@ -6666,21 +6629,6 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                     if let Some(sess) = session.as_mut() {
                         sess.llm_history = Some(history.clone());
                         let _ = sess.save();
-                    }
-                    // Observer: distill recent chunk into memories (async, non-blocking)
-                    if std::env::var("LEAN_OBSERVER_DISABLED").unwrap_or_default() != "1" {
-                        let chunk_pairs: Vec<(String, String)> = messages
-                            .iter()
-                            .rev()
-                            .take(12)
-                            .rev()
-                            .map(|m| (m.role.clone(), m.content.clone()))
-                            .collect();
-                        let chunk = crate::integrations::observer::build_chunk_text(&chunk_pairs);
-                        let obs_model = model.clone();
-                        tokio::spawn(async move {
-                            crate::integrations::observer::observe_chunk(chunk, obs_model).await;
-                        });
                     }
                     agent_handle.take();
 

@@ -385,9 +385,6 @@ impl PlanTracker {
                     | "web_fetch"
                     | "read_skill"
                     | "read_agent"
-                    | "search_memory"
-                    | "recall_memory"
-                    | "list_memories"
             ) || name.contains("__") && is_mcp_read(name)
             {
                 self.inspected = true;
@@ -546,7 +543,7 @@ impl PlanTracker {
         if is_ask_mode() {
             let mut out = String::from("[Focus — ASK read-only]\n");
             out.push_str(&format!("Goal: {}\n", self.goal));
-            out.push_str("ASK is read-only: Allowed: read, read_skill, web_search, search_memory/recall_memory/list_memories, ask_user, readonly bash (ls/cat/grep/find/rg/git log|status|diff|show, 2>/dev/null, 2>&1, pipes), MCP reads (read/list/get/search/query/fetch). BLOCKED: write/edit/mutating bash (> file, rm/mv/cp/mkdir, cargo build/test/run, npm install, git commit/push) and MCP writes — reply with \"ASK is read-only — switch to Norm (Shift+Tab) or Plan to build.\" if asked to build. Do not over-verify; answer directly.\n");
+            out.push_str("ASK is read-only: Allowed: read, read_skill, web_search, ask_user, readonly bash (ls/cat/grep/find/rg/git log|status|diff|show, 2>/dev/null, 2>&1, pipes), MCP reads (read/list/get/search/query/fetch). BLOCKED: write/edit/mutating bash (> file, rm/mv/cp/mkdir, cargo build/test/run, npm install, git commit/push) and MCP writes — reply with \"ASK is read-only — switch to Norm (Shift+Tab) or Plan to build.\" if asked to build. Do not over-verify; answer directly.\n");
             if !self.steps_done.is_empty() {
                 out.push_str(&format!("Progress ({}):\n", self.steps_done.len()));
                 for (i, s) in self.steps_done.iter().enumerate() {
@@ -563,7 +560,7 @@ impl PlanTracker {
             let mut out = String::from("[Focus — REAL-TASK GATING ACTIVE]\n");
             out.push_str(&format!("Goal: {}\n", self.goal));
             out.push_str("Phase: you are in Phases 1-4 (Discover → Clarify → Propose → Wait). MUTATING tools (write, edit, bash with > file, any MCP write) are BLOCKED until user selects \"\u{2713} Proceed as proposed\" via ask_user.\n");
-            out.push_str("Allowed now: read (read-only), read_skill, web_search, search_memory/recall_memory/list_memories, ask_user, readonly bash (ls/cat/grep/find/rg/git log|status|diff|show, 2>/dev/null, 2>&1, pipes) and MCP reads — they auto-run without approval.\n");
+            out.push_str("Allowed now: read (read-only), read_skill, web_search, ask_user, readonly bash (ls/cat/grep/find/rg/git log|status|diff|show, 2>/dev/null, 2>&1, pipes) and MCP reads — they auto-run without approval.\n");
             out.push_str("You MUST call ask_user now to clarify scope/approach. Cover goal, non-goals, files in scope, constraints, edge cases. Iterate until 100% sure. Final gating question MUST contain option exactly `\u{2713} Proceed as proposed`. Do NOT call mutating tools.\n");
             if !self.steps_done.is_empty() {
                 out.push_str(&format!("Progress ({}):\n", self.steps_done.len()));
@@ -665,9 +662,6 @@ impl PlanTracker {
                     | "web_fetch"
                     | "read_skill"
                     | "read_agent"
-                    | "search_memory"
-                    | "recall_memory"
-                    | "list_memories"
             ) || (name.contains("__") && is_mcp_read(name))
             {
                 self.inspected = true;

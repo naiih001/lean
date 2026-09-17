@@ -206,23 +206,6 @@ pub fn run_agent_with_history(
             let mut tracker = PlanTracker::new(&user_prompt);
             for step in 0..max_steps {
                 yield AgentEvent::Step { n: step + 1 };
-                if step > 0 && !tracker.is_conversational_goal() {
-                    let context: String = messages.iter().rev().take(4).filter_map(|m| {
-                        if let Some(s) = m.get("content").and_then(|c| c.as_str()) { Some(s.to_string()) }
-                        else if let Some(arr) = m.get("content").and_then(|c| c.as_array()) {
-                            Some(arr.iter().filter_map(|p| p.get("text").and_then(|t| t.as_str())).collect::<Vec<_>>().join(" "))
-                        } else { None }
-                    }).collect::<Vec<String>>().join(" ");
-                    if context.trim().len() > 20 {
-                        if let Some(memory_note) = crate::services::memory::autorecall(&context) {
-                            // Budget guard: skip if would push instructions near limit
-                            if memory_note.len() + 500 < 3800 {
-                                let recall_msg = json!({"role": "system", "content": memory_note});
-                                if messages.len() > 1 && messages[1].get("role").and_then(|r| r.as_str()) == Some("system") && messages[1].get("content").and_then(|c| c.as_str()).map(|c| c.starts_with("Recalled memories")).unwrap_or(false) { messages[1] = recall_msg; } else { messages.insert(1, recall_msg); }
-                            }
-                        }
-                    }
-                }
                 let focus = tracker.focus_context(step + 1);
                 // Re-inject focus each turn from a history with stale injected context removed,
                 // so instructions stay bounded instead of accumulating across steps.
@@ -600,25 +583,9 @@ pub fn run_agent_with_history(
         messages.push(json!({"role": "user", "content": build_user_content(&user_prompt)}));
         let mut final_text = String::new();
         let mut tracker = PlanTracker::new(&user_prompt);
-        for step in 0..max_steps {
-            yield AgentEvent::Step { n: step + 1 };
-            if step > 0 && !tracker.is_conversational_goal() {
-                let context: String = messages.iter().rev().take(4).filter_map(|m| {
-                    if let Some(s) = m.get("content").and_then(|c| c.as_str()) { Some(s.to_string()) }
-                    else if let Some(arr) = m.get("content").and_then(|c| c.as_array()) {
-                        Some(arr.iter().filter_map(|p| p.get("text").and_then(|t| t.as_str())).collect::<Vec<_>>().join(" "))
-                    } else { None }
-                }).collect::<Vec<String>>().join(" ");
-                if context.trim().len() > 20 {
-                    if let Some(memory_note) = crate::services::memory::autorecall(&context) {
-                        if memory_note.len() + 500 < 3800 {
-                            let recall_msg = json!({"role": "system", "content": memory_note});
-                            if messages.len() > 1 && messages[1].get("role").and_then(|r| r.as_str()) == Some("system") && messages[1].get("content").and_then(|c| c.as_str()).map(|c| c.starts_with("Recalled memories")).unwrap_or(false) { messages[1] = recall_msg; } else { messages.insert(1, recall_msg); }
-                        }
-                    }
-                }
-            }
-            // Drop any stale focus/continue context, then re-inject a fresh focus
+            for step in 0..max_steps {
+                yield AgentEvent::Step { n: step + 1 };
+                // Drop any stale focus/continue context, then re-inject a fresh focus
             // message right after the system prompt so it never accumulates.
             messages = prune_context_messages(&messages);
             let focus_msg = json!({"role": "system", "content": tracker.focus_context(step + 1)});

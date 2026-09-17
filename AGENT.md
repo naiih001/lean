@@ -49,7 +49,7 @@ cargo clippy
 │   │   ├── modes.rs            # Mode enum + PLAN_MODE/ASK_MODE
 │   │   ├── tracker.rs          # PlanTracker + gating helpers
 │   │   ├── history.rs          # prune/history_slice/build_user_content
-│   │   └── context.rs          # AGENT.md/MEMORY.md loading
+│   │   └── context.rs          # AGENTS.md loading
 │   ├── guards/                 # Safety — what blocks
 │   │   ├── mod.rs
 │   │   ├── allowlist.rs        # Shared JSON helper
@@ -69,11 +69,9 @@ cargo clippy
 │   │   ├── mcp/{config,registry,transport}.rs + mod.rs
 │   │   ├── models/{provider,config}.rs
 │   │   ├── herdr/mod.rs
-│   │   ├── observer/mod.rs
 │   │   └── dictate/mod.rs
-│   ├── services/               # Local state — what it remembers
+│   ├── services/               # Local state
 │   │   ├── session/mod.rs
-│   │   ├── memory/{store,recall}.rs
 │   │   ├── skills/{loader,catalog}.rs
 │   │   ├── agents/{catalog,runtime}.rs
 │   │   └── question/{wizard}.rs + mod.rs

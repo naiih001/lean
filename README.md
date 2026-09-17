@@ -47,10 +47,9 @@ Works with any OpenAI-compatible API.
 
 - **Single binary** — no runtime dependencies, fast startup
 - **TUI** — chat history, tool trace, and streaming output with multiline input, history navigation, and slash commands
-- **Agent loop** — SSE streaming, tool-call routing, and up to 100 steps per turn with memory and skills integration
+- **Agent loop** — SSE streaming, tool-call routing, and up to 100 steps per turn with skills integration
 - **Guards** — bash allowlist with glob matching and working-directory confinement, both with approval UI — `Shift+Tab` cycles `NORM→PLAN→AUTO` (`/plan` = PLAN, `/auto-accept` = AUTO); `AUTO` is session-only silent full bypass for bash/dir/MCP
 - **Sessions** — per-directory persisted sessions with resume support
-- **Memory** — persistent memory with search, recall, and automatic deduplication
 - **Skills** — extensible `SKILL.md` system for custom capabilities
 - **MCP** — Model Context Protocol client for external tool servers
 
@@ -137,7 +136,7 @@ lean --no-session            # run without persistence
 | **Overlays** | Approval prompts, session picker, and allowlist editor |
 | **Footer** | Top: mode badge (`NORM`/`PLAN`/`AUTO`), model + api (`chat`/`responses`/`anthropic`), cwd, spinner — Bottom: context-window bar (`X% / 1.0M`) + token usage |
 
-**Slash commands:** `/help` `/new` `/clear` `/exit` `/model` `/sessions` `/resume` `/allowlist` `/mcp` `/memory` `/auto-accept` `/plan` `/init` — `Shift+Tab` cycles `NORM→PLAN→AUTO` (`PLAN` = read-only planning, `AUTO` = session-only silent bypass). `/init` analyzes the project and creates `AGENT.md` (+ `CLAUDE.md` mirror) and `MEMORY.md` (user persona, 3-5 short sections); files are auto-loaded on startup (project + global `~/.lean/`).
+**Slash commands:** `/help` `/new` `/clear` `/exit` `/model` `/sessions` `/resume` `/allowlist` `/mcp` `/auto-accept` `/plan` `/init` — `Shift+Tab` cycles `NORM→PLAN→AUTO` (`PLAN` = read-only planning, `AUTO` = session-only silent bypass). `/init` analyzes the project and creates `AGENT.md` (+ `CLAUDE.md` mirror); files are auto-loaded on startup (project + global `~/.lean/`).
 
 Sessions are persisted to `~/.lean/sessions/*.json`.
 
@@ -176,12 +175,10 @@ lean --dir-guard-disabled      # disable directory confinement guard
 |------|---------|
 | `~/.lean/allowlist.json` | Bash guard allowlist (glob patterns) |
 | `~/.lean/dir_allowlist.json` | Directory guard allowlist |
-| `~/.lean/memory.json` | Persistent memories |
 | `~/.lean/sessions/` | Persisted session history (pruned to 50 messages) |
 | `~/.lean/models.json` | Model aliases + provider config (see `api` field below) |
 | `./AGENT.md` / `./CLAUDE.md` | Project context (auto-loaded on startup, `CLAUDE.md` is a mirror for Claude Code compat) |
-| `./MEMORY.md` | User persona — 3-5 short sections about who you are (auto-loaded) |
-| `~/.lean/AGENT.md`, `~/.lean/CLAUDE.md`, `~/.lean/MEMORY.md` | Global context (also `~/.claude/CLAUDE.md` for compat) |
+| `~/.lean/AGENT.md`, `~/.lean/CLAUDE.md` | Global context (also `~/.claude/CLAUDE.md` for compat) |
 | `./.env` | Project-local environment variables |
 
 ### Model Config (`~/.lean/models.json`)
@@ -235,7 +232,6 @@ lean --dir-guard-disabled      # disable directory confinement guard
 | `web_search` | Web search via Exa with DuckDuckGo fallback |
 | `ask_user` | Ask clarifying questions with options via an interactive modal (single- or multi-select, always with an "Other…" free-text row) |
 | `read_skill` | Load a `SKILL.md` by name |
-| `remember` / `search_memory` / `recall_memory` / `list_memories` / `forget_memory` / `consolidate_memory` / `memory_stats` | Persistent memory management |
 
 > **Images:** Paste with `Ctrl+V`/`Cmd+V` (Wayland/X11/macOS/Windows — `wl-paste`/`xclip`/`pngpaste`/`powershell`), capped `4 MB` / 5 images, shown as `[[IMAGE #N]]` and sanitized from sessions. Use `vision: false` per-model to disable.
 
@@ -314,8 +310,8 @@ src/
   core/          # Agent orchestration — what it thinks
   guards/        # Safety — what blocks
   tools/         # Tool impls — what it does
-  integrations/  # External systems — who it talks to (llm/mcp/models/herdr/observer/dictate)
-  services/      # Local state — what it remembers (session/memory/skills/agents/question)
+  integrations/  # External systems — who it talks to (llm/mcp/models/herdr/dictate)
+  services/      # Local state (session/skills/agents/question)
   tui/           # Terminal UI — what the user sees
   support/       # Telemetry
 ```

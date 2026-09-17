@@ -1,6 +1,6 @@
 ---
 name: lean-config
-description: Manage lean's own configuration — env (.env), LLM provider (API keys, base URL, model), guard allowlists, and persistent storage (~/.lean/). Use when user asks to view, change, or validate lean configs, switch models, set keys, toggle guards, or inspect/clean sessions and memory.
+description: Manage lean's own configuration — env (.env), LLM provider (API keys, base URL, model), guard allowlists, and persistent storage (~/.lean/). Use when user asks to view, change, or validate lean configs, switch models, set keys, toggle guards, or inspect/clean sessions.
 ---
 
 # Lean Config — Self-Configuration Skill
@@ -9,7 +9,7 @@ Lean is the lightweight terminal AI assistant in this repo (`/home/naet/Document
 
 ## When to Use
 
-- User says: "change model", "set API key", "use OpenAI", "point to localhost:8080", "disable guard", "allow this command", "show my config", "where is my memory/sessions", "clean old sessions", "config is broken"
+- User says: "change model", "set API key", "use OpenAI", "point to localhost:8080", "disable guard", "allow this command", "show my config", "where are my sessions", "clean old sessions", "config is broken"
 - On task start if you need to know which model/provider you’re running with
 - Before writing outside CWD or running a risky bash command — check guard allowlists first
 
@@ -19,12 +19,11 @@ Read these with `read_file`. Never assume — always read before editing.
 
 | Config | Path | Format | What it controls |
 |---|---|---|---|
-| **Env file** | `./.env` (project root) + any `dotenvy::dotenv()` loads | `KEY=VALUE` lines | `OPENCODE_API_KEY`, `OPENAI_API_KEY`, `OPENCODE_BASE_URL`, `EXA_API_KEY`, `LEAN_BASH_GUARD_DISABLED`, `LEAN_DIR_GUARD_DISABLED`, `LEAN_OBSERVER_DISABLED` |
+| **Env file** | `./.env` (project root) + any `dotenvy::dotenv()` loads | `KEY=VALUE` lines | `OPENCODE_API_KEY`, `OPENAI_API_KEY`, `OPENCODE_BASE_URL`, `EXA_API_KEY`, `LEAN_BASH_GUARD_DISABLED`, `LEAN_DIR_GUARD_DISABLED` |
 | **CLI args** | `src/main.rs` `Args` | `clap` | `--model` (default `mimo-v2.5-free`), `--continue`, `--resume <id>`, `--no-session`, `--bash-guard-disabled`, `--dir-guard-disabled` |
 | **LLM client** | `src/llm.rs` `Client::from_env()` | env var precedence | `OPENCODE_API_KEY` > `OPENAI_API_KEY` > `sk-test`; `OPENCODE_BASE_URL` > `http://127.0.0.1:8080/zen/v1` |
 | **Bash guard allowlist** | `~/.lean/allowlist.json` | `JSON array<string>` | Exact commands or `wildmatch` globs (`git status*`, `cargo check*`). Loaded in `src/bash_guard.rs` |
 | **Dir guard allowlist** | `~/.lean/dir_allowlist.json` | `JSON array<string>` | Paths/globs allowed outside CWD (`~/docs/*`, `/tmp/*`). Loaded in `src/dir_guard.rs` |
-| **Memory** | `~/.lean/memory.json` | `JSON array<MemoryEntry>` | Persistent memories (`src/memory.rs`, max 500, dedup) |
 | **Sessions** | `~/.lean/sessions/*.json` | `JSON Session` | Per-model/CWD chat history + `llm_history` (pruned to 50, `src/session.rs`) |
 | **Project root** | `std::env::current_dir()` at `tui::run` + `dir_guard::init()` | — | CWD shown in footer; hard wall for `analyze_path`/`analyze_bash` |
 | **Prompt budget** | `src/agent.rs` `SYSTEM_PROMPT` ≤2500, `build_system_prompt()` ≤4000 | `struct` budgets + truncation | Keeps prompt lean; skill catalog truncated to 8 × 120 chars, full body via `read_skill`. Assembly is priority-ordered (base never cut → skills → confinement → MCP); `PlanTracker` owns conversational/completion routing and injected `[Focus]` context is pruned each step. Guards live in `agent::prompt_tests` / `agent::behavior_tests` |
@@ -39,7 +38,7 @@ Read these with `read_file`. Never assume — always read before editing.
 1. `read_file` on `./.env` (if exists), `~/.lean/allowlist.json`, `~/.lean/dir_allowlist.json`
 2. `bash` with `env | grep -E 'OPENCODE|OPENAI|EXA_|LEAN_' | sort` to see live env (redact values: show `sk-...XXXX` not full key)
 3. Check `src/main.rs` defaults, `src/llm.rs` `DEFAULT_MODEL`, `Cargo.toml` version
-4. Summarize: `model=...`, `base_url=...`, `api_key= set|missing (source)`, `bash_guard= on|off`, `dir_guard= on|off`, `allowlist counts`, `sessions count`, `memory count`
+4. Summarize: `model=...`, `base_url=...`, `api_key= set|missing (source)`, `bash_guard= on|off`, `dir_guard= on|off`, `allowlist counts`, `sessions count`
 
 Never print a full API key. Show `OPENCODE_API_KEY=sk-...abcd (from .env)` or `OPENAI_API_KEY= unset`.
 
@@ -81,11 +80,10 @@ EXA_API_KEY=...
   - In-TUI: `/allowlist`, `/allowlist add <pattern>`, `/allowlist clear`, `Tab` in picker — tell user.
 - After editing allowlist, `bash` `cat ~/.lean/allowlist.json` and `cat ~/.lean/dir_allowlist.json` to confirm, then test with a harmless `bash` that previously was blocked.
 
-### 5. Manage sessions & memory
+### 5. Manage sessions
 
 - List: `bash` `ls -lh ~/.lean/sessions/ | tail -n 20` and `read_file` a sample `~/.lean/sessions/<id>.json` (truncate preview).
 - Count/clean: `src/session.rs` `prune(50)` auto-prunes. To manually clean: `bash` `ls ~/.lean/sessions/*.json | wc -l` then `bash` `rm ~/.lean/sessions/<old>.json` only if user asked and confirm age via `stat`.
-- Memory: `read_file` `~/.lean/memory.json` (large — preview first 50 lines via `bash` `head -n 50 ~/.lean/memory.json`). Use tools `search_memory`, `recall_memory`, `forget_memory`, `consolidate_memory` via agent tools, not raw edit unless corrupted. If corrupted JSON, backup then `write_file` fixed JSON.
 
 ### 6. Validate after any change
 
@@ -102,17 +100,17 @@ If `cargo check` fails, revert the edit (`edit_file` back or restore from `read_
 
 ## Safety Rules
 
-- **Never echo full keys** in tool output, commit messages, or `memory.json`. Redact to `sk-...last4`.
+- **Never echo full keys** in tool output or commit messages. Redact to `sk-...last4`.
 - **Backup before overwrite**: `bash` `cp .env .env.bak 2>/dev/null; cp ~/.lean/allowlist.json ~/.lean/allowlist.json.bak 2>/dev/null` when you’re about to mutate.
 - **Keep `.env` gitignored**: if `read_file` `.gitignore` lacks `.env`, append it.
-- **Use truncation-aware tools**: `read_file` truncates at 2000 lines/50KB head; for large `memory.json` use `bash` `wc -l`/`head`/`jq` to avoid truncation loss.
+- **Use truncation-aware tools**: `read_file` truncates at 2000 lines/50KB head; for large session files use `bash` `wc -l`/`head`/`jq` to avoid truncation loss.
 - **Prefer allowlist over disabling guards**. Only set `LEAN_*_DISABLED=1` if user explicitly says "disable guard".
 - **Don’t create `~/.lean/config.json` unless user asks** — lean currently has no central config file; env + allowlists are the config. If you do create one, document it and make `src/main.rs`/`llm.rs` read it, then `cargo check`.
 
 ## Examples
 
 **User: "show my lean config"**
-→ Read `.env`, `~/.lean/allowlist.json`, `~/.lean/dir_allowlist.json`, `env | grep ...` (redacted), count sessions/memory, report model/base_url/guard states with file paths and redacted values.
+→ Read `.env`, `~/.lean/allowlist.json`, `~/.lean/dir_allowlist.json`, `env | grep ...` (redacted), count sessions, report model/base_url/guard states with file paths and redacted values.
 
 **User: "switch to gpt-4o-mini and use OpenAI directly"**
 → `read_file` `.env` → `edit_file`/`write_file` to set `OPENAI_API_KEY=sk-...` and `OPENCODE_BASE_URL=https://api.openai.com/v1` (or unset to use default proxy) → `bash` `cargo check` → instruct `cargo run -- --model gpt-4o-mini`.

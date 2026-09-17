@@ -17,7 +17,7 @@ Non-scope: TUI redesign, provider/model selection changes, MCP expansion, and im
 - `src/core/agent.rs` runs the loop, routes tools, and decides whether to continue.
 - `src/core/history.rs` controls context slicing and tool-output continuity.
 - `src/integrations/llm/schema.rs` defines the tool interface exposed to models.
-- `src/tools/*` turns model tool calls into filesystem, shell, search, web, memory, and subagent actions.
+- `src/tools/*` turns model tool calls into filesystem, shell, search, web, and subagent actions.
 
 The current behaviour includes brittle constraints for issue work:
 
