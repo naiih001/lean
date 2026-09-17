@@ -5,7 +5,7 @@
 ## Project Overview
 - **Name:** lean
 - **Purpose:** Light, fast autonomous coding assistant — single native binary, TUI-first. Streams responses over SSE, executes tools for files, shell, web search, memories, and skills. Works with any OpenAI-compatible API.
-- **Status:** active (v0.6.0)
+- **Status:** active (v0.6.1)
 - **Repository:** https://github.com/naiih001/lean
 
 ## Tech Stack

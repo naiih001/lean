@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-17
+
+### Fixed
+
+- **Windows release build** — gate herdr Unix-socket code (`tokio::net::UnixStream`, `std::os::unix`) behind `#[cfg(unix)]` with `#[cfg(not(unix))]` no-op fallbacks in `send_once`, `spawn_send`, `drain_queue` (`src/integrations/herdr/mod.rs`). Fixes `E0433` on `windows-latest`.
+
 ## [0.6.0] - 2026-09-16
 
 ### Added
@@ -170,7 +176,8 @@ Initial release. Light, fast autonomous coding assistant — single native binar
 - Tools: `read_file` (2000 lines/50 KB cap), `write_file`, `edit_file`, `bash` (50 KB tail), `web_search` (Exa → DuckDuckGo), memory tools
 - Config: CLI flags > env vars > `.env` > defaults; `OPENCODE_*`/`OPENAI_*`/`EXA_*` via `dotenvy`
 
-[Unreleased]: https://github.com/naiih001/lean/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/naiih001/lean/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/naiih001/lean/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/naiih001/lean/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/naiih001/lean/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/naiih001/lean/compare/v0.3.0...v0.4.0
