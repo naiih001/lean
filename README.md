@@ -73,6 +73,8 @@ LEAN_VERSION=v0.6.1 curl -fsSL https://raw.githubusercontent.com/naiih001/lean/m
 irm https://raw.githubusercontent.com/naiih001/lean/main/install.ps1 | iex
 # pin to a version:
 $env:LEAN_VERSION="v0.6.1"; irm https://raw.githubusercontent.com/naiih001/lean/main/install.ps1 | iex
+# if blocked by execution policy, run first (current process only):
+# Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 ```
 
 ### Prebuilt binaries
