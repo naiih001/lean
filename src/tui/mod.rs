@@ -3596,9 +3596,8 @@ async fn app_loop(
     opts: RunOpts,
 ) -> anyhow::Result<()> {
     let mut model = opts.model.clone();
-    // Cached OpenCode-style input chrome labels (resolved once, refreshed on /model).
-    let (mut model_pretty, mut model_provider, mut model_variant) =
-        crate::tui::layout::resolve_model_meta(&model);
+    // Cached input chrome label (resolved once, refreshed on /model).
+    let (mut model_pretty, _, _) = crate::tui::layout::resolve_model_meta(&model);
     let mut messages: Vec<Msg> = Vec::new();
     // ── Session restore ──
     // Tracks whether --resume actually hit, so herdr gets "resume" only for a
@@ -4248,8 +4247,6 @@ async fn app_loop(
                     mode_label,
                     mode_color,
                     pretty_model: &model_pretty,
-                    provider_label: &model_provider,
-                    variant_label: &model_variant,
                 };
                 draw_input_box(f, chunks[5], &mut textarea, &input_meta);
 
@@ -6277,7 +6274,7 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                         match crate::integrations::models::resolve(Some(m)) {
                                             Ok(r) => {
                                                 model = r.alias.clone();
-                                                (model_pretty, model_provider, model_variant) =
+                                                (model_pretty, _, _) =
                                                     crate::tui::layout::resolve_model_meta(&model);
                                                 if let Some(s) = &mut session {
                                                     s.model = model.clone();

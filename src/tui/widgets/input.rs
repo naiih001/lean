@@ -43,8 +43,6 @@ pub struct InputMeta<'a> {
     pub mode_label: &'a str,
     pub mode_color: Color,
     pub pretty_model: &'a str,
-    pub provider_label: &'a str,
-    pub variant_label: &'a str,
 }
 
 fn truncate_to(s: &str, max: usize) -> String {
@@ -60,14 +58,13 @@ fn truncate_to(s: &str, max: usize) -> String {
 
 // ── OpenCode-style input ─────────────────────────────────────────
 // Layout inside `area` (height = text_rows + 2):
-//   row 0:            title  "■ {Mode} · {Model}"
+//   row 0:            title  "■ {Mode}"
 //   rows 1..n:        textarea with a 1-col ember accent bar on the left
-//   last row:         info   "{Model}  {Provider} · {Variant}"
+//   last row:         info   "{Model}"
 pub fn draw_input(f: &mut Frame, area: Rect, textarea: &mut TextArea<'_>, meta: &InputMeta<'_>) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let width = area.width as usize;
     // Apply styling every frame (cheap). Solid block cursor like the reference.
     textarea.set_style(Style::default().fg(ASHEN.bone).bg(THEME.input_bg));
     textarea.set_cursor_style(Style::default().fg(THEME.input_bg).bg(ASHEN.bone));
@@ -119,11 +116,7 @@ pub fn draw_input(f: &mut Frame, area: Rect, textarea: &mut TextArea<'_>, meta: 
         width: inner_w,
         height: 1,
     };
-    let mode_w = meta.mode_label.chars().count();
-    // "■ {Mode} · {Model}" — keep model, truncate it first on narrow widths.
-    let fixed = 2 + mode_w + 3; // "■ " + mode + " · "
-    let model_max = width.saturating_sub(1).saturating_sub(fixed);
-    let model_txt = truncate_to(meta.pretty_model, model_max.max(1));
+    // "■ {Mode}" — model lives in the info row only.
     let title = Line::from(vec![
         Span::styled(
             "■ ",
@@ -138,14 +131,6 @@ pub fn draw_input(f: &mut Frame, area: Rect, textarea: &mut TextArea<'_>, meta: 
                 .fg(meta.mode_color)
                 .bg(THEME.input_bg)
                 .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            " · ",
-            Style::default().fg(ASHEN.charcoal).bg(THEME.input_bg),
-        ),
-        Span::styled(
-            model_txt,
-            Style::default().fg(ASHEN.bone).bg(THEME.input_bg),
         ),
     ]);
     f.render_widget(
@@ -176,58 +161,12 @@ pub fn draw_input(f: &mut Frame, area: Rect, textarea: &mut TextArea<'_>, meta: 
     );
 }
 
-/// Build the bottom info row: "{Model}  {Provider} · {Variant}".
+/// Build the bottom info row: "{Model}" only.
 /// Mode lives in the title row only — no duplicate indicator down here.
-/// Drops provider/variant first when space is tight.
 fn info_line_spans(meta: &InputMeta<'_>, width: usize) -> Line<'static> {
-    let dot = " · ";
-    // Full: "Muse Spark 1.3 Free  OpenCode Zen · xhigh"
-    let full_len = meta.pretty_model.chars().count()
-        + 2
-        + meta.provider_label.chars().count()
-        + dot.chars().count()
-        + meta.variant_label.chars().count();
     let bg = THEME.input_bg;
-    let mut spans = vec![Span::styled(
-        meta.pretty_model.to_string(),
-        Style::default().fg(ASHEN.bone).bg(bg),
-    )];
-    if full_len <= width {
-        spans.push(Span::styled("  ", Style::default().bg(bg)));
-        spans.push(Span::styled(
-            meta.provider_label.to_string(),
-            Style::default().fg(ASHEN.deep_ash).bg(bg),
-        ));
-        spans.push(Span::styled(
-            dot,
-            Style::default().fg(ASHEN.charcoal).bg(bg),
-        ));
-        spans.push(Span::styled(
-            meta.variant_label.to_string(),
-            Style::default()
-                .fg(ASHEN.ember)
-                .bg(bg)
-                .add_modifier(Modifier::BOLD),
-        ));
-        return Line::from(spans);
-    }
-    // Tight: try "Model  Provider" (drop variant).
-    let no_variant_len = full_len - dot.chars().count() - meta.variant_label.chars().count();
-    if no_variant_len <= width && !meta.provider_label.is_empty() {
-        spans.push(Span::styled("  ", Style::default().bg(bg)));
-        spans.push(Span::styled(
-            truncate_to(
-                meta.provider_label,
-                width.saturating_sub(meta.pretty_model.chars().count() + 2),
-            ),
-            Style::default().fg(ASHEN.deep_ash).bg(bg),
-        ));
-        return Line::from(spans);
-    }
-    // Narrow: truncated model only.
-    spans[0] = Span::styled(
+    Line::from(vec![Span::styled(
         truncate_to(meta.pretty_model, width.max(1)),
         Style::default().fg(ASHEN.bone).bg(bg),
-    );
-    Line::from(spans)
+    )])
 }
