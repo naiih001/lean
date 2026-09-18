@@ -4,13 +4,15 @@ use crate::tui::theme::{ASHEN, THEME};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use ratatui_textarea::{CursorMove, Input as TAInput, Key as TAKey, TextArea};
 use std::io::Stdout;
 use tokio::sync::broadcast;
+
+use crate::tui::widgets::input::{draw_input as draw_input_box, InputMeta};
 
 pub mod layout;
 pub mod markdown;
@@ -140,21 +142,6 @@ mod tests {
         assert_eq!(format_est(1000), "1.0K");
         assert_eq!(format_est(118800), "118.8K");
         assert_eq!(format_est(1_500_000), "1.5M");
-    }
-
-    #[test]
-    fn format_context_label_is_est_plus_pct() {
-        assert_eq!(format_context_label(118800, 1_000_000), "118.8K (12%)");
-        assert_eq!(format_context_label(5000, 1_000_000), "5.0K (0.5%)");
-        // pct clamps at 100
-        assert_eq!(format_context_label(2_000_000, 1_000_000), "2.0M (100%)");
-    }
-
-    #[test]
-    fn right_align_label_pins_to_right_with_margin() {
-        assert_eq!(right_align_label("118.8K (12%)", 20), "       118.8K (12%)");
-        // extreme widths truncate from the left instead of overflowing
-        assert_eq!(right_align_label("118.8K (12%)", 6), "(12%)");
     }
 }
 
@@ -923,30 +910,14 @@ fn draw_running_indicator(f: &mut Frame, area: Rect, busy: bool, tick: usize) {
     f.render_widget(para, area);
 }
 
-fn draw_header(f: &mut Frame, area: Rect, _model: &str, step_info: &str) {
-    let inner = area;
-    let width = inner.width as usize;
-
-    // Left: app name
-    let left = " lean ";
-    // Right: model + step
-    let right = if step_info.is_empty() {
-        format!("")
-    } else {
-        format!("{}", step_info)
-    };
-    let gap = width.saturating_sub(left.len() + right.len());
-    let filler = " ".repeat(gap);
-    let title = format!("{}{}{}", left, filler, right);
-
-    let header = Paragraph::new(Line::from(Span::styled(
-        title,
-        Style::default()
-            .fg(ASHEN.deep_ash)
-            .bg(THEME.header_bg)
-            .add_modifier(Modifier::BOLD),
-    )));
-    f.render_widget(header, inner);
+/// Current agent mode as (label, accent color) for the OpenCode-style chrome.
+fn mode_meta() -> (&'static str, Color) {
+    match crate::agent::current_mode() {
+        crate::agent::Mode::Norm => ("Norm", ASHEN.slate),
+        crate::agent::Mode::Plan => ("Plan", ASHEN.ember),
+        crate::agent::Mode::Ask => ("Ask", ASHEN.moss),
+        crate::agent::Mode::Auto => ("Auto", ASHEN.ember),
+    }
 }
 
 fn draw_queue(f: &mut Frame, area: Rect, queue: &[String]) {
@@ -1253,31 +1224,6 @@ fn hard_wrap_str(text: &str, max_cols: usize) -> String {
         .join("\n")
 }
 
-fn draw_input(f: &mut Frame, area: Rect, textarea: &mut TextArea<'_>) {
-    // Apply ash styling every frame (cheap)
-    textarea.set_style(Style::default().fg(ASHEN.bone).bg(THEME.input_bg));
-    textarea.set_cursor_style(
-        Style::default()
-            .fg(ASHEN.bone)
-            .bg(ASHEN.ember)
-            .add_modifier(Modifier::REVERSED),
-    );
-    textarea.set_cursor_line_style(Style::default().bg(THEME.input_bg));
-    textarea.set_placeholder_text(
-        "  ▸  type a message…  (/help • Enter send • Shift+Enter newline • Shift+Tab NORM/PLAN/ASK/AUTO)",
-    );
-    textarea.set_placeholder_style(Style::default().fg(ASHEN.charcoal).bg(THEME.input_bg));
-    // Top + bottom border only — frames the input for readability, no side borders
-    let block = Block::default()
-        .borders(Borders::TOP | Borders::BOTTOM)
-        .border_style(Style::default().fg(THEME.separator).bg(THEME.input_bg))
-        .style(Style::default().bg(THEME.input_bg));
-    textarea.set_block(block);
-
-    // Render textarea as widget (single-line height, multiline expands via scrolling)
-    f.render_widget(&*textarea, area);
-}
-
 fn context_window_for_model(model: &str) -> usize {
     let lower = model.to_lowercase();
     if lower.contains("128k") {
@@ -1312,31 +1258,6 @@ fn format_est(est: usize) -> String {
         format!("{:.1}K", est as f64 / 1000.0)
     } else {
         format!("{}", est)
-    }
-}
-
-fn format_context_label(est: usize, window: usize) -> String {
-    let pct = ((est as f64 / window as f64) * 100.0).min(100.0);
-    // Show pct as integer, but keep one decimal if <10%
-    let pct_str = if pct < 10.0 {
-        format!("{:.1}%", pct)
-    } else {
-        format!("{:.0}%", pct)
-    };
-    format!("{} ({})", format_est(est), pct_str)
-}
-
-/// Right-align a short footer label with a 1-col right margin. Truncates from
-/// the left on extreme widths so the row never bleeds past the edge.
-fn right_align_label(label: &str, width: usize) -> String {
-    let label_w = label.chars().count();
-    if label_w + 1 > width {
-        label
-            .chars()
-            .skip(label_w + 1 - width.max(1))
-            .collect::<String>()
-    } else {
-        format!("{}{}", " ".repeat(width - label_w - 1), label)
     }
 }
 
@@ -1693,253 +1614,185 @@ fn draw_footer(
     area: Rect,
     model: &str,
     messages: &[Msg],
-    cwd: &str,
     agent_busy: bool,
+    step_info: &str,
     spinner_tick: usize,
     dictate_state: crate::integrations::dictate::State,
     dictate_meter: &[f32; 6],
 ) {
-    // Always clear footer area first to avoid ghosting when popup was over it
+    // Single-row OpenCode-style session footer:
+    // left = interrupt hint (+ step while busy), right = in/out/context.
+    // Footer never shows MCP status — check via /mcp only (as requested).
     f.render_widget(Clear, area);
-    let width = area.width as usize;
-    // Split footer into 2 rows: top = main footer, bottom = context window
-    let top_area = if area.height >= 2 {
-        Rect {
-            x: area.x,
-            y: area.y,
-            width: area.width,
-            height: 1,
-        }
-    } else {
-        area
+    let row = Rect {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: 1.min(area.height),
     };
-    let bottom_area = if area.height >= 2 {
-        Rect {
-            x: area.x,
-            y: area.y + 1,
-            width: area.width,
-            height: 1,
-        }
-    } else {
-        Rect {
-            x: area.x,
-            y: area.y,
-            width: 0,
-            height: 0,
-        }
-    };
-    // Footer never shows MCP status — check via /mcp only (as requested)
-    // Narrow terminal (<10 cols) – just show truncated model to avoid overflow/wrap bleed
+    if row.width == 0 || row.height == 0 {
+        return;
+    }
+    let width = row.width as usize;
     if width < 15 {
-        let txt = if model.chars().count() > width.saturating_sub(2) {
-            format!(
-                " {}… ",
-                model
-                    .chars()
-                    .take(width.saturating_sub(3))
-                    .collect::<String>()
-            )
-        } else {
-            format!(" {} ", model)
-        };
-        let para = Paragraph::new(Line::from(Span::styled(
-            txt,
-            Style::default().fg(ASHEN.smoke).bg(THEME.page_bg),
-        )));
-        f.render_widget(para, top_area);
-        if area.height >= 2 {
-            let est = estimate_tokens(messages, model);
-            let window = context_window_for_model(model);
-            let ctx = format_context_label(est, window);
-            let ctx_txt = right_align_label(&ctx, width);
-            let cpara = Paragraph::new(Line::from(Span::styled(
-                ctx_txt,
+        let txt: String = " esc interrupt".chars().take(width).collect();
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                txt,
                 Style::default().fg(ASHEN.deep_ash).bg(THEME.page_bg),
-            )));
-            f.render_widget(cpara, bottom_area);
-        }
+            ))),
+            row,
+        );
         return;
     }
 
-    let spinner = dictate::SPINNER_FRAMES;
-    let (mode_badge, mode_style) = match crate::agent::current_mode() {
-        crate::agent::Mode::Norm => (
-            format!(" NORM "),
-            Style::default()
-                .fg(ASHEN.slate)
-                .bg(THEME.header_bg)
-                .add_modifier(Modifier::BOLD),
-        ),
-        crate::agent::Mode::Plan => (
-            format!(" PLAN "),
-            Style::default()
-                .fg(ASHEN.bone)
-                .bg(ASHEN.frost)
-                .add_modifier(Modifier::BOLD),
-        ),
-        crate::agent::Mode::Ask => (
-            format!(" ASK "),
-            Style::default()
-                .fg(ASHEN.bone)
-                .bg(ASHEN.moss)
-                .add_modifier(Modifier::BOLD),
-        ),
-        crate::agent::Mode::Auto => (
-            format!(" AUTO "),
-            Style::default()
-                .fg(ASHEN.bone)
-                .bg(ASHEN.ember)
-                .add_modifier(Modifier::BOLD),
-        ),
-    };
-    let spinner_char = if agent_busy {
-        format!("{} ", spinner[spinner_tick % spinner.len()])
+    // ── Left: interrupt hint ──
+    let braille = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let busy_step = if agent_busy && step_info.starts_with("step") {
+        format!(" · {}", step_info)
     } else {
         String::new()
     };
-    let dictate_right: Option<String> = match dictate_state {
-        crate::integrations::dictate::State::Recording => {
-            let meter_str = dictate::meter_string(dictate_meter);
-            Some(format!("● {} listening…", meter_str))
-        }
-        crate::integrations::dictate::State::Transcribing => {
-            let frame = spinner[spinner_tick % spinner.len()];
-            Some(format!("{} transcribing…", frame))
-        }
-        crate::integrations::dictate::State::Idle => None,
-    };
-    let dictate_len = dictate_right
-        .as_ref()
-        .map(|s| s.chars().count() + 2)
-        .unwrap_or(0);
-
-    // Shorten cwd to show last 2 components
-    let short_cwd = {
-        let parts: Vec<&str> = cwd
-            .rsplit('/')
-            .take(2)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>();
-        if parts.len() >= 2 {
-            format!("{}/{}", parts[0], parts[1])
-        } else {
-            parts.join("/")
-        }
-    };
-    let center = format!(" {} ", short_cwd);
-
-    let used = spinner_char.chars().count()
-        + mode_badge.chars().count()
-        + 1
-        + model.chars().count()
-        + 2
-        + center.chars().count()
-        + dictate_len;
-    let gap = if used < width { width - used } else { 0 };
-    let gap_left = gap / 2;
-    let gap_right = gap - gap_left;
-
-    let mut spans = vec![Span::styled(
-        format!(" {} ", model),
-        Style::default().fg(ASHEN.smoke).bg(THEME.page_bg),
-    )];
-    spans.push(Span::styled(mode_badge.clone(), mode_style));
-    if !spinner_char.is_empty() {
-        spans.insert(
-            0,
-            Span::styled(
-                spinner_char,
-                Style::default()
-                    .fg(ASHEN.bone)
-                    .bg(THEME.page_bg)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        );
-    }
-    spans.push(Span::styled(
-        " ".repeat(gap_left),
-        Style::default().bg(THEME.page_bg),
-    ));
-    spans.push(Span::styled(
-        center,
-        Style::default().fg(ASHEN.smoke).bg(THEME.page_bg),
-    ));
-    spans.push(Span::styled(
-        " ".repeat(gap_right),
-        Style::default().bg(THEME.page_bg),
-    ));
-    if let Some(prefix) = dictate_right.clone() {
-        let is_recording = dictate_state == crate::integrations::dictate::State::Recording;
-        if is_recording {
-            if let Some(pos) = prefix.find('●') {
-                let before = &prefix[..pos];
-                let rest_start = pos + '●'.len_utf8();
-                let after = &prefix[rest_start..];
-                if !before.is_empty() {
-                    spans.push(Span::styled(
-                        format!(" {}", before),
-                        Style::default().fg(ASHEN.smoke).bg(THEME.page_bg),
-                    ));
-                } else {
-                    spans.push(Span::styled(
-                        " ".to_string(),
-                        Style::default().bg(THEME.page_bg),
-                    ));
-                }
-                spans.push(Span::styled(
-                    "●".to_string(),
-                    Style::default()
-                        .fg(ASHEN.ember)
-                        .bg(THEME.page_bg)
-                        .add_modifier(Modifier::BOLD),
-                ));
-                if !after.is_empty() {
-                    spans.push(Span::styled(
-                        format!("{} ", after),
-                        Style::default().fg(ASHEN.smoke).bg(THEME.page_bg),
-                    ));
-                } else {
-                    spans.push(Span::styled(
-                        " ".to_string(),
-                        Style::default().bg(THEME.page_bg),
-                    ));
-                }
-            } else {
-                spans.push(Span::styled(
-                    format!(" {} ", prefix),
-                    Style::default()
-                        .fg(ASHEN.ember)
-                        .bg(THEME.page_bg)
-                        .add_modifier(Modifier::BOLD),
-                ));
-            }
-        } else {
-            spans.push(Span::styled(
-                format!(" {} ", prefix),
-                Style::default()
-                    .fg(ASHEN.frost)
-                    .bg(THEME.page_bg)
-                    .add_modifier(Modifier::BOLD),
+    let mut left_spans: Vec<Span<'static>> = Vec::new();
+    if agent_busy {
+        left_spans.push(Span::styled(
+            format!("{} ", braille[spinner_tick % braille.len()]),
+            Style::default()
+                .fg(ASHEN.ember)
+                .bg(THEME.page_bg)
+                .add_modifier(Modifier::BOLD),
+        ));
+        left_spans.push(Span::styled(
+            "esc interrupt".to_string(),
+            Style::default().fg(ASHEN.smoke).bg(THEME.page_bg),
+        ));
+        if !busy_step.is_empty() {
+            left_spans.push(Span::styled(
+                busy_step.clone(),
+                Style::default().fg(ASHEN.deep_ash).bg(THEME.page_bg),
             ));
         }
-    }
-
-    let footer = Paragraph::new(Line::from(spans));
-    f.render_widget(footer, top_area);
-    // Second row: context estimate — short label, right-aligned, one color.
-    if area.height >= 2 {
-        let est = estimate_tokens(messages, model);
-        let window = context_window_for_model(model);
-        let ctx_label = format_context_label(est, window);
-        let display = right_align_label(&ctx_label, width);
-        let cpara = Paragraph::new(Line::from(Span::styled(
-            display,
+    } else {
+        left_spans.push(Span::styled(
+            "esc interrupt".to_string(),
             Style::default().fg(ASHEN.deep_ash).bg(THEME.page_bg),
-        )));
-        f.render_widget(cpara, bottom_area);
+        ));
     }
+    let idle_hints = " · /help · Enter send";
+    let left_len: usize = left_spans.iter().map(|s| s.content.chars().count()).sum();
+    let mut show_hints = !agent_busy && left_len + idle_hints.chars().count() + 12 < width;
+
+    // ── Right: dictate status or in/out/context ──
+    let dspinner = dictate::SPINNER_FRAMES;
+    enum RightKind {
+        DictateRecording,
+        DictateTranscribing,
+        Usage,
+    }
+    let (right_text, right_kind): (String, RightKind) = match dictate_state {
+        crate::integrations::dictate::State::Recording => {
+            let meter_str = dictate::meter_string(dictate_meter);
+            (
+                format!("● {} listening…", meter_str),
+                RightKind::DictateRecording,
+            )
+        }
+        crate::integrations::dictate::State::Transcribing => {
+            let frame = dspinner[spinner_tick % dspinner.len()];
+            (
+                format!("{} transcribing…", frame),
+                RightKind::DictateTranscribing,
+            )
+        }
+        crate::integrations::dictate::State::Idle => {
+            // in ≈ system prompt + user, out ≈ assistant + tool + thinking.
+            let mut in_chars: usize = 4000;
+            let mut out_chars: usize = 0;
+            for m in messages {
+                let n = m.content.chars().count() + 8;
+                match m.role.as_str() {
+                    "user" | "system" => in_chars += n,
+                    _ => out_chars += n,
+                }
+            }
+            in_chars += model.len();
+            let in_est = in_chars.div_ceil(4);
+            let out_est = out_chars.div_ceil(4);
+            let window = context_window_for_model(model);
+            let total = in_est + out_est;
+            let pct = ((total as f64 / window as f64) * 100.0).min(100.0);
+            let pct_str = if pct < 10.0 {
+                format!("{:.1}%", pct)
+            } else {
+                format!("{:.0}%", pct)
+            };
+            (
+                format!(
+                    "in {} · out {} · {}",
+                    format_est(in_est),
+                    format_est(out_est),
+                    pct_str
+                ),
+                RightKind::Usage,
+            )
+        }
+    };
+    // Usage color ramps with context pressure (matches old footer thresholds).
+    let right_style = match right_kind {
+        RightKind::DictateRecording => Style::default()
+            .fg(ASHEN.ember)
+            .bg(THEME.page_bg)
+            .add_modifier(Modifier::BOLD),
+        RightKind::DictateTranscribing => Style::default()
+            .fg(ASHEN.frost)
+            .bg(THEME.page_bg)
+            .add_modifier(Modifier::BOLD),
+        RightKind::Usage => {
+            let window = context_window_for_model(model);
+            let est = estimate_tokens(messages, model);
+            let pct = ((est as f64 / window as f64) * 100.0).min(100.0);
+            if pct > 85.0 {
+                Style::default().fg(ASHEN.ember).bg(THEME.page_bg)
+            } else if pct > 60.0 {
+                Style::default().fg(ASHEN.frost).bg(THEME.page_bg)
+            } else {
+                Style::default().fg(ASHEN.deep_ash).bg(THEME.page_bg)
+            }
+        }
+    };
+
+    // Drop idle hints first when space is tight; then trim the usage tail.
+    let mut right = right_text;
+    let mut hints = if show_hints {
+        idle_hints.to_string()
+    } else {
+        String::new()
+    };
+    if left_len + hints.chars().count() + right.chars().count() + 1 > width {
+        hints.clear();
+        show_hints = false;
+    }
+    if left_len + right.chars().count() + 1 > width {
+        let overflow = left_len + right.chars().count() + 1 - width;
+        let chars: Vec<char> = right.chars().collect();
+        right = chars[overflow.min(chars.len())..].iter().collect();
+    }
+    let left_total = left_len + hints.chars().count();
+    let gap = width.saturating_sub(left_total + right.chars().count());
+
+    let mut spans = left_spans;
+    if show_hints {
+        spans.push(Span::styled(
+            hints,
+            Style::default().fg(ASHEN.charcoal).bg(THEME.page_bg),
+        ));
+    }
+    spans.push(Span::styled(
+        " ".repeat(gap),
+        Style::default().bg(THEME.page_bg),
+    ));
+    spans.push(Span::styled(right, right_style));
+    f.render_widget(Paragraph::new(Line::from(spans)), row);
 }
 
 fn draw_scrollbar(f: &mut Frame, area: Rect, total_lines: usize, viewport_h: usize, scroll: u16) {
@@ -3743,6 +3596,9 @@ async fn app_loop(
     opts: RunOpts,
 ) -> anyhow::Result<()> {
     let mut model = opts.model.clone();
+    // Cached OpenCode-style input chrome labels (resolved once, refreshed on /model).
+    let (mut model_pretty, mut model_provider, mut model_variant) =
+        crate::tui::layout::resolve_model_meta(&model);
     let mut messages: Vec<Msg> = Vec::new();
     // ── Session restore ──
     // Tracks whether --resume actually hit, so herdr gets "resume" only for a
@@ -3895,16 +3751,10 @@ async fn app_loop(
     let mut textarea = {
         let mut ta = TextArea::default();
         ta.set_style(Style::default().fg(ASHEN.bone).bg(THEME.input_bg));
-        ta.set_cursor_style(
-            Style::default()
-                .fg(ASHEN.bone)
-                .bg(ASHEN.ember)
-                .add_modifier(Modifier::REVERSED),
-        );
+        // Solid block cursor like the OpenCode reference (no REVERSED ember).
+        ta.set_cursor_style(Style::default().fg(THEME.input_bg).bg(ASHEN.bone));
         ta.set_cursor_line_style(Style::default().bg(THEME.input_bg));
-        ta.set_placeholder_text(
-            "  ▸  type a message…  (/help • Enter send • Shift+Enter newline • Shift+Tab NORM/PLAN/ASK/AUTO)",
-        );
+        ta.set_placeholder_text("▸ type a message…");
         ta.set_placeholder_style(Style::default().fg(ASHEN.charcoal).bg(THEME.input_bg));
         ta.set_block(
             Block::default()
@@ -3980,7 +3830,7 @@ async fn app_loop(
     let mut cached_chunks: Vec<Rect> = Vec::new();
     let mut cached_content_area: Rect = Rect {
         x: 0,
-        y: 3,
+        y: 1,
         width: 80,
         height: 10,
     };
@@ -4233,13 +4083,13 @@ async fn app_loop(
         }
         let term_size = terminal.size()?;
         let queue_rows = msg_queue.len().min(2) as u16;
-        // Dynamic input height 1..6 text rows + 2 for top/bottom borders
+        // Dynamic input height 1..6 text rows + 2 for title/info rows (OpenCode chrome)
         let input_height = (textarea.lines().len() as u16).clamp(1, 6) + 2;
-        let overhead = 7 + queue_rows + input_height; // indicator(1) + header + sep + sep + queue + summary(1) + input(text + top/bottom borders) + footer(2 rows)
-                                                      // Content area: starts after indicator + header + sep
+        let overhead = 4 + queue_rows + input_height; // indicator(1) + sep(1) + summary(1) + footer(1) + queue + input(title + text + info)
+                                                      // Content area: starts right after the indicator (no header)
         let content_area = Rect {
             x: 0,
-            y: 3,
+            y: 1,
             width: term_size.width,
             height: term_size.height.saturating_sub(overhead).max(1),
         };
@@ -4250,14 +4100,12 @@ async fn app_loop(
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(1), // running indicator (top, touches borders, always reserved)
-                    Constraint::Length(1), // header
-                    Constraint::Length(1), // separator
                     Constraint::Min(1),    // content
                     Constraint::Length(1), // separator
                     Constraint::Length(queue_rows), // queue (0-2)
                     Constraint::Length(1), // subagent summary bar (always reserved, empty when none)
-                    Constraint::Length(input_height), // input (auto-grow 1..6 text rows + top/bottom borders)
-                    Constraint::Length(2), // footer (2 rows: main + context)
+                    Constraint::Length(input_height), // input (1 title + 1..6 text + 1 info)
+                    Constraint::Length(1), // footer (1 row: interrupt + in/out/context)
                 ])
                 .split(Rect {
                     x: 0,
@@ -4267,7 +4115,7 @@ async fn app_loop(
                 });
             chunks
         };
-        let content_height = chunks[3].height as usize;
+        let content_height = chunks[1].height as usize;
 
         // Only rebuild wrapped content when dirty and fingerprint/size changed; reuse cached otherwise
         let fingerprint: usize = messages
@@ -4281,7 +4129,7 @@ async fn app_loop(
                 || cached_chunks.len() != chunks.len());
         let (wrapped_content, total_lines) = if needs_rebuild {
             let content_lines = build_content_lines(&messages);
-            let wrapped = wrap_lines(content_lines, chunks[3].width as usize);
+            let wrapped = wrap_lines(content_lines, chunks[1].width as usize);
             let total = wrapped.len();
             cached_wrapped_content = wrapped.clone();
             cached_total_lines = total;
@@ -4371,20 +4219,14 @@ async fn app_loop(
                 // Running indicator — top row, touches borders, always reserved (blank when idle, "━" pulse when busy)
                 draw_running_indicator(f, chunks[0], agent_busy, spinner_tick);
 
-                // Header
-                draw_header(f, chunks[1], &model, &step_info);
-
-                // Separator
-                draw_separator(f, chunks[2]);
-
                 // Content — use pre-wrapped lines
                 let para = Paragraph::new(wrapped_content.clone()).scroll((scroll, 0));
-                f.render_widget(para, chunks[3]);
+                f.render_widget(para, chunks[1]);
                 // Scrollbar overlay — thin, read-only, only while not at bottom (A + #2), thumb encodes % (no footer text)
                 if cached_total_lines > cached_content_height && !auto_scroll {
                     draw_scrollbar(
                         f,
-                        chunks[3],
+                        chunks[1],
                         cached_total_lines,
                         cached_content_height,
                         scroll,
@@ -4392,20 +4234,28 @@ async fn app_loop(
                 }
 
                 // Separator
-                draw_separator(f, chunks[4]);
+                draw_separator(f, chunks[2]);
 
                 // Queue
-                draw_queue(f, chunks[5], &msg_queue);
+                draw_queue(f, chunks[3], &msg_queue);
 
                 // Subagent summary bar (above input, visible when subagents exist)
-                draw_subagent_summary(f, chunks[6], spinner_tick);
+                draw_subagent_summary(f, chunks[4], spinner_tick);
 
-                // Input (textarea renders with cursor)
-                draw_input(f, chunks[7], &mut textarea);
+                // Input — OpenCode chrome (title + accent + info)
+                let (mode_label, mode_color) = mode_meta();
+                let input_meta = InputMeta {
+                    mode_label,
+                    mode_color,
+                    pretty_model: &model_pretty,
+                    provider_label: &model_provider,
+                    variant_label: &model_variant,
+                };
+                draw_input_box(f, chunks[5], &mut textarea, &input_meta);
 
                 // Autocomplete popup
                 if !ac_matches.is_empty() {
-                    draw_autocomplete(f, chunks[7], &ac_matches, ac_idx, ac_scroll);
+                    draw_autocomplete(f, chunks[5], &ac_matches, ac_idx, ac_scroll);
                 }
                 if show_sessions {
                     draw_sessions(
@@ -4474,14 +4324,14 @@ async fn app_loop(
                     );
                 }
 
-                // Footer (2 rows) — includes dictate meter/spinner (shifts bar as requested)
+                // Footer (1 row: interrupt + in/out/context) — includes dictate meter/spinner
                 draw_footer(
                     f,
-                    chunks[8],
+                    chunks[6],
                     &model,
                     &messages,
-                    &cwd,
                     agent_busy,
+                    &step_info,
                     spinner_tick,
                     dictate_state,
                     &dictate_meter,
@@ -4507,7 +4357,8 @@ async fn app_loop(
             match term_event {
                 Event::Paste(data) => {
                     crate::support::telemetry::record("paste");
-                    let max_cols = (chunks[7].width as usize).saturating_sub(1);
+                    // Input text width = chunk width minus the 1-col accent bar.
+                    let max_cols = (chunks[5].width as usize).saturating_sub(2);
                     textarea.insert_str(hard_wrap_str(&data, max_cols));
                     wrap_cursor_line(&mut textarea, max_cols);
                     ac_matches = current_completions(&textarea);
@@ -5892,7 +5743,7 @@ async fn app_loop(
                     }
                     // Hard-wrap the input line when typing reached the right edge
                     if textarea.lines() != lines_before.as_slice() {
-                        let max_cols = (chunks[7].width as usize).saturating_sub(1);
+                        let max_cols = (chunks[5].width as usize).saturating_sub(2);
                         wrap_cursor_line(&mut textarea, max_cols);
                         ac_matches = current_completions(&textarea);
                         ac_idx = 0;
@@ -6426,6 +6277,8 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                         match crate::integrations::models::resolve(Some(m)) {
                                             Ok(r) => {
                                                 model = r.alias.clone();
+                                                (model_pretty, model_provider, model_variant) =
+                                                    crate::tui::layout::resolve_model_meta(&model);
                                                 if let Some(s) = &mut session {
                                                     s.model = model.clone();
                                                     let _ = s.save();
