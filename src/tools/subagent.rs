@@ -40,11 +40,16 @@ pub async fn run_subagent(agent_name: &str, task: &str, label: &str) -> String {
         .clone()
         .unwrap_or_else(|| crate::integrations::llm::DEFAULT_MODEL.to_string());
     let max_steps = 15usize;
+    // Snapshot the parent mode: the child thread runs under this override so
+    // it inherits the mode's gates, and any mode switch inside the child
+    // (e.g. leave-PLAN) only rewrites its own snapshot — never the parent.
+    let parent_mode = crate::core::modes::capture_effective();
     let id_clone = id.clone();
     let display_clone = display_label.clone();
     let task_clone = task.to_string();
     let agent_name_clone = agent_name.to_string();
     std::thread::spawn(move || {
+        let _mode_guard = crate::core::modes::with_override(parent_mode);
         let rt = tokio::runtime::Handle::try_current();
         let handle = rt.ok();
         // Use a new current_thread runtime if no handle

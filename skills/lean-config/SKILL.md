@@ -20,7 +20,8 @@ Read these with `read_file`. Never assume — always read before editing.
 | Config | Path | Format | What it controls |
 |---|---|---|---|
 | **Env file** | `./.env` (project root) + any `dotenvy::dotenv()` loads | `KEY=VALUE` lines | `OPENCODE_API_KEY`, `OPENAI_API_KEY`, `OPENCODE_BASE_URL`, `EXA_API_KEY`, `LEAN_BASH_GUARD_DISABLED`, `LEAN_DIR_GUARD_DISABLED` |
-| **CLI args** | `src/main.rs` `Args` | `clap` | `--model` (default `mimo-v2.5-free`), `--continue`, `--resume <id>`, `--no-session`, `--bash-guard-disabled`, `--dir-guard-disabled` |
+| **CLI args** | `src/main.rs` `Args` | `clap` | `--model` (default `mimo-v2.5-free`), `--continue`, `--resume <id>`, `--no-session`, `--bash-guard-disabled`, `--dir-guard-disabled`, `--mode <name>`, `--auto-accept` |
+| **Modes** | `~/.lean/modes.json` (global) + `.lean/modes.json` (project override) | `JSON {version, modes}` | Per-mode `model` alias override, `temperature` (0–2), `tools` allowlist (`true`/`false`/`plans-only`/`read-only`), `prompt_file`, `behavior` (`norm`/`plan`/`ask`). Switch with `/mode <name>` or `Shift+Tab` |
 | **LLM client** | `src/llm.rs` `Client::from_env()` | env var precedence | `OPENCODE_API_KEY` > `OPENAI_API_KEY` > `sk-test`; `OPENCODE_BASE_URL` > `http://127.0.0.1:8080/zen/v1` |
 | **Bash guard allowlist** | `~/.lean/allowlist.json` | `JSON array<string>` | Exact commands or `wildmatch` globs (`git status*`, `cargo check*`). Loaded in `src/bash_guard.rs` |
 | **Dir guard allowlist** | `~/.lean/dir_allowlist.json` | `JSON array<string>` | Paths/globs allowed outside CWD (`~/docs/*`, `/tmp/*`). Loaded in `src/dir_guard.rs` |

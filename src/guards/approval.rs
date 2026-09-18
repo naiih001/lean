@@ -7,11 +7,26 @@ use tokio::sync::oneshot;
 
 static AUTO_ACCEPT: AtomicBool = AtomicBool::new(false);
 
+/// Thread-local mode override (subagents) wins over the global flag so a
+/// child thread's approval bypass never leaks into the parent.
 pub fn is_auto_accept() -> bool {
+    if let Some(v) = crate::core::modes::override_auto() {
+        return v;
+    }
     AUTO_ACCEPT.load(Ordering::Relaxed)
 }
 
 pub fn set_auto_accept(v: bool) {
+    if crate::core::modes::override_active_for_write() {
+        crate::core::modes::set_override_auto(v);
+        return;
+    }
+    AUTO_ACCEPT.store(v, Ordering::Relaxed);
+}
+
+/// Raw global write, bypassing the thread-local override (used by modes.rs
+/// apply, which manages the override itself).
+pub fn set_auto_accept_raw(v: bool) {
     AUTO_ACCEPT.store(v, Ordering::Relaxed);
 }
 

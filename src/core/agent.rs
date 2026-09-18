@@ -9,7 +9,7 @@ pub(crate) use crate::core::history::{
     build_user_content, drop_orphaned_tool_outputs, history_slice_for_api, prune_context_messages,
     strip_images_for_non_vision,
 };
-pub(crate) use crate::core::modes::is_ask_mode;
+pub(crate) use crate::core::modes::{is_ask_mode, is_plan_mode};
 pub(crate) use crate::core::prompts::{
     build_system_prompt, truncate_chars, truncate_for_llm,
     ASK_READONLY_DENY_MSG,
@@ -178,7 +178,15 @@ pub fn run_agent_with_history(
     history: Vec<Value>,
 ) -> impl Stream<Item = AgentEvent> {
     async_stream::stream! {
-        let resolved = match crate::integrations::models::resolve(Some(&model)) {
+        // Effective mode snapshot for this turn: model/temperature override,
+        // tool allowlist, and prompt extras. Permissive switches (leaving
+        // PLAN/ASK) take effect next turn; restrictive switches (entering
+        // PLAN/ASK) gate immediately — the safe direction.
+        let eff_mode = crate::core::modes::effective();
+        let eff_alias = eff_mode.resolved.model_alias.clone().unwrap_or(model);
+        let eff_temperature = eff_mode.resolved.temperature;
+        let eff_mode_tools = eff_mode.resolved.clone();
+        let resolved = match crate::integrations::models::resolve(Some(&eff_alias)) {
             Ok(r) => r,
             Err(e) => {
                 yield AgentEvent::Text { delta: format!("\n[model resolve error: {}]", e) };
@@ -229,9 +237,9 @@ pub fn run_agent_with_history(
                     input.push(json!({"type":"message","role":"user","content":[{"type":"input_text","text": user_prompt.clone()}]}));
                 }
                 instructions = format!("{}\n\n{}", instructions, focus);
-                // Build tools for responses
-                let tools = llm::responses_tool_definitions().await;
-                let body = llm::build_responses_request_body(&model_id, &instructions, &input, &tools);
+                // Build tools for responses (mode-filtered: denied tools omitted)
+                let tools = llm::responses_tool_definitions_filtered(&eff_mode_tools).await;
+                let body = llm::build_responses_request_body(&model_id, &instructions, &input, &tools, eff_temperature);
                 let resp = match post_with_retry(&client, client.responses_url(), &body).await {
                     Ok(r) => r,
                     Err(e) => { yield AgentEvent::Text { delta: format!("\n{}", e) }; break; }
@@ -512,7 +520,10 @@ pub fn run_agent_with_history(
                 }
                 let gate_active = tracker.requires_approval() && !tracker.has_approval();
                 let is_ask = is_ask_mode();
-                let futs: Vec<_> = ordered.iter().map(|(_, acc)| { let name=acc.name.clone(); let id=acc.id.clone(); let args_val: Value=serde_json::from_str(&acc.args).unwrap_or(Value::String(acc.args.clone())); let is_bash_readonly = name == "bash" && is_readonly_bash(args_val.get("command").and_then(|v| v.as_str()).unwrap_or("")); let is_mcp_readonly = name.contains("__") && is_mcp_read(&name); let ask_blocked = is_ask && is_mutating_tool(&name) && !is_bash_readonly && !is_mcp_readonly; let plan_blocked = gate_active && is_mutating_tool(&name) && !is_plan_exempt_write(&name, &args_val) && !is_bash_readonly && !is_mcp_readonly && !crate::guards::approval::is_auto_accept(); async move { let start=std::time::Instant::now(); let result = if ask_blocked { format!("[ASK BLOCKED] '{}' is blocked — {}. Allowed: read, web_search, grep, find, ls, readonly bash (ls/cat/grep/find/rg/git log|status|diff|show, 2>/dev/null), MCP reads. (Shift+Tab to cycle NORM/PLAN/ASK/AUTO)", name, ASK_READONLY_DENY_MSG) } else if plan_blocked { format!("[GATING BLOCKED — plan mode] Mutating tool '{}' is blocked until you complete Phases 1-4 and get explicit user approval via ask_user with '\\u{{2713}} Proceed as proposed'. Call ask_user now to clarify scope/approach. In plan mode only .lean/plans writes + read-only bash (2>/dev/null, pipes) + MCP reads are allowed before approval; all other mutations blocked. (Shift+Tab to cycle NORM/PLAN/ASK/AUTO or /plan to toggle.)", name) } else { crate::tools::execute_tool(&name, args_val.clone()).await }; let elapsed_ms=start.elapsed().as_millis() as u64; (id,name,result,args_val,elapsed_ms) }}).collect();
+                // Entering PLAN mid-turn gates immediately (safe direction);
+                // leaving PLAN mid-turn stays gated until next turn.
+                let live_plan = is_plan_mode() && !tracker.is_conversational_goal();
+                let futs: Vec<_> = ordered.iter().map(|(_, acc)| { let name=acc.name.clone(); let id=acc.id.clone(); let args_val: Value=serde_json::from_str(&acc.args).unwrap_or(Value::String(acc.args.clone())); let is_bash_readonly = name == "bash" && is_readonly_bash(args_val.get("command").and_then(|v| v.as_str()).unwrap_or("")); let is_mcp_readonly = name.contains("__") && is_mcp_read(&name); let ask_blocked = is_ask && is_mutating_tool(&name) && !is_bash_readonly && !is_mcp_readonly; let plan_blocked = (gate_active || live_plan) && is_mutating_tool(&name) && !is_plan_exempt_write(&name, &args_val) && !is_bash_readonly && !is_mcp_readonly && !crate::guards::approval::is_auto_accept(); async move { let start=std::time::Instant::now(); let result = if ask_blocked { format!("[ASK BLOCKED] '{}' is blocked — {}. Allowed: read, web_search, grep, find, ls, readonly bash (ls/cat/grep/find/rg/git log|status|diff|show, 2>/dev/null), MCP reads. (Shift+Tab to cycle NORM/PLAN/ASK/AUTO)", name, ASK_READONLY_DENY_MSG) } else if plan_blocked { format!("[GATING BLOCKED — plan mode] Mutating tool '{}' is blocked until you complete Phases 1-4 and get explicit user approval via ask_user with '\\u{{2713}} Proceed as proposed'. Call ask_user now to clarify scope/approach. In plan mode only .lean/plans writes/edits + read-only bash (2>/dev/null, pipes) + MCP reads are allowed before approval; all other mutations blocked. (Shift+Tab to cycle NORM/PLAN/ASK/AUTO or /plan to toggle.)", name) } else { crate::tools::execute_tool(&name, args_val.clone()).await }; let elapsed_ms=start.elapsed().as_millis() as u64; (id,name,result,args_val,elapsed_ms) }}).collect();
                 let results = futures::future::join_all(futs).await;
                 for (id, name, result, args_val, elapsed_ms) in results {
                     let display = result.find("<<IMAGE:").map_or_else(|| result.clone(), |pos| format!("{}[image data omitted for display]", result[..pos].trim_end()));
@@ -589,7 +600,7 @@ pub fn run_agent_with_history(
             messages = prune_context_messages(&messages);
             let focus_msg = json!({"role": "system", "content": tracker.focus_context(step + 1)});
             if messages.len() > 1 { messages.insert(1, focus_msg); } else { messages.push(focus_msg); }
-            let tools = llm::tool_definitions().await;
+            let tools = llm::tool_definitions_filtered(&eff_mode_tools).await;
             let send_messages = if supports_vision { messages.clone() } else {
                 // Warn once on first step if images are present
                 if step == 0 && messages.iter().any(|m| {
@@ -601,7 +612,11 @@ pub fn run_agent_with_history(
                 }
                 strip_images_for_non_vision(&messages)
             };
-            let body = json!({"model": model_id, "messages": send_messages, "tools": tools, "tool_choice": "auto", "stream": true});
+            let mut body = json!({"model": model_id, "messages": send_messages, "tools": tools, "tool_choice": "auto", "stream": true});
+            // Only sent when a mode configures it — reasoning models may reject it.
+            if let Some(t) = eff_temperature {
+                body["temperature"] = json!(t);
+            }
             let resp = match post_with_retry(&client, client.chat_url(), &body).await {
                 Ok(r) => r,
                 Err(e) => { yield AgentEvent::Text { delta: format!("\n{}", e) }; break; }
@@ -701,6 +716,9 @@ pub fn run_agent_with_history(
             }
             let gate_active = tracker.requires_approval() && !tracker.has_approval();
             let is_ask = is_ask_mode();
+            // Entering PLAN mid-turn gates immediately (safe direction);
+            // leaving PLAN mid-turn stays gated until next turn.
+            let live_plan = is_plan_mode() && !tracker.is_conversational_goal();
             let futs: Vec<_> = ordered.iter().map(|(_, acc)| {
                 let name = acc.name.clone();
                 let id = acc.id.clone();
@@ -708,10 +726,10 @@ pub fn run_agent_with_history(
                 let is_bash_readonly = name == "bash" && is_readonly_bash(args_val.get("command").and_then(|v| v.as_str()).unwrap_or(""));
                 let is_mcp_readonly = name.contains("__") && is_mcp_read(&name);
                 let ask_blocked = is_ask && is_mutating_tool(&name) && !is_bash_readonly && !is_mcp_readonly;
-                let plan_blocked = gate_active && is_mutating_tool(&name) && !is_plan_exempt_write(&name, &args_val) && !is_bash_readonly && !is_mcp_readonly && !crate::guards::approval::is_auto_accept();
+                let plan_blocked = (gate_active || live_plan) && is_mutating_tool(&name) && !is_plan_exempt_write(&name, &args_val) && !is_bash_readonly && !is_mcp_readonly && !crate::guards::approval::is_auto_accept();
                 async move {
                     let start = std::time::Instant::now();
-                    let result = if ask_blocked { format!("[ASK BLOCKED] '{}' is blocked — {}. Allowed: read, web_search, grep, find, ls, readonly bash (ls/cat/grep/find/rg/git log|status|diff|show, 2>/dev/null), MCP reads. (Shift+Tab to cycle NORM/PLAN/ASK/AUTO)", name, ASK_READONLY_DENY_MSG) } else if plan_blocked { format!("[GATING BLOCKED — plan mode] Mutating tool '{}' is blocked until you complete Phases 1-4 and get explicit user approval via ask_user with '\\u{{2713}} Proceed as proposed'. Call ask_user now to clarify scope/approach. In plan mode only .lean/plans writes + read-only bash (2>/dev/null, pipes) + MCP reads are allowed before approval; all other mutations blocked. (Shift+Tab to cycle NORM/PLAN/ASK/AUTO or /plan to toggle.)", name) } else { crate::tools::execute_tool(&name, args_val.clone()).await };
+                    let result = if ask_blocked { format!("[ASK BLOCKED] '{}' is blocked — {}. Allowed: read, web_search, grep, find, ls, readonly bash (ls/cat/grep/find/rg/git log|status|diff|show, 2>/dev/null), MCP reads. (Shift+Tab to cycle NORM/PLAN/ASK/AUTO)", name, ASK_READONLY_DENY_MSG) } else if plan_blocked { format!("[GATING BLOCKED — plan mode] Mutating tool '{}' is blocked until you complete Phases 1-4 and get explicit user approval via ask_user with '\\u{{2713}} Proceed as proposed'. Call ask_user now to clarify scope/approach. In plan mode only .lean/plans writes/edits + read-only bash (2>/dev/null, pipes) + MCP reads are allowed before approval; all other mutations blocked. (Shift+Tab to cycle NORM/PLAN/ASK/AUTO or /plan to toggle.)", name) } else { crate::tools::execute_tool(&name, args_val.clone()).await };
                     let elapsed_ms = start.elapsed().as_millis() as u64;
                     (id, name, result, args_val, elapsed_ms)
                 }

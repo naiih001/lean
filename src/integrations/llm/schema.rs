@@ -284,6 +284,23 @@ pub async fn tool_definitions_for(mode: &crate::integrations::models::ApiMode) -
     }
 }
 
+/// Mode-filtered tool definitions (opencode-style: denied tools are omitted
+/// from the schema, not just blocked at execution). ReadOnly/PlansOnly tools
+/// stay visible — the execution gate enforces the per-invocation restriction.
+pub async fn tool_definitions_filtered(
+    resolved: &crate::core::mode_config::ResolvedMode,
+) -> Vec<Value> {
+    let v = tool_definitions().await;
+    crate::core::mode_config::filter_definitions(v, resolved)
+}
+
+pub async fn responses_tool_definitions_filtered(
+    resolved: &crate::core::mode_config::ResolvedMode,
+) -> Vec<Value> {
+    let chat = tool_definitions_filtered(resolved).await;
+    responses_tool_definitions_from(&chat)
+}
+
 pub fn chat_messages_to_responses_input(
     messages: &[Value],
     system_prompt: &str,
@@ -437,13 +454,19 @@ pub fn build_responses_request_body(
     instructions: &str,
     input: &[Value],
     tools: &[Value],
+    temperature: Option<f32>,
 ) -> Value {
-    json!({
+    let mut body = json!({
         "model": model_id,
         "instructions": instructions,
         "input": input,
         "tools": tools,
         "stream": true,
         "store": false
-    })
+    });
+    // Only sent when a mode configures it — reasoning models may reject it.
+    if let Some(t) = temperature {
+        body["temperature"] = json!(t);
+    }
+    body
 }

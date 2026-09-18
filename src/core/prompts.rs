@@ -1,3 +1,4 @@
+use crate::core::mode_config::GateBehavior;
 use crate::services::skills;
 
 pub const REGULAR_SYSTEM_PROMPT: &str = "You are lean, a coding assistant in the terminal. Be direct and concise.\n\n\
@@ -34,7 +35,7 @@ Classify the request:\n\
 - `search` — needs web lookup.\n\
 If unsure, treat as `write`.\n\n\
 ## Plan mode — 5-phase gate (MANDATORY)\n\
-You MUST NOT call write, edit, bash (mutating), or any MCP write tool on project files until you have completed Phases 1-4, received `✓ Proceed as proposed`, AND received explicit permission to leave PLAN mode via ask_user. Read-only tools (read, read_skill, web_search, etc., plus read-only bash like ls/cat/grep/find and MCP reads) are always allowed. In plan mode, the ONLY write allowed before leaving is `write` to `.lean/plans/` for the deliverable plan. All other mutations are BLOCKED until you leave PLAN.\n\n\
+You MUST NOT call write, edit, bash (mutating), or any MCP write tool on project files until you have completed Phases 1-4, received `✓ Proceed as proposed`, AND received explicit permission to leave PLAN mode via ask_user. Read-only tools (read, read_skill, web_search, etc., plus read-only bash like ls/cat/grep/find and MCP reads) are always allowed. In plan mode, the ONLY writes allowed before leaving are `write`/`edit` to `.lean/plans/` for the deliverable plan. All other mutations are BLOCKED until you leave PLAN.\n\n\
 Phase 1 — DISCOVER (read-only): read relevant files, search skills, gather context. No mutations.\n\
 Phase 2 — CLARIFY: call ask_user with concrete options until scope is 100% clear. For each ambiguity present 2-3 options with pros/cons. Cover: goal, non-goals, files/modules in scope, UX/constraints, edge cases. Keep asking — do not assume.\n\n\
 Phase 3 — PROPOSE: write a concrete plan markdown to `.lean/plans/YYYY-MM-DD_HHMMSS-<slug>.md` (see plan skill for template: goal, context, approach, steps, files, tests, risks). Then summarize Shared Understanding (scope + chosen approach + files + verification) and ask a final ask_user question that MUST contain an option exactly labeled `✓ Proceed as proposed` (and `Needs changes` / Other).\n\n\
@@ -76,12 +77,11 @@ pub const ASK_READONLY_DENY_MSG: &str =
 pub const SYSTEM_PROMPT: &str = REGULAR_SYSTEM_PROMPT;
 
 pub(crate) fn current_system_prompt() -> &'static str {
-    if crate::core::modes::is_plan_mode() {
-        PLAN_SYSTEM_PROMPT
-    } else if crate::core::modes::is_ask_mode() {
-        ASK_SYSTEM_PROMPT
-    } else {
-        REGULAR_SYSTEM_PROMPT
+    // Custom modes inherit the base prompt of their gate behavior.
+    match crate::core::modes::gate_behavior() {
+        GateBehavior::Plan => PLAN_SYSTEM_PROMPT,
+        GateBehavior::Ask => ASK_SYSTEM_PROMPT,
+        GateBehavior::Norm => REGULAR_SYSTEM_PROMPT,
     }
 }
 
@@ -235,7 +235,20 @@ fn mcp_section() -> String {
 
 /// Assemble the full system prompt within `TOTAL_BUDGET`.
 pub async fn build_system_prompt() -> String {
-    let base = current_system_prompt();
+    let base_static = current_system_prompt();
+    // Mode-configured extra instructions (prompt_file), appended to the base.
+    let mode_extra = crate::core::modes::effective()
+        .resolved
+        .prompt_extra
+        .clone();
+    let base_owned;
+    let base: &str = match mode_extra {
+        Some(extra) if !extra.trim().is_empty() => {
+            base_owned = format!("{}\n\n## Mode instructions\n{}", base_static, extra.trim());
+            &base_owned
+        }
+        _ => base_static,
+    };
     let raw_catalog = skills::get_skill_catalog().await;
     let confinement = confinement_section();
     let context = context_section();

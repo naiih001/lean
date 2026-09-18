@@ -40,7 +40,7 @@ pub fn crossterm_key_to_input(k: crossterm::event::KeyEvent) -> TAInput {
 
 /// Meta shown in the OpenCode-style input chrome (title + info rows).
 pub struct InputMeta<'a> {
-    pub mode_label: &'a str,
+    pub mode_label: String,
     pub mode_color: Color,
     pub pretty_model: &'a str,
 }

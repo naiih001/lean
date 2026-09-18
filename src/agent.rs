@@ -3,8 +3,9 @@
 // New code should use crate::core::agent / ::prompts / ::modes / ::tracker / ::history.
 pub use crate::core::agent::{run_agent, run_agent_with_history, AgentEvent};
 pub use crate::core::modes::{
-    current_mode, cycle_mode, is_ask_mode, is_plan_mode, set_ask_mode, set_mode, set_plan_mode,
-    Mode,
+    capture_effective, current_mode, cycle_mode, effective, gate_behavior, is_ask_mode,
+    is_plan_mode, mode_display, mode_name, set_ask_mode, set_mode, set_mode_by_name, set_plan_mode,
+    with_override, EffectiveMode, Mode,
 };
 pub use crate::core::prompts::{
     build_system_prompt, ASK_READONLY_DENY_MSG, ASK_SYSTEM_PROMPT, PLAN_SYSTEM_PROMPT,

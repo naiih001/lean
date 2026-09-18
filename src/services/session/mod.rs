@@ -18,6 +18,13 @@ pub struct Session {
     pub messages: Vec<SavedMsg>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm_history: Option<Vec<serde_json::Value>>,
+    /// Active mode name at last persist ("norm" default for old sessions).
+    #[serde(default = "default_session_mode")]
+    pub mode: String,
+}
+
+fn default_session_mode() -> String {
+    "norm".to_string()
 }
 
 fn sessions_dir() -> PathBuf {
@@ -60,6 +67,7 @@ impl Session {
             updated_at: now,
             messages: Vec::new(),
             llm_history: None,
+            mode: default_session_mode(),
         }
     }
 

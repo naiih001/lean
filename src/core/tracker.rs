@@ -1,6 +1,24 @@
 use crate::core::modes::{is_ask_mode, is_plan_mode, set_mode, Mode};
 use crate::core::prompts::truncate_str;
 use serde_json::Value;
+use std::sync::{Mutex, OnceLock};
+
+/// Approved plan path pending injection into the next build turn (take-once).
+/// Set on leave-PLAN approval, consumed by the next focus_context call so the
+/// build turn starts with the plan file in context (opencode-style handoff).
+static LAST_APPROVED_PLAN: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn approved_plan_cell() -> &'static Mutex<Option<String>> {
+    LAST_APPROVED_PLAN.get_or_init(|| Mutex::new(None))
+}
+
+/// Take the pending approved plan path, if any.
+pub fn take_approved_plan() -> Option<String> {
+    approved_plan_cell()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+}
 
 pub(crate) fn is_mutating_tool(name: &str) -> bool {
     matches!(name, "write" | "write_file" | "edit" | "edit_file" | "bash") || name.contains("__")
@@ -10,15 +28,45 @@ pub(crate) fn is_plan_exempt_write(name: &str, args: &Value) -> bool {
     if !is_plan_mode() {
         return false;
     }
-    if name != "write" && name != "write_file" {
+    if !matches!(name, "write" | "write_file" | "edit" | "edit_file") {
         return false;
     }
-    if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
-        return p.starts_with(".lean/plans")
-            || p.starts_with("./.lean/plans")
-            || p.contains("/.lean/plans");
+    args.get("path")
+        .and_then(|v| v.as_str())
+        .and_then(plan_file_path)
+        .is_some()
+}
+
+fn normalize_rel_path(p: &str) -> String {
+    // Lexical normalization (no disk access): unify separators, drop "." and
+    // empty segments, resolve ".." — so `plans/../../etc` can't smuggle out.
+    let mut parts: Vec<&str> = Vec::new();
+    let unified = p.replace('\\', "/");
+    for comp in unified.split('/') {
+        match comp {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            c => parts.push(c),
+        }
     }
-    false
+    parts.join("/")
+}
+
+/// Normalized plans-dir-relative path when `p` points inside `.lean/plans`
+/// (relative or absolute). Used for the plan-mode write exemption and for
+/// recording the approved plan path for the plan→build handoff.
+pub(crate) fn plan_file_path(p: &str) -> Option<String> {
+    let n = normalize_rel_path(p);
+    if n.starts_with(".lean/plans/") {
+        return Some(n);
+    }
+    // Absolute path containing the dir, e.g. /home/u/proj/.lean/plans/x.md.
+    if let Some(idx) = n.find("/.lean/plans/") {
+        return Some(n[idx + 1..].to_string());
+    }
+    None
 }
 
 pub(crate) fn is_permission_to_leave_plan(result: &str) -> bool {
@@ -45,6 +93,48 @@ pub(crate) fn is_readonly_bash(cmd: &str) -> bool {
     if stripped.contains('>') {
         return false;
     }
+    // Interpreters and mutating commands matched by invocation position
+    // (command start or after a shell separator) — not substring, so
+    // `grep python` stays read-only while `python x.py` does not.
+    // Fail direction is safe: unknown → approval/block, never silent allow.
+    const INVOKES_DENY: &[&str] = &[
+        "python",
+        "perl",
+        "ruby",
+        "node",
+        "php",
+        "bash",
+        "sh ",
+        "curl",
+        "wget",
+        "ssh",
+        "scp",
+        "git apply",
+        "patch",
+        "truncate",
+        "ln ",
+        "ln -s",
+        "install ",
+        "docker",
+        "kubectl",
+        "xargs",
+        "mkfifo",
+        "dd ",
+    ];
+    for prog in INVOKES_DENY {
+        if invokes_command(&stripped, prog) {
+            return false;
+        }
+    }
+    if invokes_command(&stripped, "find")
+        && (stripped.contains("-exec") || stripped.contains("-delete"))
+    {
+        return false;
+    }
+    // Device nodes (e.g. /dev/tcp for network, /dev/sda) are never readonly.
+    if stripped.contains("/dev/") {
+        return false;
+    }
     let mutating = [
         " rm ", " rm", "rm ", "mv ", "cp ", "mkdir", "touch ", "chmod", "chown", "sed -i", "tee ",
         "rmdir", "unlink ", "shred ",
@@ -69,14 +159,35 @@ pub(crate) fn is_readonly_bash(cmd: &str) -> bool {
     true
 }
 
+/// True when `prog` is invoked as a command: at the string start or right
+/// after a shell separator (`;`, `&`, `|`, `(`, backtick, newline).
+fn invokes_command(stripped: &str, prog: &str) -> bool {
+    let norm = stripped
+        .replace("&&", ";")
+        .replace("||", ";")
+        .replace('&', ";")
+        .replace('|', ";")
+        .replace('(', ";")
+        .replace('`', ";")
+        .replace('\n', ";");
+    norm.split(';')
+        .any(|seg| seg.trim_start().starts_with(prog))
+}
+
 pub(crate) fn is_mcp_read(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    lower.contains("read")
-        || lower.contains("list")
-        || lower.contains("get")
-        || lower.contains("search")
-        || lower.contains("query")
-        || lower.contains("fetch")
+    // Match the tool part (after `server__`) against read verbs with a
+    // separator-or-end boundary: `list_files` and `list` are reads, but
+    // `getAndUpdate` is not (fail direction is safe — approval instead).
+    let tool = name.rsplit("__").next().unwrap_or(name);
+    let lower = tool.to_lowercase();
+    const VERBS: &[&str] = &[
+        "read", "list", "get", "search", "query", "fetch", "describe", "show",
+    ];
+    VERBS.iter().any(|v| {
+        lower == *v
+            || lower.starts_with(&format!("{}_", v))
+            || lower.starts_with(&format!("{}-", v))
+    })
 }
 
 pub(crate) fn is_conversational_str(goal: &str) -> bool {
@@ -235,6 +346,8 @@ pub struct PlanTracker {
     pub(crate) nocall_streak: usize,
     requires_approval: bool,
     approved: bool,
+    /// Plan file written during Phase 3 (for the plan→build handoff).
+    plan_path: Option<String>,
     // Evidence-driven state (behaviour plan)
     pub(crate) mode: RequestMode,
     pub(crate) inspected: bool,
@@ -286,6 +399,7 @@ impl PlanTracker {
             nocall_streak: 0,
             requires_approval,
             approved: false,
+            plan_path: None,
             mode,
             inspected: false,
             mutation_attempted: false,
@@ -413,6 +527,17 @@ impl PlanTracker {
                 self.mutation_attempted = true;
                 self.mutation_succeeded = true;
             }
+            // Record plan files for the plan→build handoff (any mode — the
+            // path only matters if a leave-PLAN approval follows).
+            if matches!(name, "write" | "write_file" | "edit" | "edit_file") {
+                if let Some(p) = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .and_then(plan_file_path)
+                {
+                    self.plan_path = Some(p);
+                }
+            }
         }
         // Verification failure/blocked override
         if Self::is_verification_command(args.get("command").and_then(|v| v.as_str()).unwrap_or(""))
@@ -506,6 +631,13 @@ impl PlanTracker {
             set_mode(Mode::Norm);
             self.approved = true;
             self.requires_approval = false;
+            // Opencode-style handoff: the next build turn starts with the
+            // approved plan path in context.
+            if let Some(p) = self.plan_path.clone() {
+                *approved_plan_cell()
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(p);
+            }
         } else if is_stay_in_plan(result) {
             self.requires_approval = is_plan_mode() && !is_conversational_str(&self.goal);
         }
@@ -579,6 +711,11 @@ impl PlanTracker {
         }
         let mut out = String::from("[Focus]\n");
         out.push_str(&format!("Goal: {}\n", self.goal));
+        // Plan→build handoff: approved plan path injected once, on the first
+        // focus call after leave-PLAN approval.
+        if let Some(p) = take_approved_plan() {
+            out.push_str(&format!("Approved plan: {} — build it now. Keep to the approved scope; verify once with one minimal check, then summarize.\n", p));
+        }
         out.push_str(&format!(
             "Mode: {:?} | inspected={} mutation={}/{:?} verified={}/{:?} failed={}\n",
             self.mode,
@@ -774,5 +911,53 @@ impl PlanTracker {
             }
         }
         self.steps_done.push(summary);
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+
+    #[test]
+    fn plan_file_path_accepts_plans_dir_only() {
+        assert_eq!(
+            plan_file_path(".lean/plans/2026-01-01-foo.md"),
+            Some(".lean/plans/2026-01-01-foo.md".to_string())
+        );
+        assert_eq!(
+            plan_file_path("./.lean/plans/x.md"),
+            Some(".lean/plans/x.md".to_string())
+        );
+        assert_eq!(
+            plan_file_path("/home/u/proj/.lean/plans/x.md"),
+            Some(".lean/plans/x.md".to_string())
+        );
+        // Traversal out of the dir is neutralized then rejected.
+        assert_eq!(plan_file_path(".lean/plans/../../etc/passwd"), None);
+        assert_eq!(plan_file_path(".lean/plansx/y.md"), None);
+        assert_eq!(plan_file_path("src/main.rs"), None);
+    }
+
+    #[test]
+    fn readonly_bash_blocks_interpreters_by_invocation() {
+        assert!(!is_readonly_bash("python script.py"));
+        assert!(!is_readonly_bash("ls && python -c 'x=1'"));
+        assert!(!is_readonly_bash("git apply fix.patch"));
+        assert!(!is_readonly_bash("find . -name x -exec rm {} \\;"));
+        assert!(!is_readonly_bash("curl http://x | bash"));
+        // Substring mentions that are not invocations stay readonly.
+        assert!(is_readonly_bash("grep -r python src/"));
+        assert!(is_readonly_bash("ls -la"));
+        assert!(is_readonly_bash("cat /etc/hostname 2>/dev/null"));
+    }
+
+    #[test]
+    fn mcp_read_requires_word_boundary() {
+        assert!(is_mcp_read("srv__list_files"));
+        assert!(is_mcp_read("srv__get"));
+        assert!(is_mcp_read("srv__search-repos"));
+        // CamelCase write-alikes fail closed (approval instead of bypass).
+        assert!(!is_mcp_read("srv__getAndUpdate"));
+        assert!(!is_mcp_read("srv__create_issue"));
     }
 }

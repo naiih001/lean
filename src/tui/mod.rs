@@ -27,6 +27,8 @@ pub struct RunOpts {
     pub no_session: bool,
     pub bash_guard_disabled: bool,
     pub dir_guard_disabled: bool,
+    pub mode: Option<String>,
+    pub auto_accept: bool,
 }
 
 pub async fn run(opts: RunOpts) -> anyhow::Result<()> {
@@ -911,12 +913,21 @@ fn draw_running_indicator(f: &mut Frame, area: Rect, busy: bool, tick: usize) {
 }
 
 /// Current agent mode as (label, accent color) for the OpenCode-style chrome.
-fn mode_meta() -> (&'static str, Color) {
+fn mode_meta() -> (String, Color) {
     match crate::agent::current_mode() {
-        crate::agent::Mode::Norm => ("Norm", ASHEN.slate),
-        crate::agent::Mode::Plan => ("Plan", ASHEN.ember),
-        crate::agent::Mode::Ask => ("Ask", ASHEN.moss),
-        crate::agent::Mode::Auto => ("Auto", ASHEN.ember),
+        crate::agent::Mode::Norm => ("Norm".to_string(), ASHEN.slate),
+        crate::agent::Mode::Plan => ("Plan".to_string(), ASHEN.ember),
+        crate::agent::Mode::Ask => ("Ask".to_string(), ASHEN.moss),
+        crate::agent::Mode::Auto => ("Auto".to_string(), ASHEN.ember),
+        crate::agent::Mode::Custom(_) => {
+            // Custom modes reuse the builtin accent of their gate behavior.
+            let color = match crate::agent::gate_behavior() {
+                crate::core::mode_config::GateBehavior::Plan => ASHEN.ember,
+                crate::core::mode_config::GateBehavior::Ask => ASHEN.moss,
+                _ => ASHEN.frost,
+            };
+            (crate::agent::mode_display(), color)
+        }
     }
 }
 
@@ -1850,6 +1861,7 @@ const COMMANDS: &[&str] = &[
     "/allowlist clear",
     "/mcp",
     "/auto-accept",
+    "/mode",
     "/plan",
     "/init",
 ];
@@ -1874,6 +1886,19 @@ fn autocomplete_matches(input: &str) -> Vec<String> {
             return filtered;
         }
         return Vec::new();
+    }
+    // Mode name completion: "/mode " or "/mode <prefix>"
+    if input.starts_with("/mode ") {
+        let prefix = input.strip_prefix("/mode ").unwrap_or("");
+        let mut names = crate::core::mode_config::mode_names();
+        names.push("auto".to_string());
+        names.sort();
+        names.dedup();
+        return names
+            .into_iter()
+            .filter(|a| a.starts_with(prefix))
+            .map(|a| format!("/mode {}", a))
+            .collect();
     }
     // Handle "/model" partial -> command, but if user typed "/model" exactly and hits Tab we want alias list on next space
     // Normal command completion
@@ -3670,6 +3695,26 @@ async fn app_loop(
     } else {
         Some(crate::services::session::Session::new(&model))
     };
+    // ── Mode startup: CLI flags win, else restore the resumed session's mode.
+    if let Some(ref m) = opts.mode {
+        if !crate::agent::set_mode_by_name(m) {
+            messages.push(Msg {
+                role: "system".into(),
+                content: format!("[unknown mode '{}' — staying in norm]", m),
+                tool_id: None,
+                tool_name: None,
+                tool_args: None,
+                elapsed_ms: None,
+            });
+        }
+    } else if opts.auto_accept {
+        crate::agent::set_mode(crate::agent::Mode::Auto);
+    } else if let Some(ref sess) = session {
+        if !sess.mode.trim().is_empty() {
+            // Best-effort restore; unknown names (deleted custom) keep norm.
+            crate::agent::set_mode_by_name(&sess.mode);
+        }
+    }
     // TODO: remove if unnecessary
     // Warn if resumed session has a legacy alias not in models.json
     if let Some(ref sess) = session {
@@ -3697,6 +3742,7 @@ async fn app_loop(
         sess.cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
+        sess.mode = crate::agent::mode_name();
         let _ = sess.save();
     }
     {
@@ -3725,6 +3771,7 @@ async fn app_loop(
                 s.cwd = std::env::current_dir()
                     .map(|p| p.display().to_string())
                     .unwrap_or_default();
+                s.mode = crate::agent::mode_name();
                 s.messages = msgs
                     .iter()
                     .map(|m| crate::services::session::SavedMsg {
@@ -4596,6 +4643,9 @@ async fn app_loop(
                             }
                             crate::agent::Mode::Norm => {
                                 crate::support::telemetry::record("mode_norm");
+                            }
+                            crate::agent::Mode::Custom(_) => {
+                                crate::support::telemetry::record("mode_custom");
                             }
                         }
                         continue;
@@ -5809,7 +5859,7 @@ async fn app_loop(
                                 "/help" => {
                                     messages.push(Msg {
                                         role: "system".into(),
-                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /mcp /model <name> /clear /exit /auto-accept /plan /init  ·  Enter send · Shift+Enter newline · Shift+Tab NORM/PLAN/ASK/AUTO · @file $skill · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll — /plan toggles PLAN, /auto-accept toggles AUTO, Shift+Tab cycles — /init creates AGENTS.md".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /mcp /model <name> /mode <name> /clear /exit /auto-accept /plan /init  ·  Enter send · Shift+Enter newline · Shift+Tab cycles modes · @file $skill · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll — /plan toggles PLAN, /auto-accept toggles AUTO, /mode switches modes (see ~/.lean/modes.json), Shift+Tab cycles — /init creates AGENTS.md".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                 }
                                 "/plan" => {
                                     let next = if crate::agent::current_mode()
@@ -5819,7 +5869,7 @@ async fn app_loop(
                                     } else {
                                         crate::agent::Mode::Plan
                                     };
-                                    crate::agent::set_mode(next);
+                                    crate::agent::set_mode(next.clone());
                                     match next {
                                         crate::agent::Mode::Plan => {
                                             crate::support::telemetry::record("mode_plan")
@@ -5979,7 +6029,7 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                     } else {
                                         crate::agent::Mode::Auto
                                     };
-                                    crate::agent::set_mode(next);
+                                    crate::agent::set_mode(next.clone());
                                     match next {
                                         crate::agent::Mode::Auto => {
                                             if let Some(mut req) = pending_approval.take() {
@@ -6041,6 +6091,124 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                         messages.push(Msg {
                                             role: "system".into(),
                                             content: "usage: /auto-accept [on|off]".into(),
+                                            tool_id: None,
+                                            tool_name: None,
+                                            tool_args: None,
+                                            elapsed_ms: None,
+                                        });
+                                    }
+                                }
+                                "/mode" => {
+                                    // List modes with the current one marked.
+                                    let mut names = crate::core::mode_config::mode_names();
+                                    names.push("auto".to_string());
+                                    names.sort();
+                                    names.dedup();
+                                    let cur = crate::agent::mode_name();
+                                    let cur_is_auto =
+                                        crate::agent::current_mode() == crate::agent::Mode::Auto;
+                                    let mut lines: Vec<String> = Vec::new();
+                                    for n in names {
+                                        let mark = if cur_is_auto {
+                                            if n == "auto" {
+                                                "●"
+                                            } else {
+                                                "○"
+                                            }
+                                        } else if n == cur {
+                                            "●"
+                                        } else {
+                                            "○"
+                                        };
+                                        let desc = crate::core::mode_config::resolve(&n)
+                                            .map(|r| r.description.clone())
+                                            .unwrap_or_default();
+                                        if desc.is_empty() || desc == n {
+                                            lines.push(format!("{} {}", mark, n));
+                                        } else {
+                                            lines.push(format!("{} {} — {}", mark, n, desc));
+                                        }
+                                    }
+                                    messages.push(Msg {
+                                        role: "system".into(),
+                                        content: format!(
+                                            "modes (current: {}):\n{}",
+                                            crate::agent::mode_display(),
+                                            lines.join("\n")
+                                        ),
+                                        tool_id: None,
+                                        tool_name: None,
+                                        tool_args: None,
+                                        elapsed_ms: None,
+                                    });
+                                }
+                                _ if prompt.starts_with("/mode ") => {
+                                    let name = prompt.strip_prefix("/mode ").unwrap().trim();
+                                    if name.is_empty() {
+                                        // fall through to listing
+                                        let mut names = crate::core::mode_config::mode_names();
+                                        names.push("auto".to_string());
+                                        names.sort();
+                                        names.dedup();
+                                        messages.push(Msg {
+                                            role: "system".into(),
+                                            content: format!(
+                                                "usage: /mode <name> (available: {})",
+                                                names.join(", ")
+                                            ),
+                                            tool_id: None,
+                                            tool_name: None,
+                                            tool_args: None,
+                                            elapsed_ms: None,
+                                        });
+                                    } else if name.eq_ignore_ascii_case("auto") {
+                                        crate::agent::set_mode(crate::agent::Mode::Auto);
+                                        if let Some(mut req) = pending_approval.take() {
+                                            if let Some(tx) = req.tx.take() {
+                                                let _ = tx.send(true);
+                                            }
+                                        }
+                                        while let Some(mut req) =
+                                            crate::guards::approval::take_pending()
+                                        {
+                                            if let Some(tx) = req.tx.take() {
+                                                let _ = tx.send(true);
+                                            }
+                                        }
+                                        crate::support::telemetry::record("mode_auto");
+                                        messages.push(Msg {
+                                            role: "system".into(),
+                                            content: "mode → Auto".into(),
+                                            tool_id: None,
+                                            tool_name: None,
+                                            tool_args: None,
+                                            elapsed_ms: None,
+                                        });
+                                    } else if crate::agent::set_mode_by_name(name) {
+                                        crate::support::telemetry::record("mode_custom");
+                                        messages.push(Msg {
+                                            role: "system".into(),
+                                            content: format!(
+                                                "mode → {}",
+                                                crate::agent::mode_display()
+                                            ),
+                                            tool_id: None,
+                                            tool_name: None,
+                                            tool_args: None,
+                                            elapsed_ms: None,
+                                        });
+                                    } else {
+                                        let mut names = crate::core::mode_config::mode_names();
+                                        names.push("auto".to_string());
+                                        names.sort();
+                                        names.dedup();
+                                        messages.push(Msg {
+                                            role: "system".into(),
+                                            content: format!(
+                                                "unknown mode '{}' (available: {})",
+                                                name,
+                                                names.join(", ")
+                                            ),
                                             tool_id: None,
                                             tool_name: None,
                                             tool_args: None,
