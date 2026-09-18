@@ -57,6 +57,10 @@ pub async fn run(opts: RunOpts) -> anyhow::Result<()> {
 
     let res = app_loop(&mut terminal, opts).await;
 
+    // Release herdr lifecycle authority (best-effort) while the runtime is
+    // still alive so the pane isn't stuck on a stale agent session.
+    crate::integrations::herdr::release_agent();
+
     let _ = crossterm::execute!(
         terminal.backend_mut(),
         crossterm::event::PopKeyboardEnhancementFlags
@@ -3723,6 +3727,10 @@ async fn app_loop(
     let mut model = opts.model.clone();
     let mut messages: Vec<Msg> = Vec::new();
     // ── Session restore ──
+    // Tracks whether --resume actually hit, so herdr gets "resume" only for a
+    // real resume and "startup" when the prefix missed and we started fresh.
+    let mut resume_hit = false;
+    let mut continued = false;
     let mut session = if opts.no_session {
         None
     } else if let Some(ref rid) = opts.resume_id {
@@ -3743,6 +3751,7 @@ async fn app_loop(
                         elapsed_ms: None,
                     })
                     .collect();
+                resume_hit = true;
                 Some(sess)
             }
             None => {
@@ -3760,7 +3769,14 @@ async fn app_loop(
             }
         }
     } else if opts.continue_session {
-        if let Some(sess) = crate::services::session::Session::latest() {
+        // Prefer this cwd's latest (matches sessions picker); fall back to the
+        // global latest to preserve previous --continue behavior.
+        let cwd_now = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let hit = crate::services::session::Session::latest_for(&cwd_now)
+            .or_else(crate::services::session::Session::latest);
+        if let Some(sess) = hit {
             messages = sess
                 .messages
                 .iter()
@@ -3773,6 +3789,7 @@ async fn app_loop(
                     elapsed_ms: None,
                 })
                 .collect();
+            continued = true;
             Some(sess)
         } else {
             Some(crate::services::session::Session::new(&model))
@@ -3800,10 +3817,19 @@ async fn app_loop(
     }
 
     // ── Herdr: report session identity ──
+    // Save first so the reported agent_session_path exists on disk; herdr
+    // treats missing/stale refs as unrestorable shells.
+    if let Some(ref mut sess) = session {
+        sess.model = model.clone();
+        sess.cwd = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let _ = sess.save();
+    }
     {
-        let start_source = if opts.resume_id.is_some() {
+        let start_source = if resume_hit {
             Some("resume")
-        } else if opts.continue_session {
+        } else if continued {
             Some("continue")
         } else if opts.no_session {
             None
@@ -5202,7 +5228,7 @@ async fn app_loop(
                                     });
                                     session = Some(sess);
                                     if let Some(ref s) = session {
-                                        crate::integrations::herdr::report_session_obj(
+                                        crate::integrations::herdr::report_session_switch_obj(
                                             s,
                                             Some("resume"),
                                         );
@@ -5900,8 +5926,12 @@ async fn app_loop(
                                     if !opts.no_session {
                                         session =
                                             Some(crate::services::session::Session::new(&model));
+                                        // Persist so the reported session path exists for herdr.
+                                        if let Some(ref mut s) = session {
+                                            let _ = s.save();
+                                        }
                                         if let Some(ref s) = session {
-                                            crate::integrations::herdr::report_session_obj(
+                                            crate::integrations::herdr::report_session_switch_obj(
                                                 s,
                                                 Some("new"),
                                             );
@@ -6262,7 +6292,7 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                                         });
                                         session = Some(sess);
                                         if let Some(ref s) = session {
-                                            crate::integrations::herdr::report_session_obj(
+                                            crate::integrations::herdr::report_session_switch_obj(
                                                 s,
                                                 Some("resume"),
                                             );

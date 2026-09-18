@@ -3,6 +3,7 @@
 // HERDR_INTEGRATION_ID=lean
 // HERDR_INTEGRATION_VERSION=1
 
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -14,17 +15,18 @@ const AGENT: &str = "lean";
 static REPORT_SEQ: OnceLock<AtomicU64> = OnceLock::new();
 static LAST_STATE: OnceLock<Mutex<Option<(String, Option<String>)>>> = OnceLock::new();
 static SEND_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
-static QUEUED: OnceLock<Mutex<Option<QueuedState>>> = OnceLock::new();
+static QUEUED: OnceLock<Mutex<VecDeque<QueueEntry>>> = OnceLock::new();
 static CURRENT_SESSION_ID: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static CURRENT_SESSION_PATH: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
+/// Ordered outbound queue entry. Session entries are barriers: state entries
+/// coalesce only with a trailing state entry, never across a session entry.
+/// This guarantees a session report always reaches herdr before the state
+/// that binds the pane to it.
 #[derive(Debug, Clone)]
-struct QueuedState {
-    state: String,
-    message: Option<String>,
-    seq: u64,
-    session_id: Option<String>,
-    session_path: Option<String>,
+struct QueueEntry {
+    value: serde_json::Value,
+    is_state: bool,
 }
 
 fn seq_cell() -> &'static AtomicU64 {
@@ -46,8 +48,8 @@ fn last_state_cell() -> &'static Mutex<Option<(String, Option<String>)>> {
     LAST_STATE.get_or_init(|| Mutex::new(None))
 }
 
-fn queued_cell() -> &'static Mutex<Option<QueuedState>> {
-    QUEUED.get_or_init(|| Mutex::new(None))
+fn queued_cell() -> &'static Mutex<VecDeque<QueueEntry>> {
+    QUEUED.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
 fn current_id_cell() -> &'static Mutex<Option<String>> {
@@ -86,6 +88,15 @@ fn socket_path() -> Option<String> {
     std::env::var("HERDR_SOCKET_PATH")
         .ok()
         .filter(|s| !s.is_empty())
+}
+
+fn debug_log(msg: &str) {
+    if std::env::var("HERDR_DEBUG")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        eprintln!("[herdr] {}", msg);
+    }
 }
 
 fn request_id() -> String {
@@ -269,17 +280,25 @@ fn build_state_request(
             params["message"] = serde_json::Value::String(m.to_string());
         }
     }
-    if let Some(id) = session_id {
-        params["agent_session_id"] = serde_json::Value::String(id);
-    } else if let Some(path) = session_path {
-        params["agent_session_path"] = serde_json::Value::String(path);
-    } else {
-        // fall back to global current ref
-        let (cid, cpath) = current_session_ref();
-        if let Some(cid) = cid {
-            params["agent_session_id"] = serde_json::Value::String(cid);
-        } else if let Some(cpath) = cpath {
-            params["agent_session_path"] = serde_json::Value::String(cpath);
+    // Always attach both refs when known (id and path are independent).
+    // Herdr resume accepts path-or-id; sending both keeps the pane bound
+    // even if one form is stale.
+    match session_id {
+        Some(id) => params["agent_session_id"] = serde_json::Value::String(id),
+        None => {
+            let (cid, _) = current_session_ref();
+            if let Some(cid) = cid {
+                params["agent_session_id"] = serde_json::Value::String(cid);
+            }
+        }
+    }
+    match session_path {
+        Some(path) => params["agent_session_path"] = serde_json::Value::String(path),
+        None => {
+            let (_, cpath) = current_session_ref();
+            if let Some(cpath) = cpath {
+                params["agent_session_path"] = serde_json::Value::String(cpath);
+            }
         }
     }
     Some(serde_json::json!({
@@ -289,7 +308,39 @@ fn build_state_request(
     }))
 }
 
-// Public API — mirrors pi's queueState/drainStateQueue with dedup
+fn build_release_request() -> Option<serde_json::Value> {
+    let pane = pane_id()?;
+    Some(serde_json::json!({
+        "id": request_id(),
+        "method": "pane.release_agent",
+        "params": {
+            "pane_id": pane,
+            "source": SOURCE,
+            "agent": AGENT,
+            "seq": next_seq(),
+        }
+    }))
+}
+
+// Public API — mirrors pi's queueState/drainStateQueue with dedup.
+// All outbound reports (session + state + release) flow through one ordered
+// queue so a session report can never lose a race with the state that
+// references it.
+
+/// Push a raw (non-state) request; session entries are never coalesced away.
+fn queue_raw(value: serde_json::Value) {
+    if !enabled() {
+        return;
+    }
+    queued_cell().lock().unwrap().push_back(QueueEntry {
+        value,
+        is_state: false,
+    });
+    // Try to drain if not already in-flight
+    if !SEND_IN_FLIGHT.load(Ordering::Relaxed) {
+        drain_queue();
+    }
+}
 
 fn queue_state(state: &str, message: Option<String>) {
     if !enabled() {
@@ -297,17 +348,24 @@ fn queue_state(state: &str, message: Option<String>) {
     }
     let (sid, spath) = current_session_ref();
     let seq = next_seq();
+    let Some(req) = build_state_request(state, message.as_deref(), seq, sid, spath) else {
+        return;
+    };
     let mut q = queued_cell().lock().unwrap();
-    *q = Some(QueuedState {
-        state: state.to_string(),
-        message,
-        seq,
-        session_id: sid,
-        session_path: spath,
-    });
+    // Coalesce with a trailing state entry only — never across a session
+    // barrier, so rapid idle→working→idle collapses but session→state order
+    // is preserved.
+    if matches!(q.back(), Some(e) if e.is_state) {
+        q.back_mut().expect("checked").value = req;
+    } else {
+        q.push_back(QueueEntry {
+            value: req,
+            is_state: true,
+        });
+    }
+    drop(q);
     // Try to drain if not already in-flight
     if !SEND_IN_FLIGHT.load(Ordering::Relaxed) {
-        drop(q);
         drain_queue();
     }
 }
@@ -320,21 +378,13 @@ fn drain_queue() {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         handle.spawn(async move {
             loop {
-                let next = { queued_cell().lock().unwrap().take() };
+                let next = { queued_cell().lock().unwrap().pop_front() };
                 let Some(item) = next else { break };
-                if let Some(req) = build_state_request(
-                    &item.state,
-                    item.message.as_deref(),
-                    item.seq,
-                    item.session_id.clone(),
-                    item.session_path.clone(),
-                ) {
-                    send_request(req).await;
-                }
+                send_request(item.value).await;
             }
             SEND_IN_FLIGHT.store(false, Ordering::Relaxed);
             // If something was queued while we were sending, drain again
-            if queued_cell().lock().unwrap().is_some() {
+            if !queued_cell().lock().unwrap().is_empty() {
                 drain_queue();
             }
         });
@@ -343,23 +393,14 @@ fn drain_queue() {
         #[cfg(unix)]
         std::thread::spawn(|| {
             loop {
-                let next = { queued_cell().lock().unwrap().take() };
+                let next = { queued_cell().lock().unwrap().pop_front() };
                 let Some(item) = next else { break };
-                if let Some(req) = build_state_request(
-                    &item.state,
-                    item.message.as_deref(),
-                    item.seq,
-                    item.session_id.clone(),
-                    item.session_path.clone(),
-                ) {
-                    let json = serde_json::to_string(&req).unwrap_or_default();
-                    if let Some(p) = socket_path() {
-                        if let Ok(mut s) = std::os::unix::net::UnixStream::connect(&p) {
-                            let _ =
-                                s.set_write_timeout(Some(std::time::Duration::from_millis(500)));
-                            let payload = format!("{}\n", json);
-                            let _ = std::io::Write::write_all(&mut s, payload.as_bytes());
-                        }
+                let json = serde_json::to_string(&item.value).unwrap_or_default();
+                if let Some(p) = socket_path() {
+                    if let Ok(mut s) = std::os::unix::net::UnixStream::connect(&p) {
+                        let _ = s.set_write_timeout(Some(std::time::Duration::from_millis(500)));
+                        let payload = format!("{}\n", json);
+                        let _ = std::io::Write::write_all(&mut s, payload.as_bytes());
                     }
                 }
             }
@@ -374,6 +415,7 @@ fn drain_queue() {
 
 fn publish_state(state: &str, message: Option<String>, force: bool) {
     if !enabled() {
+        debug_log("publish_state skipped: herdr not enabled");
         return;
     }
     {
@@ -394,22 +436,51 @@ fn publish_state(state: &str, message: Option<String>, force: bool) {
 
 /// Report a session — call on startup, resume, /new, and whenever Session::new() creates a file.
 /// `start_source` mirrors hermes: "startup" | "resume" | "new" | "continue"
+/// Queued through the ordered drain so any state published after this call
+/// (even from another task tick) is sent after the session report.
 pub fn report_session(session_id: &str, session_path: &Path, start_source: Option<&str>) {
     if !enabled() || session_id.is_empty() {
+        debug_log("report_session skipped: herdr not enabled or empty id");
         return;
     }
     let path_str = session_path.display().to_string();
     update_session_ref(Some(session_id), Some(&path_str));
     if let Some(req) = build_session_request(Some(session_id), Some(&path_str), start_source) {
-        spawn_send(req);
+        queue_raw(req);
     }
     // Also ensure last state is published with this session ref (idle by default)
     // Don't force — app_loop will explicitly publish idle/working after
 }
 
+/// Report a mid-life session switch (/resume, sessions picker, /new).
+/// Unlike [`report_session`], this resets the state dedup and force-queues an
+/// `idle` state bound to the new ref *after* the session report, so the herdr
+/// pane re-binds even when the previous state was also idle.
+pub fn report_session_switch(session_id: &str, session_path: &Path, start_source: Option<&str>) {
+    if !enabled() || session_id.is_empty() {
+        debug_log("report_session_switch skipped: herdr not enabled or empty id");
+        return;
+    }
+    let path_str = session_path.display().to_string();
+    update_session_ref(Some(session_id), Some(&path_str));
+    *last_state_cell().lock().unwrap() = None;
+    if let Some(req) = build_session_request(Some(session_id), Some(&path_str), start_source) {
+        queue_raw(req);
+    }
+    publish_state("idle", None, true);
+}
+
 /// Convenience: report session from &Session
 pub fn report_session_obj(sess: &crate::services::session::Session, start_source: Option<&str>) {
     report_session(&sess.id, &sess.file_path(), start_source);
+}
+
+/// Convenience: report a session switch from &Session (re-binds pane state).
+pub fn report_session_switch_obj(
+    sess: &crate::services::session::Session,
+    start_source: Option<&str>,
+) {
+    report_session_switch(&sess.id, &sess.file_path(), start_source);
 }
 
 /// Update the global session ref without sending (e.g. when session file changes)
@@ -443,7 +514,120 @@ pub fn report_working_force() {
     publish_state("working", None, true);
 }
 
+/// Release lifecycle authority — call once on clean shutdown so herdr stops
+/// attributing the pane to this source. Best-effort fire-and-forget.
+pub fn release_agent() {
+    if !enabled() {
+        return;
+    }
+    *last_state_cell().lock().unwrap() = None;
+    if let Some(req) = build_release_request() {
+        spawn_send(req);
+    }
+}
+
 /// For tests / diagnostics
 pub fn is_enabled() -> bool {
     enabled()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct EnvGuard {
+        keys: Vec<&'static str>,
+        prev: Vec<Option<String>>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl EnvGuard {
+        fn set() -> Self {
+            let lock = ENV_LOCK
+                .get_or_init(|| Mutex::new(()))
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let keys = vec!["HERDR_ENV", "HERDR_PANE_ID", "HERDR_SOCKET_PATH"];
+            let prev = keys.iter().map(|k| std::env::var(k).ok()).collect();
+            // SAFETY: ENV_LOCK serializes all writers of these vars in this module.
+            unsafe {
+                std::env::set_var("HERDR_ENV", "1");
+                std::env::set_var("HERDR_PANE_ID", "test-pane");
+                std::env::set_var("HERDR_SOCKET_PATH", "/tmp/herdr-test.sock");
+            }
+            Self {
+                keys,
+                prev,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (k, v) in self.keys.iter().zip(self.prev.iter()) {
+                match v {
+                    Some(val) => unsafe { std::env::set_var(k, val) },
+                    None => unsafe { std::env::remove_var(k) },
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn state_request_carries_both_session_refs() {
+        let _g = EnvGuard::set();
+        let req = build_state_request(
+            "idle",
+            None,
+            1,
+            Some("sess-123".to_string()),
+            Some("/tmp/sess-123.json".to_string()),
+        )
+        .expect("request builds when enabled");
+        let params = &req["params"];
+        assert_eq!(params["agent_session_id"], "sess-123");
+        assert_eq!(params["agent_session_path"], "/tmp/sess-123.json");
+        assert_eq!(params["state"], "idle");
+    }
+
+    #[test]
+    fn state_request_falls_back_to_current_ref_per_field() {
+        let _g = EnvGuard::set();
+        update_session_ref(Some("cur-id"), Some("/tmp/cur.json"));
+        // id missing -> falls back to current id; path explicit wins
+        let req = build_state_request(
+            "working",
+            None,
+            2,
+            None,
+            Some("/tmp/other.json".to_string()),
+        )
+        .expect("request builds when enabled");
+        assert_eq!(req["params"]["agent_session_id"], "cur-id");
+        assert_eq!(req["params"]["agent_session_path"], "/tmp/other.json");
+    }
+
+    #[test]
+    fn session_request_requires_a_ref_and_echoes_source() {
+        let _g = EnvGuard::set();
+        assert!(build_session_request(None, None, Some("resume")).is_none());
+        let req = build_session_request(Some("abc"), Some("/tmp/abc.json"), Some("resume"))
+            .expect("request builds with refs");
+        assert_eq!(req["method"], "pane.report_agent_session");
+        assert_eq!(req["params"]["agent_session_id"], "abc");
+        assert_eq!(req["params"]["agent_session_path"], "/tmp/abc.json");
+        assert_eq!(req["params"]["session_start_source"], "resume");
+    }
+
+    #[test]
+    fn release_request_targets_pane_and_source() {
+        let _g = EnvGuard::set();
+        let req = build_release_request().expect("release builds when enabled");
+        assert_eq!(req["method"], "pane.release_agent");
+        assert_eq!(req["params"]["pane_id"], "test-pane");
+        assert_eq!(req["params"]["source"], SOURCE);
+    }
 }

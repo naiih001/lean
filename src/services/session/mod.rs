@@ -135,6 +135,17 @@ impl Session {
         Self::list().into_iter().next()
     }
 
+    /// Latest session for a working directory (trailing-slash insensitive),
+    /// falling back to `None` when the dir has no sessions. Prefer this for
+    /// `--continue` so a herdr pane restored in its cwd resumes the pane's
+    /// own session instead of another project's.
+    pub fn latest_for(cwd: &str) -> Option<Session> {
+        let norm = cwd.trim_end_matches('/');
+        Self::list()
+            .into_iter()
+            .find(|s| s.cwd.trim_end_matches('/') == norm)
+    }
+
     /// Delete old sessions beyond keep count (default 50)
     pub fn prune(keep: usize) {
         let mut list = Self::list();
