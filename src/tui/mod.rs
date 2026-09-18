@@ -132,6 +132,30 @@ mod tests {
         wrap_cursor_line(&mut ta, 4);
         assert_eq!(ta.lines().to_vec(), vec!["abcd", "efgh"]);
     }
+
+    #[test]
+    fn format_est_compacts_large_counts() {
+        assert_eq!(format_est(0), "0");
+        assert_eq!(format_est(999), "999");
+        assert_eq!(format_est(1000), "1.0K");
+        assert_eq!(format_est(118800), "118.8K");
+        assert_eq!(format_est(1_500_000), "1.5M");
+    }
+
+    #[test]
+    fn format_context_label_is_est_plus_pct() {
+        assert_eq!(format_context_label(118800, 1_000_000), "118.8K (12%)");
+        assert_eq!(format_context_label(5000, 1_000_000), "5.0K (0.5%)");
+        // pct clamps at 100
+        assert_eq!(format_context_label(2_000_000, 1_000_000), "2.0M (100%)");
+    }
+
+    #[test]
+    fn right_align_label_pins_to_right_with_margin() {
+        assert_eq!(right_align_label("118.8K (12%)", 20), "       118.8K (12%)");
+        // extreme widths truncate from the left instead of overflowing
+        assert_eq!(right_align_label("118.8K (12%)", 6), "(12%)");
+    }
 }
 
 // ── Message model ──────────────────────────────────────────────
@@ -1280,23 +1304,40 @@ fn estimate_tokens(messages: &[Msg], model: &str) -> usize {
     (chars + 3) / 4
 }
 
+/// Compact token estimate for the footer, e.g. 999, 118.8K, 1.5M.
+fn format_est(est: usize) -> String {
+    if est >= 1_000_000 {
+        format!("{:.1}M", est as f64 / 1_000_000.0)
+    } else if est >= 1000 {
+        format!("{:.1}K", est as f64 / 1000.0)
+    } else {
+        format!("{}", est)
+    }
+}
+
 fn format_context_label(est: usize, window: usize) -> String {
     let pct = ((est as f64 / window as f64) * 100.0).min(100.0);
-    // Format window as 1.0M, 128k, etc.
-    let window_str = if window >= 1_000_000 {
-        format!("{:.1}M", window as f64 / 1_000_000.0)
-    } else if window >= 1000 {
-        format!("{}k", window / 1000)
-    } else {
-        format!("{}", window)
-    };
     // Show pct as integer, but keep one decimal if <10%
     let pct_str = if pct < 10.0 {
         format!("{:.1}%", pct)
     } else {
         format!("{:.0}%", pct)
     };
-    format!("{} / {}", pct_str, window_str)
+    format!("{} ({})", format_est(est), pct_str)
+}
+
+/// Right-align a short footer label with a 1-col right margin. Truncates from
+/// the left on extreme widths so the row never bleeds past the edge.
+fn right_align_label(label: &str, width: usize) -> String {
+    let label_w = label.chars().count();
+    if label_w + 1 > width {
+        label
+            .chars()
+            .skip(label_w + 1 - width.max(1))
+            .collect::<String>()
+    } else {
+        format!("{}{}", " ".repeat(width - label_w - 1), label)
+    }
 }
 
 fn draw_subagent_summary(f: &mut Frame, area: Rect, tick: usize) {
@@ -1710,16 +1751,7 @@ fn draw_footer(
             let est = estimate_tokens(messages, model);
             let window = context_window_for_model(model);
             let ctx = format_context_label(est, window);
-            let ctx_txt = if ctx.chars().count() > width.saturating_sub(2) {
-                format!(
-                    " {}… ",
-                    ctx.chars()
-                        .take(width.saturating_sub(3))
-                        .collect::<String>()
-                )
-            } else {
-                format!(" {} ", ctx)
-            };
+            let ctx_txt = right_align_label(&ctx, width);
             let cpara = Paragraph::new(Line::from(Span::styled(
                 ctx_txt,
                 Style::default().fg(ASHEN.deep_ash).bg(THEME.page_bg),
@@ -1896,30 +1928,16 @@ fn draw_footer(
 
     let footer = Paragraph::new(Line::from(spans));
     f.render_widget(footer, top_area);
-    // Second row: context window
+    // Second row: context estimate — short label, right-aligned, one color.
     if area.height >= 2 {
         let est = estimate_tokens(messages, model);
         let window = context_window_for_model(model);
         let ctx_label = format_context_label(est, window);
-        let pct = ((est as f64 / window as f64) * 100.0).min(100.0);
-        let bar_width = width.saturating_sub(ctx_label.chars().count() + 4).max(6);
-        let filled = ((pct / 100.0) * bar_width as f64).round() as usize;
-        let empty = bar_width.saturating_sub(filled);
-        let bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
-        let ctx_line = format!(" {} {} ", bar, ctx_label);
-        let display = if ctx_line.chars().count() > width {
-            ctx_line.chars().take(width).collect::<String>()
-        } else {
-            ctx_line
-        };
-        let ctx_style = if pct > 85.0 {
-            Style::default().fg(ASHEN.ember).bg(THEME.page_bg)
-        } else if pct > 60.0 {
-            Style::default().fg(ASHEN.frost).bg(THEME.page_bg)
-        } else {
-            Style::default().fg(ASHEN.deep_ash).bg(THEME.page_bg)
-        };
-        let cpara = Paragraph::new(Line::from(Span::styled(display, ctx_style)));
+        let display = right_align_label(&ctx_label, width);
+        let cpara = Paragraph::new(Line::from(Span::styled(
+            display,
+            Style::default().fg(ASHEN.deep_ash).bg(THEME.page_bg),
+        )));
         f.render_widget(cpara, bottom_area);
     }
 }

@@ -31,21 +31,38 @@ pub fn estimate_tokens(messages: &[Msg], model: &str) -> usize {
     (chars + 3) / 4
 }
 
+/// Compact token estimate for the footer, e.g. 999, 118.8K, 1.5M.
+pub fn format_est(est: usize) -> String {
+    if est >= 1_000_000 {
+        format!("{:.1}M", est as f64 / 1_000_000.0)
+    } else if est >= 1000 {
+        format!("{:.1}K", est as f64 / 1000.0)
+    } else {
+        format!("{}", est)
+    }
+}
+
 pub fn format_context_label(est: usize, window: usize) -> String {
     let pct = ((est as f64 / window as f64) * 100.0).min(100.0);
-    // Format window as 1.0M, 128k, etc.
-    let window_str = if window >= 1_000_000 {
-        format!("{:.1}M", window as f64 / 1_000_000.0)
-    } else if window >= 1000 {
-        format!("{}k", window / 1000)
-    } else {
-        format!("{}", window)
-    };
     // Show pct as integer, but keep one decimal if <10%
     let pct_str = if pct < 10.0 {
         format!("{:.1}%", pct)
     } else {
         format!("{:.0}%", pct)
     };
-    format!("{} / {}", pct_str, window_str)
+    format!("{} ({})", format_est(est), pct_str)
+}
+
+/// Right-align a short footer label with a 1-col right margin. Truncates from
+/// the left on extreme widths so the row never bleeds past the edge.
+pub fn right_align_label(label: &str, width: usize) -> String {
+    let label_w = label.chars().count();
+    if label_w + 1 > width {
+        label
+            .chars()
+            .skip(label_w + 1 - width.max(1))
+            .collect::<String>()
+    } else {
+        format!("{}{}", " ".repeat(width - label_w - 1), label)
+    }
 }

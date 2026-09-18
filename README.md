@@ -136,7 +136,7 @@ lean --no-session            # run without persistence
 | **Chat** | Conversation history, tool calls with results, and streaming output |
 | **Input** | Auto-wrapping multiline editing (`Enter` send, `Shift+Enter` newline, `Shift+Tab` cycles `NORM/PLAN/AUTO`, `Ctrl+C` clear), history with `↑`/`↓`, slash commands, `Esc` to quit |
 | **Overlays** | Approval prompts, session picker, and allowlist editor |
-| **Footer** | Top: mode badge (`NORM`/`PLAN`/`AUTO`), model + api (`chat`/`responses`/`anthropic`), cwd, spinner — Bottom: context-window bar (`X% / 1.0M`) + token usage |
+| **Footer** | Top: mode badge (`NORM`/`PLAN`/`AUTO`), model + api (`chat`/`responses`/`anthropic`), cwd, spinner — Bottom: context usage, right-aligned (`118.8K (12%)`) |
 
 **Slash commands:** `/help` `/new` `/clear` `/exit` `/model` `/sessions` `/resume` `/allowlist` `/mcp` `/auto-accept` `/plan` `/init` — `Shift+Tab` cycles `NORM→PLAN→AUTO` (`PLAN` = read-only planning, `AUTO` = session-only silent bypass). `/init` analyzes the project and creates `AGENT.md` (+ `CLAUDE.md` mirror); files are auto-loaded on startup (project + global `~/.lean/`).
 
