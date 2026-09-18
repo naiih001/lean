@@ -1239,9 +1239,10 @@ fn draw_input(f: &mut Frame, area: Rect, textarea: &mut TextArea<'_>) {
         "  ▸  type a message…  (/help • Enter send • Shift+Enter newline • Shift+Tab NORM/PLAN/ASK/AUTO)",
     );
     textarea.set_placeholder_style(Style::default().fg(ASHEN.charcoal).bg(THEME.input_bg));
-    // prompt gutter: we prepend via block title style instead of manual truncation
+    // Top + bottom border only — frames the input for readability, no side borders
     let block = Block::default()
-        .borders(Borders::NONE)
+        .borders(Borders::TOP | Borders::BOTTOM)
+        .border_style(Style::default().fg(THEME.separator).bg(THEME.input_bg))
         .style(Style::default().bg(THEME.input_bg));
     textarea.set_block(block);
 
@@ -4188,9 +4189,9 @@ async fn app_loop(
         }
         let term_size = terminal.size()?;
         let queue_rows = msg_queue.len().min(2) as u16;
-        // Dynamic input height 1..6 (auto-grow like pi/jcode, clamped)
-        let input_height = (textarea.lines().len() as u16).clamp(1, 6);
-        let overhead = 7 + queue_rows + input_height; // indicator(1) + header + sep + sep + queue + summary(1) + input + footer(2 rows)
+        // Dynamic input height 1..6 text rows + 2 for top/bottom borders
+        let input_height = (textarea.lines().len() as u16).clamp(1, 6) + 2;
+        let overhead = 7 + queue_rows + input_height; // indicator(1) + header + sep + sep + queue + summary(1) + input(text + top/bottom borders) + footer(2 rows)
                                                       // Content area: starts after indicator + header + sep
         let content_area = Rect {
             x: 0,
@@ -4211,7 +4212,7 @@ async fn app_loop(
                     Constraint::Length(1), // separator
                     Constraint::Length(queue_rows), // queue (0-2)
                     Constraint::Length(1), // subagent summary bar (always reserved, empty when none)
-                    Constraint::Length(input_height), // input (auto-grow 1..5)
+                    Constraint::Length(input_height), // input (auto-grow 1..6 text rows + top/bottom borders)
                     Constraint::Length(2), // footer (2 rows: main + context)
                 ])
                 .split(Rect {

@@ -53,9 +53,10 @@ pub fn draw_input(f: &mut Frame, area: Rect, textarea: &mut TextArea<'_>) {
         "  ▸  type a message…  (/help • Enter send • Shift+Enter newline • Shift+Tab NORM/PLAN/ASK/AUTO)",
     );
     textarea.set_placeholder_style(Style::default().fg(ASHEN.charcoal).bg(THEME.input_bg));
-    // prompt gutter: we prepend via block title style instead of manual truncation
+    // Top + bottom border only — frames the input for readability, no side borders
     let block = Block::default()
-        .borders(Borders::NONE)
+        .borders(Borders::TOP | Borders::BOTTOM)
+        .border_style(Style::default().fg(THEME.separator).bg(THEME.input_bg))
         .style(Style::default().bg(THEME.input_bg));
     textarea.set_block(block);
 
