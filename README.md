@@ -169,6 +169,8 @@ lean --resume <id>             # resume by session ID prefix
 lean --no-session              # disable session persistence
 lean --bash-guard-disabled     # disable bash allowlist guard
 lean --dir-guard-disabled      # disable directory confinement guard
+lean --mode <name>             # start in mode (norm, plan, ask, or custom)
+lean --auto-accept             # auto-approve all approval prompts (AUTO)
 ```
 
 ### Persistent Files
@@ -179,6 +181,7 @@ lean --dir-guard-disabled      # disable directory confinement guard
 | `~/.lean/dir_allowlist.json` | Directory guard allowlist |
 | `~/.lean/sessions/` | Persisted session history (pruned to 50 messages) |
 | `~/.lean/models.json` | Model aliases + provider config (see `api` field below) |
+| `~/.lean/modes.json` + `.lean/modes.json` | Mode config — model/temperature/tool allowlist per mode (see Mode Config below; project overrides global) |
 | `./AGENT.md` / `./CLAUDE.md` | Project context (auto-loaded on startup, `CLAUDE.md` is a mirror for Claude Code compat) |
 | `~/.lean/AGENT.md`, `~/.lean/CLAUDE.md` | Global context (also `~/.claude/CLAUDE.md` for compat) |
 | `./.env` | Project-local environment variables |
@@ -220,6 +223,43 @@ lean --dir-guard-disabled      # disable directory confinement guard
 - `api_key_env` / `api_key` — env var name or inline key. `ollama`/`local` requires no key (`"ollama"` placeholder ok).
 - `api` — `"chat_completions"` (default, `POST /v1/chat/completions`), `"responses"` (`POST /v1/responses`), or `"anthropic"` (`POST /v1/messages` with `x-api-key`). Existing configs without `api`/`provider` keep working as chat completions.
 - `vision` — optional `bool` (default `true`). Set `false` for text-only models to strip pasted images (`[image omitted — model does not support vision]`, max 5 images/turn).
+
+### Mode Config (`~/.lean/modes.json` + `.lean/modes.json`)
+
+Modes are opencode-style configurable agents. Builtins are `norm` (full access), `plan` (gated planning, writes only under `.lean/plans/`), and `ask` (read-only). A template with the builtins is auto-created on first run; add your own modes (e.g. `review`, `debug`) in either file — project entries merge over global ones, unknown tool keys are ignored with a warning.
+
+```json
+{
+  "version": 1,
+  "modes": {
+    "plan": { "temperature": 0.1 },
+    "review": {
+      "description": "Read-only code review",
+      "behavior": "ask",
+      "model": "gpt-4o",
+      "temperature": 0.2,
+      "tools": {
+        "write": false,
+        "edit": false,
+        "bash": "read-only",
+        "mcp": "read-only"
+      }
+    },
+    "debug": {
+      "description": "Investigation with shell access",
+      "behavior": "norm",
+      "tools": { "write": false, "edit": false }
+    }
+  }
+}
+```
+- `behavior` — `norm` (default), `plan` (5-phase gated flow), or `ask` (read-only). Defaults by name (`plan`→`plan`, `ask`→`ask`); set it explicitly for custom modes. Determines the base system prompt and the hard execution gates.
+- `model` — model alias from `models.json` used while in this mode (e.g. a cheaper model for planning). Unset inherits the session model.
+- `temperature` — `0.0`–`2.0`, sent with each request while in this mode. Unset sends nothing (provider default).
+- `tools` — per-tool access: `true` (allow), `false` (deny — omitted from the tools sent to the model), `"plans-only"` (writes/edits only under `.lean/plans/`), `"read-only"` (also accepts `"readonly"`; read-only invocations only, for `bash` and `mcp`). Unlisted tools default to allow; `ask_user` (the approval channel) is never filtered; the `mcp` key governs `server__tool` calls (reads stay permitted under `read-only` via the execution gate).
+- `prompt_file` — extra instructions appended to the base prompt (absolute path, or relative to CWD, max 2000 chars).
+- `description` — shown in `/mode` listing.
+- Switching: `/mode <name>` (Tab-completes), `Shift+Tab` cycles all modes, `lean --mode <name>` / `lean --auto-accept` for one run. The active mode persists in the session and restores on `--continue`/`--resume`.
 
 ---
 
