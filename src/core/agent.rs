@@ -11,12 +11,11 @@ pub(crate) use crate::core::history::{
 };
 pub(crate) use crate::core::modes::{is_ask_mode, is_plan_mode};
 pub(crate) use crate::core::prompts::{
-    build_system_prompt, truncate_chars, truncate_for_llm,
-    ASK_READONLY_DENY_MSG,
+    build_system_prompt, truncate_chars, truncate_for_llm, ASK_READONLY_DENY_MSG,
 };
 pub(crate) use crate::core::tracker::{
-    is_mcp_read, is_mutating_tool, is_plan_exempt_write,
-    is_readonly_bash, PlanTracker, MAX_NOCALL_STREAK,
+    is_mcp_read, is_mutating_tool, is_plan_exempt_write, is_readonly_bash, PlanTracker,
+    MAX_NOCALL_STREAK,
 };
 
 pub enum AgentEvent {
@@ -42,6 +41,11 @@ pub enum AgentEvent {
     },
     Step {
         n: usize,
+    },
+    Sprint {
+        n: usize,
+        score: f32,
+        passed: bool,
     },
     Done {
         text: String,
@@ -168,9 +172,9 @@ pub fn run_agent(
     model: String,
     max_steps: usize,
 ) -> impl Stream<Item = AgentEvent> {
-    // TODO(HARNESS-REPLACE-LOOP): delegate to `crate::core::harness::runner`
-    // (Planner → Generator → Evaluator). This legacy entry point must become a
-    // thin wrapper; new orchestration belongs in `core/harness/`, not here.
+    // Harness-as-core: routes through `run_agent_with_history`, which selects
+    // the harness sprint loop when the flag is on (complex tasks) and the
+    // legacy single pass otherwise.
     run_agent_with_history(user_prompt, model, max_steps, Vec::new())
 }
 
@@ -179,12 +183,49 @@ pub fn run_agent_with_history(
     model: String,
     max_steps: usize,
     history: Vec<Value>,
+) -> std::pin::Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
+    // HARNESS-AS-CORE (flag-gated / blocking / complex-only): when the harness
+    // flag is on and the goal is non-conversational, orchestration lives in
+    // `harness::runner::run_harness_stream` (Planner → Generator → Evaluator
+    // sprints). Otherwise the legacy single-pass tool loop below runs as-is.
+    // (Boxed because the two branches are different opaque stream types.)
+    if crate::core::harness::harness_enabled()
+        && crate::core::harness::generator::is_complex_task(&user_prompt)
+    {
+        Box::pin(crate::core::harness::runner::run_harness_stream(
+            user_prompt,
+            model,
+            max_steps,
+            history,
+            harness_turn_config(),
+        ))
+    } else {
+        Box::pin(legacy_run_agent_with_history(
+            user_prompt,
+            model,
+            max_steps,
+            history,
+        ))
+    }
+}
+
+/// Per-turn harness budget for interactive use: blocking retries capped at 3
+/// sprints so worst-case cost stays bounded behind the flag.
+fn harness_turn_config() -> crate::core::harness::HarnessConfig {
+    crate::core::harness::HarnessConfig {
+        max_sprints: 3,
+        ..crate::core::harness::HarnessConfig::default()
+    }
+}
+
+/// Legacy single-pass tool loop — now the harness `Generator` step.
+/// New orchestration belongs in `core/harness/`, not here.
+pub(crate) fn legacy_run_agent_with_history(
+    user_prompt: String,
+    model: String,
+    max_steps: usize,
+    history: Vec<Value>,
 ) -> impl Stream<Item = AgentEvent> {
-    // TODO(HARNESS-REPLACE-LOOP): rewrite around `harness::runner::run_sprint`
-    // as the core (opt-in `/harness`, advisory-only, complex tasks only).
-    // The Responses/Chat tool loops below become the harness `Generator` step;
-    // Planner/Evaluator feedback threads through here. Keep this signature so
-    // `tui` + `subagent` callers stay untouched during the migration.
     async_stream::stream! {
         // Effective mode snapshot for this turn: model/temperature override,
         // tool allowlist, and prompt extras. Permissive switches (leaving

@@ -29,6 +29,7 @@ pub struct RunOpts {
     pub dir_guard_disabled: bool,
     pub mode: Option<String>,
     pub auto_accept: bool,
+    pub harness: bool,
 }
 
 pub async fn run(opts: RunOpts) -> anyhow::Result<()> {
@@ -37,6 +38,7 @@ pub async fn run(opts: RunOpts) -> anyhow::Result<()> {
     crate::guards::dir::set_disabled(opts.dir_guard_disabled);
     crate::guards::dir::init(None);
     crate::services::question::set_interactive(true);
+    crate::core::harness::set_harness_enabled(opts.harness);
     let _model = opts.model.clone();
 
     crossterm::terminal::enable_raw_mode()?;
@@ -1863,6 +1865,7 @@ const COMMANDS: &[&str] = &[
     "/auto-accept",
     "/mode",
     "/plan",
+    "/harness",
     "/init",
 ];
 
@@ -5900,7 +5903,7 @@ async fn app_loop(
                                 "/help" => {
                                     messages.push(Msg {
                                         role: "system".into(),
-                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /mcp /model <name> /mode <name> /clear /exit /auto-accept /plan /init  ·  Enter send · Shift+Enter newline · Tab cycles modes · @file $skill · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll — /plan toggles PLAN, /auto-accept toggles AUTO, /mode switches modes (see ~/.lean/modes.json), Tab cycles — /init creates AGENTS.md".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /mcp /model <name> /mode <name> /clear /exit /auto-accept /plan /harness /init  ·  Enter send · Shift+Enter newline · Tab cycles modes · @file $skill · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll — /plan toggles PLAN, /auto-accept toggles AUTO, /harness toggles Planner→Generator→Evaluator sprints, /mode switches modes (see ~/.lean/modes.json), Tab cycles — /init creates AGENTS.md".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                 }
                                 "/plan" => {
                                     let next = if crate::agent::current_mode()
@@ -5917,6 +5920,31 @@ async fn app_loop(
                                         }
                                         _ => crate::support::telemetry::record("mode_norm"),
                                     }
+                                }
+                                "/harness" | "/harness on" | "/harness off" => {
+                                    let want_on = if prompt == "/harness" {
+                                        !crate::core::harness::harness_enabled()
+                                    } else {
+                                        prompt == "/harness on"
+                                    };
+                                    crate::core::harness::set_harness_enabled(want_on);
+                                    crate::support::telemetry::record(if want_on {
+                                        "harness_on"
+                                    } else {
+                                        "harness_off"
+                                    });
+                                    messages.push(Msg {
+                                        role: "system".into(),
+                                        content: if want_on {
+                                            "harness: ON — complex turns run Planner→Generator→Evaluator sprints (blocking retries, max 3)".into()
+                                        } else {
+                                            "harness: OFF — single-pass loop".into()
+                                        },
+                                        tool_id: None,
+                                        tool_name: None,
+                                        tool_args: None,
+                                        elapsed_ms: None,
+                                    });
                                 }
                                 "/init" => {
                                     // Fast deterministic fallback + LLM enrichment
@@ -6730,6 +6758,15 @@ Explore codebase (ls, README, Cargo.toml etc.), then create/update ./AGENTS.md (
                 }
                 AgentEvent::Step { n } => {
                     step_info = format!("step {}", n);
+                }
+                AgentEvent::Sprint { n, score, passed } => {
+                    step_info =
+                        format!("sprint {}{} {:.2}", n, if passed { "✓" } else { "" }, score);
+                    crate::support::telemetry::record(if passed {
+                        "harness_sprint_pass"
+                    } else {
+                        "harness_sprint_retry"
+                    });
                 }
                 AgentEvent::Done { text, history } => {
                     let _ = text;

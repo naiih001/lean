@@ -71,8 +71,7 @@ Don't loop or re-read the same file. Continue while steps remain but stop when a
 ## Skills\n\
 - Skills are markdown workflows listed below. BEFORE acting, scan Available Skills — if one matches the task, you SHOULD call read_skill and follow it (strongly recommended, not mandatory; skip only if clearly irrelevant). Prefer skill guidance over improvising.\n";
 
-pub const ASK_READONLY_DENY_MSG: &str =
-    "ASK is read-only — switch to Norm (Tab) or Plan to build.";
+pub const ASK_READONLY_DENY_MSG: &str = "ASK is read-only — switch to Norm (Tab) or Plan to build.";
 
 pub const SYSTEM_PROMPT: &str = REGULAR_SYSTEM_PROMPT;
 

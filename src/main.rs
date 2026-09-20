@@ -33,6 +33,12 @@ struct Args {
 
     #[arg(long, help = "Auto-approve all approval prompts (AUTO mode)")]
     auto_accept: bool,
+
+    #[arg(
+        long,
+        help = "Route complex turns through the Planner→Generator→Evaluator harness (blocking retries)"
+    )]
+    harness: bool,
 }
 
 #[tokio::main]
@@ -51,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
         dir_guard_disabled: args.dir_guard_disabled,
         mode: args.mode,
         auto_accept: args.auto_accept,
+        harness: args.harness,
     })
     .await
 }
