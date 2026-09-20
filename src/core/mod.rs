@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod context;
 pub mod eval;
+pub mod harness;
 pub mod history;
 pub mod mode_config;
 pub mod modes;

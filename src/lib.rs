@@ -14,6 +14,7 @@ pub mod mcp;
 
 // Compat re-exports — keep old crate:: paths working during refactor
 pub use core::context;
+pub use core::harness;
 pub use guards::approval;
 pub use guards::bash as bash_guard;
 pub use guards::dir as dir_guard;

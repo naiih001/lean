@@ -136,4 +136,81 @@ impl Client {
         }
         b
     }
+
+    /// Make a chat completion request. Used by the harness.
+    pub async fn chat(
+        &self,
+        model: &str,
+        messages: &[serde_json::Value],
+        temperature: f32,
+        max_tokens: Option<usize>,
+    ) -> anyhow::Result<String> {
+        let url = self.responses_url();
+        let body = serde_json::json!({
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens.unwrap_or(2000),
+        });
+
+        let policy = crate::integrations::llm::RetryPolicy::for_provider(&self.provider);
+        let mut last_err: Option<String> = None;
+        for attempt in 0..=policy.max_retries {
+            let res = self
+                .apply_auth(self.http.post(url.clone()))
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await;
+            match res {
+                Ok(resp) => {
+                    if resp.status().is_success() {
+                        return Ok(resp.text().await.unwrap_or_default());
+                    }
+                    let status = resp.status().as_u16();
+                    if is_retryable_status(status) && attempt < policy.max_retries {
+                        let retry_after = parse_retry_after(resp.headers())
+                            .unwrap_or(std::time::Duration::from_millis(policy.base_delays_ms[attempt as usize]));
+                        let delay = std::cmp::min(retry_after, std::time::Duration::from_secs(30));
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    } else {
+                        let txt = resp.text().await.unwrap_or_default();
+                        last_err = Some(format!("HTTP {}: {}", status, txt));
+                        break;
+                    }
+                }
+                Err(e) => {
+                    if is_retryable_error(&e) && attempt < policy.max_retries {
+                        let delay = std::time::Duration::from_millis(policy.base_delays_ms[attempt as usize]);
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    } else {
+                        last_err = Some(e.to_string());
+                        break;
+                    }
+                }
+            }
+        }
+        Err(anyhow::anyhow!("LLM call failed: {}", last_err.unwrap_or_else(|| "unknown error".to_string())))
+    }
+}
+
+fn is_retryable_status(status: u16) -> bool {
+    matches!(status, 429 | 500..=599)
+}
+
+fn is_retryable_error(e: &reqwest::Error) -> bool {
+    e.is_timeout() || e.is_connect() || e.is_request() && format!("{:?}", e).to_lowercase().contains("connection")
+}
+
+fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<std::time::Duration> {
+    if let Some(v) = headers.get(reqwest::header::RETRY_AFTER) {
+        if let Ok(s) = v.to_str() {
+            if let Ok(secs) = s.trim().parse::<u64>() {
+                return Some(std::time::Duration::from_secs(secs));
+            }
+        }
+    }
+    None
 }
