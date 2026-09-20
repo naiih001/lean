@@ -4615,10 +4615,18 @@ async fn app_loop(
                         }
                         continue;
                     }
-                    // Global mode cycle: Shift+Tab circles NORM → PLAN → ASK → AUTO → NORM — must be before any modal hijack, wins over wizard BackTab
+                    // Global mode cycle: Tab / Shift+Tab circles NORM → PLAN → ASK → AUTO → NORM — must be before any modal hijack, wins over wizard BackTab
                     let is_shift_tab = k.code == KeyCode::BackTab
                         || (k.code == KeyCode::Tab && k.modifiers.contains(KeyModifiers::SHIFT));
-                    if is_shift_tab {
+                    // Plain Tab also cycles, except where Tab already has a local binding:
+                    // sessions picker (Tab toggles all/dir) and open autocomplete popup.
+                    let is_plain_tab_cycle = k.code == KeyCode::Tab
+                        && !k.modifiers.contains(KeyModifiers::SHIFT)
+                        && !k.modifiers.contains(KeyModifiers::CONTROL)
+                        && !k.modifiers.contains(KeyModifiers::ALT)
+                        && !show_sessions
+                        && ac_matches.is_empty();
+                    if is_shift_tab || is_plain_tab_cycle {
                         let next = crate::agent::cycle_mode();
                         match next {
                             crate::agent::Mode::Auto => {
@@ -4857,7 +4865,7 @@ async fn app_loop(
                         dirty = true;
                         continue;
                     }
-                    // Subagent overlay: hijack keys (highest priority after Shift+Tab)
+                    // Subagent overlay: hijack keys (highest priority after Tab/Shift+Tab)
                     if show_subagents {
                         if subagent_kill_confirm {
                             match k.code {
@@ -5705,13 +5713,46 @@ async fn app_loop(
                                 ac_matches.clear();
                                 ac_idx = 0;
                                 ac_scroll = 0;
+                            } else if !k.modifiers.contains(KeyModifiers::CONTROL)
+                                && !k.modifiers.contains(KeyModifiers::ALT)
+                            {
+                                // Pure Tab with no autocomplete open cycles modes (same as Shift+Tab).
+                                // Normally handled by the global handler above; kept here as fallback.
+                                let next = crate::agent::cycle_mode();
+                                match next {
+                                    crate::agent::Mode::Auto => {
+                                        // AUTO takes effect immediately: drain pending approvals
+                                        if let Some(mut req) = pending_approval.take() {
+                                            if let Some(tx) = req.tx.take() {
+                                                let _ = tx.send(true);
+                                            }
+                                        }
+                                        while let Some(mut req) =
+                                            crate::guards::approval::take_pending()
+                                        {
+                                            if let Some(tx) = req.tx.take() {
+                                                let _ = tx.send(true);
+                                            }
+                                        }
+                                        crate::support::telemetry::record("mode_auto");
+                                    }
+                                    crate::agent::Mode::Plan => {
+                                        crate::support::telemetry::record("mode_plan");
+                                    }
+                                    crate::agent::Mode::Ask => {
+                                        crate::support::telemetry::record("mode_ask");
+                                    }
+                                    crate::agent::Mode::Norm => {
+                                        crate::support::telemetry::record("mode_norm");
+                                    }
+                                    crate::agent::Mode::Custom(_) => {
+                                        crate::support::telemetry::record("mode_custom");
+                                    }
+                                }
                             } else {
-                                // Tab inserts 2 spaces (or delegate)
+                                // Modified Tab (Ctrl/Alt): preserve old delegate behavior.
                                 let inp: TAInput = crossterm_key_to_input(k);
-                                // prevent tab from inserting inside textarea as literal tab; insert spaces
-                                if textarea.lines().join("\n").starts_with('/') {
-                                    // in command mode, cycle autocomplete
-                                } else {
+                                if !textarea.lines().join("\n").starts_with('/') {
                                     textarea.input(inp);
                                 }
                             }
@@ -5859,7 +5900,7 @@ async fn app_loop(
                                 "/help" => {
                                     messages.push(Msg {
                                         role: "system".into(),
-                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /mcp /model <name> /mode <name> /clear /exit /auto-accept /plan /init  ·  Enter send · Shift+Enter newline · Shift+Tab cycles modes · @file $skill · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll — /plan toggles PLAN, /auto-accept toggles AUTO, /mode switches modes (see ~/.lean/modes.json), Shift+Tab cycles — /init creates AGENTS.md".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
+                                        content: "/help /new /sessions /resume <id> /allowlist /allowlist clear /mcp /model <name> /mode <name> /clear /exit /auto-accept /plan /init  ·  Enter send · Shift+Enter newline · Tab cycles modes · @file $skill · Ctrl+C clear · Ctrl+U kill · Ctrl+Z undo · Up/Down history · PgUp/PgDn scroll — /plan toggles PLAN, /auto-accept toggles AUTO, /mode switches modes (see ~/.lean/modes.json), Tab cycles — /init creates AGENTS.md".into(), tool_id: None, tool_name: None, tool_args: None, elapsed_ms: None});
                                 }
                                 "/plan" => {
                                     let next = if crate::agent::current_mode()

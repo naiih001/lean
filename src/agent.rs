@@ -1,6 +1,8 @@
 // Shim for backward compat — single responsibility refactor (C1)
 // This file re-exports the split core modules and keeps old crate::agent paths alive.
 // New code should use crate::core::agent / ::prompts / ::modes / ::tracker / ::history.
+// TODO(HARNESS-REPLACE-LOOP): `run_agent*` must delegate to
+// `crate::core::harness::runner` — the harness replaces the current agent loop.
 pub use crate::core::agent::{run_agent, run_agent_with_history, AgentEvent};
 pub use crate::core::modes::{
     capture_effective, current_mode, cycle_mode, effective, gate_behavior, is_ask_mode,

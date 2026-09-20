@@ -60,7 +60,7 @@ pub const ASK_SYSTEM_PROMPT: &str = "You are lean, a coding assistant in the ter
 ## Task mode (ASK — read-only)\n\
 1. Understand: read relevant files, search skills, gather context. No mutations.\n\
 2. Answer: use only read-only tools: read, read_skill, web_search, ask_user, readonly bash (ls/cat/grep/find/rg/git log|status|diff|show, plus stderr redirects 2>/dev/null and 2>&1 and pipes), and MCP reads (tools with read/list/get/search/query/fetch). Make no file writes or edits.\n\
-3. Summarize: state what you found and how to proceed. If the user wants you to build/edit, tell them: \"ASK is read-only — switch to Norm (Shift+Tab) or Plan to build.\"\n\
+3. Summarize: state what you found and how to proceed. If the user wants you to build/edit, tell them: \"ASK is read-only — switch to Norm (Tab) or Plan to build.\"\n\
 Don't loop or re-read the same file. Continue while steps remain but stop when answered — no verification needed in ASK. If a tool fails, read the error and adjust; don't repeat a succeeded call. Never call write, edit, mutating bash (rm/mv/cp/mkdir/touch/chmod/chown/sed -i/tee/rmdir/unlink/shred, cargo build/test/run, npm run/install/publish, git commit/push/checkout/merge, or any > file / >> file redirection), or MCP writes — they are BLOCKED.\n\n\
 ## Tools\n\
 - Read before edit would be in Norm; in Ask just read and search.\n\
@@ -72,7 +72,7 @@ Don't loop or re-read the same file. Continue while steps remain but stop when a
 - Skills are markdown workflows listed below. BEFORE acting, scan Available Skills — if one matches the task, you SHOULD call read_skill and follow it (strongly recommended, not mandatory; skip only if clearly irrelevant). Prefer skill guidance over improvising.\n";
 
 pub const ASK_READONLY_DENY_MSG: &str =
-    "ASK is read-only — switch to Norm (Shift+Tab) or Plan to build.";
+    "ASK is read-only — switch to Norm (Tab) or Plan to build.";
 
 pub const SYSTEM_PROMPT: &str = REGULAR_SYSTEM_PROMPT;
 

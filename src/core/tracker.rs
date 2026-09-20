@@ -675,7 +675,7 @@ impl PlanTracker {
         if is_ask_mode() {
             let mut out = String::from("[Focus — ASK read-only]\n");
             out.push_str(&format!("Goal: {}\n", self.goal));
-            out.push_str("ASK is read-only: Allowed: read, read_skill, web_search, ask_user, readonly bash (ls/cat/grep/find/rg/git log|status|diff|show, 2>/dev/null, 2>&1, pipes), MCP reads (read/list/get/search/query/fetch). BLOCKED: write/edit/mutating bash (> file, rm/mv/cp/mkdir, cargo build/test/run, npm install, git commit/push) and MCP writes — reply with \"ASK is read-only — switch to Norm (Shift+Tab) or Plan to build.\" if asked to build. Do not over-verify; answer directly.\n");
+            out.push_str("ASK is read-only: Allowed: read, read_skill, web_search, ask_user, readonly bash (ls/cat/grep/find/rg/git log|status|diff|show, 2>/dev/null, 2>&1, pipes), MCP reads (read/list/get/search/query/fetch). BLOCKED: write/edit/mutating bash (> file, rm/mv/cp/mkdir, cargo build/test/run, npm install, git commit/push) and MCP writes — reply with \"ASK is read-only — switch to Norm (Tab) or Plan to build.\" if asked to build. Do not over-verify; answer directly.\n");
             if !self.steps_done.is_empty() {
                 out.push_str(&format!("Progress ({}):\n", self.steps_done.len()));
                 for (i, s) in self.steps_done.iter().enumerate() {

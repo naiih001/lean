@@ -1,5 +1,11 @@
 //! Planner/Evaluator separation harness — GAN-inspired three-agent architecture.
 //!
+//! TODO(HARNESS-REPLACE-LOOP): this harness is the future core of the agent
+//! loop. `run_agent[_with_history]` in `core/agent.rs` must eventually become
+//! a thin wrapper over `harness::runner` (Planner → Generator → Evaluator
+//! sprints). Do not extend the legacy loop in place — put new orchestration
+//! here and delegate from `core/agent.rs`.
+//!
 //! # Architecture
 //!
 //! ```text

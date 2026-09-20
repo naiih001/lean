@@ -19,6 +19,12 @@ use crate::integrations::llm::Client;
 
 /// Run the full sprint cycle: Plan → Generate → Evaluate → Repeat.
 ///
+/// TODO(HARNESS-REPLACE-LOOP): this is the intended replacement for the
+/// legacy tool loop in `core/agent.rs::run_agent_with_history`. Wiring goal
+/// (opt-in `/harness`, advisory-only, complex tasks only): keep
+/// `run_agent_with_history`'s signature, move its tool-loop body behind a
+/// `Generator` step called from here, and stream `AgentEvent`s through.
+///
 /// Returns the final evaluation result after all iterations
 /// or when the score exceeds the minimum threshold.
 pub async fn run_sprint(
